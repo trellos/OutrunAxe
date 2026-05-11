@@ -4,6 +4,15 @@
 export class DrumSynth {
   constructor(private ctx: AudioContext, private out: AudioNode) {}
 
+  private makeNoise(durationSec: number): AudioBufferSourceNode {
+    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * durationSec, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    return src;
+  }
+
   kick(time: number) {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
@@ -17,11 +26,7 @@ export class DrumSynth {
   }
 
   snare(time: number) {
-    const noise = this.ctx.createBufferSource();
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.2, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    noise.buffer = buf;
+    const noise = this.makeNoise(0.2);
 
     const hp = this.ctx.createBiquadFilter();
     hp.type = "highpass";
@@ -48,11 +53,7 @@ export class DrumSynth {
   }
 
   hat(time: number) {
-    const noise = this.ctx.createBufferSource();
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.05, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    noise.buffer = buf;
+    const noise = this.makeNoise(0.05);
 
     const hp = this.ctx.createBiquadFilter();
     hp.type = "highpass";

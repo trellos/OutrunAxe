@@ -4,6 +4,7 @@
 // note on tickStep).
 
 import { PitchEngine, type Algorithm } from "../audio/PitchEngine";
+import { freqToMidi, midiToName } from "../audio/midi";
 
 export interface DetectedNote {
   time: number;
@@ -31,16 +32,6 @@ export interface AnalyzeOptions {
   algorithm?: Algorithm;
   /** 0..1 hint per tick — pass-through to PitchEngine.process. */
   beatProximityProvider?: (audioTime: number) => number;
-}
-
-const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-function freqToMidi(freq: number): number {
-  return Math.round(69 + 12 * Math.log2(freq / 440));
-}
-function midiToName(midi: number): string {
-  const name = NOTE_NAMES[((midi % 12) + 12) % 12];
-  const octave = Math.floor(midi / 12) - 1;
-  return `${name}${octave}`;
 }
 
 export function analyze(

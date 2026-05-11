@@ -2,7 +2,8 @@ import Phaser from "phaser";
 import type { Conductor, Phase } from "../audio/Conductor";
 import { PitchTracker, type PitchReading } from "../audio/PitchTracker";
 import { AudioRecorder } from "../audio/AudioRecorder";
-import { colors, STYLE } from "../ui/style";
+import { colors } from "../ui/style";
+import { freqToMidi, midiToName } from "../audio/midi";
 
 interface InitData {
   conductor: Conductor;
@@ -20,16 +21,7 @@ interface BarLayout {
 // Pitch → vertical position. Map MIDI 40 (low E2) ... MIDI 76 (E5) to 0..1.
 const MIN_MIDI = 40;
 const MAX_MIDI = 76;
-const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-function freqToMidi(freq: number): number {
-  return Math.round(69 + 12 * Math.log2(freq / 440));
-}
-function midiToName(midi: number): string {
-  const name = NOTE_NAMES[((midi % 12) + 12) % 12];
-  const octave = Math.floor(midi / 12) - 1;
-  return `${name}${octave}`;
-}
 function midiToNorm(midi: number): number {
   return Phaser.Math.Clamp((midi - MIN_MIDI) / (MAX_MIDI - MIN_MIDI), 0, 1);
 }
@@ -49,7 +41,7 @@ interface ActiveNote {
   startX: number;
   y: number;
   line: Phaser.GameObjects.Rectangle;
-  lineGlow: Phaser.GameObjects.Rectangle | null;
+  lineGlow: Phaser.GameObjects.Rectangle;
   dot: Phaser.GameObjects.Container;
   lastSeenAudioTime: number;
 }
@@ -61,6 +53,12 @@ interface RuntimeSnapshot {
   emissions: Array<{ time: number; midi: number; name: string; isNewNote: boolean }>;
   phase: string;
   done: boolean;
+}
+
+declare global {
+  interface Window {
+    __outrunRuntime?: RuntimeSnapshot;
+  }
 }
 
 export class PlayScene extends Phaser.Scene {
@@ -93,7 +91,7 @@ export class PlayScene extends Phaser.Scene {
     this.conductor = data.conductor;
     if (data.tracker) this.tracker = data.tracker;
     // Reset runtime-test snapshot so each game starts fresh.
-    (window as unknown as { __outrunRuntime: RuntimeSnapshot }).__outrunRuntime = {
+    window.__outrunRuntime = {
       dots: [],
       emissions: [],
       phase: "playing",
@@ -105,7 +103,7 @@ export class PlayScene extends Phaser.Scene {
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(colors.bg);
 
-    if (STYLE === "B") this.drawHorizonGrid();
+    this.drawHorizonGrid();
 
     // 4 horizontal bars, stacked vertically.
     const margin = 60;
@@ -278,7 +276,7 @@ export class PlayScene extends Phaser.Scene {
       this.finalizeActiveNote();
       this.statusText.setText("Done — press any key to restart");
       // Runtime test marker.
-      const runtime = (window as unknown as { __outrunRuntime?: RuntimeSnapshot }).__outrunRuntime;
+      const runtime = window.__outrunRuntime;
       if (runtime) runtime.done = true;
       if (this.recorder) {
         void this.recorder.stopAndDownload();
@@ -314,7 +312,7 @@ export class PlayScene extends Phaser.Scene {
 
     // Runtime test: capture every emission, so a test can compare what the
     // engine sent vs what PlayScene rendered.
-    const runtime = (window as unknown as { __outrunRuntime?: RuntimeSnapshot }).__outrunRuntime;
+    const runtime = window.__outrunRuntime;
     runtime?.emissions.push({
       time: r.time,
       midi,
@@ -379,13 +377,10 @@ export class PlayScene extends Phaser.Scene {
     // if pitch wobbles slightly during the note.
     const y = layout.y + layout.h - midiToNorm(midi) * layout.h;
 
-    let lineGlow: Phaser.GameObjects.Rectangle | null = null;
-    if (STYLE === "B") {
-      lineGlow = this.add
-        .rectangle(x, y, 0, 14, colors.note, 0.18)
-        .setOrigin(0, 0.5);
-      this.notesLayer.add(lineGlow);
-    }
+    const lineGlow = this.add
+      .rectangle(x, y, 0, 14, colors.note, 0.18)
+      .setOrigin(0, 0.5);
+    this.notesLayer.add(lineGlow);
 
     const line = this.add
       .rectangle(x, y, 0, 4, colors.note, 1)
@@ -398,7 +393,7 @@ export class PlayScene extends Phaser.Scene {
     // Runtime test: every dot drawn is recorded here. This is the visual
     // ground truth — if a test queries dot count it gets EXACTLY what
     // PlayScene rendered.
-    const runtime = (window as unknown as { __outrunRuntime?: RuntimeSnapshot }).__outrunRuntime;
+    const runtime = window.__outrunRuntime;
     runtime?.dots.push({ time, midi, name: midiToName(midi), measure });
 
     this.activeNote = {
@@ -417,9 +412,7 @@ export class PlayScene extends Phaser.Scene {
     if (!this.activeNote) return;
     const w = Math.max(0, x - this.activeNote.startX);
     this.activeNote.line.setSize(w, this.activeNote.line.height);
-    if (this.activeNote.lineGlow) {
-      this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
-    }
+    this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
     this.activeNote.lastSeenAudioTime = time;
   }
 
@@ -445,10 +438,8 @@ export class PlayScene extends Phaser.Scene {
 
   private makeNoteDot(x: number, y: number, label: string): Phaser.GameObjects.Container {
     const c = this.add.container(x, y);
-    if (STYLE === "B") {
-      const glow = this.add.circle(0, 0, 22, colors.note, 0.22);
-      c.add(glow);
-    }
+    const glow = this.add.circle(0, 0, 22, colors.note, 0.22);
+    c.add(glow);
     const fill = this.add.circle(0, 0, 14, colors.note, 1).setStrokeStyle(1, 0xffffff, 0.6);
     // Dark text on bright cyan reads better than light text. Drop the octave
     // suffix when 4+ chars (e.g. "G#3") would crowd the dot.

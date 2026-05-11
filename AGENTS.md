@@ -98,7 +98,7 @@ src/
     analyze.ts                 offline wrapper around PitchEngine
     main.ts                    test bench page entry
   ui/
-    style.ts                   palette + active art style (A/B/C)
+    style.ts                   synthwave color palette
   main.ts                      Phaser game bootstrap
 index.html                     game entry
 pitch-test.html                offline analyzer entry
@@ -137,10 +137,12 @@ authoritative answer to "what did live actually emit?"
   stray C#4 dots during F#4 plucks). 3-tap median catches some. Tightening
   Macleod's probability threshold from 0.85 → 0.95 helps but drops soft
   plucks. Open question: is CREPE worth the 5 MB model load?
-- **Beat-proximity sensitivity (priority 3) is unimplemented.** Engine
-  doesn't know about beat positions yet. Plan: PitchTracker passes a
-  `beatProximity` signal into `PitchEngine.process()`; near expected note
-  positions the engine relaxes its thresholds and emits sooner.
+- **Beat-proximity sensitivity (priority 3) is wired but uncalibrated.**
+  `PitchTracker` passes `Conductor.proximityToExpectedAttack()` into
+  `PitchEngine.process()`, which uses it to interpolate the confidence
+  threshold between `PITCH_PROB_CAUTIOUS` (0.92) and `PITCH_PROB_EAGER`
+  (0.70). The plumbing is live; the ±50 ms window and 0.92→0.70 range have
+  not been validated against real playing sessions.
 - **Latency calibration.** `INPUT_LATENCY_HINT = 50ms` in PitchTracker is a
   per-device guess. A first-run calibration screen (tap on the beat 4 times,
   measure offset) would replace it.
