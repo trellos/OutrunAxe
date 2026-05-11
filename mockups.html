@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OutrunAxe — Style Mockups</title>
+    <style>
+      :root {
+        --pad: 32px;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #18181b;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #e8e8e8;
+      }
+      h1 {
+        margin: 0;
+        padding: 28px var(--pad) 4px;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      .sub {
+        padding: 0 var(--pad) 24px;
+        font-size: 13px;
+        color: #a0a0a8;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 28px;
+        padding: 0 var(--pad) 48px;
+      }
+      @media (min-width: 1400px) {
+        .grid { grid-template-columns: 1fr 1fr 1fr; }
+      }
+      .card {
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid #2a2a30;
+        background: #0e0e10;
+      }
+      .label {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        padding: 14px 18px;
+        background: #131316;
+        border-bottom: 1px solid #2a2a30;
+        font-size: 14px;
+      }
+      .label .tag { font-weight: 700; letter-spacing: 0.06em; }
+      .label .vibe { color: #888; font-size: 12px; }
+      svg { display: block; width: 100%; height: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>OutrunAxe — Visual style options</h1>
+    <div class="sub">
+      Same moment in all three: count-in just finished, measure 1 active, two
+      notes detected so far. Resize the window to switch between stacked and
+      3-up layouts.
+    </div>
+
+    <div class="grid">
+      <!-- ============================================================ -->
+      <!-- STYLE A — DAW PIANO ROLL                                     -->
+      <!-- ============================================================ -->
+      <div class="card">
+        <div class="label">
+          <span><span class="tag" style="color:#00d9ff">STYLE A</span> &nbsp;&middot;&nbsp; DAW Piano Roll</span>
+          <span class="vibe">monochrome &middot; technical &middot; pitch-precise</span>
+        </div>
+        <svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+          <rect width="800" height="480" fill="#161616"/>
+          <!-- subtle horizontal guide lines -->
+          <g stroke="#222" stroke-width="1">
+            <line x1="0" y1="120" x2="800" y2="120"/>
+            <line x1="0" y1="240" x2="800" y2="240"/>
+            <line x1="0" y1="360" x2="800" y2="360"/>
+          </g>
+          <!-- status -->
+          <text x="400" y="36" fill="#00d9ff" font-family="ui-monospace, monospace" font-size="14" text-anchor="middle" letter-spacing="2">PLAY</text>
+
+          <!-- 4 bars -->
+          <g font-family="ui-monospace, monospace" font-size="13">
+            <!-- BAR 1 (active) -->
+            <g>
+              <rect x="60" y="80" width="680" height="74" fill="#0f2a33" stroke="#00d9ff" stroke-width="2" rx="2"/>
+              <line x1="230" y1="84" x2="230" y2="150" stroke="#1c4a55" stroke-width="1"/>
+              <line x1="400" y1="84" x2="400" y2="150" stroke="#1c4a55" stroke-width="1"/>
+              <line x1="570" y1="84" x2="570" y2="150" stroke="#1c4a55" stroke-width="1"/>
+              <text x="40" y="122" fill="#00d9ff" text-anchor="end">1</text>
+              <!-- 2 notes detected -->
+              <rect x="120" y="118" width="14" height="8" fill="#00d9ff"/>
+              <rect x="190" y="100" width="14" height="8" fill="#00d9ff"/>
+              <text x="730" y="100" fill="#00d9ff" font-size="11" text-anchor="end" opacity="0.7">G3 · A3</text>
+            </g>
+            <!-- BAR 2 -->
+            <g>
+              <rect x="60" y="170" width="680" height="74" fill="#1f1f1f" stroke="#3a3a3a" stroke-width="1" rx="2"/>
+              <line x1="230" y1="174" x2="230" y2="240" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="400" y1="174" x2="400" y2="240" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="570" y1="174" x2="570" y2="240" stroke="#2a2a2a" stroke-width="1"/>
+              <text x="40" y="212" fill="#666" text-anchor="end">2</text>
+            </g>
+            <!-- BAR 3 -->
+            <g>
+              <rect x="60" y="260" width="680" height="74" fill="#1f1f1f" stroke="#3a3a3a" stroke-width="1" rx="2"/>
+              <line x1="230" y1="264" x2="230" y2="330" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="400" y1="264" x2="400" y2="330" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="570" y1="264" x2="570" y2="330" stroke="#2a2a2a" stroke-width="1"/>
+              <text x="40" y="302" fill="#666" text-anchor="end">3</text>
+            </g>
+            <!-- BAR 4 -->
+            <g>
+              <rect x="60" y="350" width="680" height="74" fill="#1f1f1f" stroke="#3a3a3a" stroke-width="1" rx="2"/>
+              <line x1="230" y1="354" x2="230" y2="420" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="400" y1="354" x2="400" y2="420" stroke="#2a2a2a" stroke-width="1"/>
+              <line x1="570" y1="354" x2="570" y2="420" stroke="#2a2a2a" stroke-width="1"/>
+              <text x="40" y="392" fill="#666" text-anchor="end">4</text>
+            </g>
+          </g>
+
+          <!-- legend -->
+          <text x="60" y="460" fill="#666" font-family="ui-monospace, monospace" font-size="11">low pitch ↓   ·   high pitch ↑   ·   beat columns: 1 · 2 · 3 · 4</text>
+        </svg>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- STYLE B — OUTRUN / SYNTHWAVE                                 -->
+      <!-- ============================================================ -->
+      <div class="card">
+        <div class="label">
+          <span><span class="tag" style="color:#ff2bd6">STYLE B</span> &nbsp;&middot;&nbsp; Outrun / Synthwave</span>
+          <span class="vibe">neon &middot; energetic &middot; matches project name</span>
+        </div>
+        <svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#1a0635"/>
+              <stop offset="60%" stop-color="#0a0612"/>
+              <stop offset="100%" stop-color="#000"/>
+            </linearGradient>
+            <radialGradient id="sun" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#ff2bd6" stop-opacity="0.18"/>
+              <stop offset="100%" stop-color="#ff2bd6" stop-opacity="0"/>
+            </radialGradient>
+            <filter id="glowMag" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="glowCyan" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="2.5" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <rect width="800" height="480" fill="url(#bgGrad)"/>
+          <circle cx="400" cy="430" r="280" fill="url(#sun)"/>
+
+          <!-- horizon grid -->
+          <g stroke="#3a1f5e" stroke-width="1" opacity="0.45">
+            <line x1="0" y1="430" x2="800" y2="430"/>
+            <line x1="0" y1="448" x2="800" y2="448"/>
+            <line x1="0" y1="468" x2="800" y2="468"/>
+            <!-- vanishing perspective lines -->
+            <line x1="-200" y1="480" x2="400" y2="395"/>
+            <line x1="0" y1="480" x2="400" y2="395"/>
+            <line x1="200" y1="480" x2="400" y2="395"/>
+            <line x1="400" y1="480" x2="400" y2="395"/>
+            <line x1="600" y1="480" x2="400" y2="395"/>
+            <line x1="800" y1="480" x2="400" y2="395"/>
+            <line x1="1000" y1="480" x2="400" y2="395"/>
+          </g>
+
+          <text x="400" y="36" fill="#ff2bd6" font-family="ui-monospace, monospace" font-size="14" text-anchor="middle" letter-spacing="3" filter="url(#glowMag)">▸ PLAY</text>
+
+          <g font-family="ui-monospace, monospace" font-size="13">
+            <!-- BAR 1 (active, glowing) -->
+            <g filter="url(#glowMag)">
+              <rect x="60" y="80" width="680" height="74" fill="#2a1145" stroke="#ff2bd6" stroke-width="2.5" rx="14"/>
+            </g>
+            <text x="40" y="122" fill="#ff2bd6" text-anchor="end" filter="url(#glowMag)">1</text>
+            <!-- 2 notes with comet trails -->
+            <g filter="url(#glowCyan)">
+              <line x1="100" y1="120" x2="130" y2="120" stroke="#00f0ff" stroke-width="2" opacity="0.4"/>
+              <circle cx="130" cy="120" r="6" fill="#00f0ff"/>
+              <line x1="170" y1="102" x2="200" y2="102" stroke="#00f0ff" stroke-width="2" opacity="0.4"/>
+              <circle cx="200" cy="102" r="6" fill="#00f0ff"/>
+            </g>
+
+            <!-- BAR 2 -->
+            <rect x="60" y="170" width="680" height="74" fill="#1a0f2e" stroke="#4a2a7a" stroke-width="1.5" rx="14"/>
+            <text x="40" y="212" fill="#7a5a9a" text-anchor="end">2</text>
+
+            <!-- BAR 3 -->
+            <rect x="60" y="260" width="680" height="74" fill="#1a0f2e" stroke="#4a2a7a" stroke-width="1.5" rx="14"/>
+            <text x="40" y="302" fill="#7a5a9a" text-anchor="end">3</text>
+
+            <!-- BAR 4 -->
+            <rect x="60" y="350" width="680" height="74" fill="#1a0f2e" stroke="#4a2a7a" stroke-width="1.5" rx="14"/>
+            <text x="40" y="392" fill="#7a5a9a" text-anchor="end">4</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- STYLE C — HAND-DRAWN NOTEBOOK                                -->
+      <!-- ============================================================ -->
+      <div class="card">
+        <div class="label">
+          <span><span class="tag" style="color:#8a3a2a">STYLE C</span> &nbsp;&middot;&nbsp; Hand-Drawn Notebook</span>
+          <span class="vibe">paper &middot; charming &middot; musically literate</span>
+        </div>
+        <svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="rough">
+              <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
+              <feDisplacementMap in="SourceGraphic" scale="1.5"/>
+            </filter>
+            <pattern id="paper" patternUnits="userSpaceOnUse" width="6" height="6">
+              <rect width="6" height="6" fill="#f4ecd8"/>
+              <circle cx="2" cy="3" r="0.4" fill="#d8c8a8" opacity="0.3"/>
+              <circle cx="5" cy="1" r="0.3" fill="#c8b890" opacity="0.25"/>
+            </pattern>
+          </defs>
+
+          <rect width="800" height="480" fill="url(#paper)"/>
+          <text x="400" y="36" fill="#8a3a2a" font-family="Georgia, serif" font-size="15" font-style="italic" text-anchor="middle">~ play! ~</text>
+
+          <!-- Helper to draw a bar: rounded rect + 5-line staff inside -->
+          <!-- BAR 1 (active, with sketchy circle) -->
+          <g>
+            <rect x="60" y="80" width="680" height="74" fill="#fff8e2" stroke="#2a2418" stroke-width="2" rx="6" filter="url(#rough)"/>
+            <!-- 5-line staff -->
+            <g stroke="#2a2418" stroke-width="1" opacity="0.55">
+              <line x1="80" y1="96" x2="720" y2="96"/>
+              <line x1="80" y1="108" x2="720" y2="108"/>
+              <line x1="80" y1="120" x2="720" y2="120"/>
+              <line x1="80" y1="132" x2="720" y2="132"/>
+              <line x1="80" y1="144" x2="720" y2="144"/>
+            </g>
+            <!-- sketchy circle around the 1 -->
+            <ellipse cx="36" cy="117" rx="22" ry="18" fill="none" stroke="#8a3a2a" stroke-width="1.5" opacity="0.85" filter="url(#rough)"/>
+            <text x="36" y="124" fill="#8a3a2a" font-family="Georgia, serif" font-size="22" font-style="italic" text-anchor="middle">1</text>
+            <!-- 2 ink notes on the staff -->
+            <g fill="#1a1410">
+              <ellipse cx="160" cy="132" rx="6" ry="4.5" transform="rotate(-18 160 132)"/>
+              <line x1="166" y1="130" x2="166" y2="100" stroke="#1a1410" stroke-width="1.5"/>
+              <ellipse cx="230" cy="120" rx="6" ry="4.5" transform="rotate(-18 230 120)"/>
+              <line x1="236" y1="118" x2="236" y2="90" stroke="#1a1410" stroke-width="1.5"/>
+            </g>
+          </g>
+
+          <!-- BAR 2 -->
+          <g>
+            <rect x="60" y="170" width="680" height="74" fill="#faf5e4" stroke="#2a2418" stroke-width="1.5" rx="6" filter="url(#rough)"/>
+            <g stroke="#2a2418" stroke-width="1" opacity="0.4">
+              <line x1="80" y1="186" x2="720" y2="186"/>
+              <line x1="80" y1="198" x2="720" y2="198"/>
+              <line x1="80" y1="210" x2="720" y2="210"/>
+              <line x1="80" y1="222" x2="720" y2="222"/>
+              <line x1="80" y1="234" x2="720" y2="234"/>
+            </g>
+            <text x="36" y="214" fill="#5a4a30" font-family="Georgia, serif" font-size="22" font-style="italic" text-anchor="middle">2</text>
+          </g>
+
+          <!-- BAR 3 -->
+          <g>
+            <rect x="60" y="260" width="680" height="74" fill="#faf5e4" stroke="#2a2418" stroke-width="1.5" rx="6" filter="url(#rough)"/>
+            <g stroke="#2a2418" stroke-width="1" opacity="0.4">
+              <line x1="80" y1="276" x2="720" y2="276"/>
+              <line x1="80" y1="288" x2="720" y2="288"/>
+              <line x1="80" y1="300" x2="720" y2="300"/>
+              <line x1="80" y1="312" x2="720" y2="312"/>
+              <line x1="80" y1="324" x2="720" y2="324"/>
+            </g>
+            <text x="36" y="304" fill="#5a4a30" font-family="Georgia, serif" font-size="22" font-style="italic" text-anchor="middle">3</text>
+          </g>
+
+          <!-- BAR 4 -->
+          <g>
+            <rect x="60" y="350" width="680" height="74" fill="#faf5e4" stroke="#2a2418" stroke-width="1.5" rx="6" filter="url(#rough)"/>
+            <g stroke="#2a2418" stroke-width="1" opacity="0.4">
+              <line x1="80" y1="366" x2="720" y2="366"/>
+              <line x1="80" y1="378" x2="720" y2="378"/>
+              <line x1="80" y1="390" x2="720" y2="390"/>
+              <line x1="80" y1="402" x2="720" y2="402"/>
+              <line x1="80" y1="414" x2="720" y2="414"/>
+            </g>
+            <text x="36" y="394" fill="#5a4a30" font-family="Georgia, serif" font-size="22" font-style="italic" text-anchor="middle">4</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </body>
+</html>

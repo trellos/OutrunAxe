@@ -1,0 +1,20 @@
+{
+  "name": "outrun-axe",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "phaser": "^3.80.1",
+    "pitchfinder": "^2.3.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.2.10"
+  }
+}

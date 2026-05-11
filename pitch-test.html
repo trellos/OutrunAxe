@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OutrunAxe — Pitch Test Bench</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #0a0612;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #e8e8e8;
+      }
+      header {
+        padding: 20px 24px 12px;
+        border-bottom: 1px solid #2a1145;
+      }
+      h1 { margin: 0 0 4px; font-size: 18px; letter-spacing: 0.04em; }
+      #status { color: #a090c0; font-size: 12px; }
+      #controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        padding: 12px 24px;
+        align-items: center;
+        font-size: 12px;
+        border-bottom: 1px solid #2a1145;
+      }
+      #controls label { display: flex; gap: 6px; align-items: center; }
+      #controls input, #controls select {
+        background: #1a0f2e;
+        color: #e8e8e8;
+        border: 1px solid #4a2a7a;
+        padding: 4px 6px;
+        font-family: monospace;
+        font-size: 12px;
+        width: 70px;
+      }
+      #controls button {
+        background: #2a1145;
+        color: #ff2bd6;
+        border: 1px solid #ff2bd6;
+        padding: 4px 12px;
+        font-family: monospace;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #controls button:hover { background: #4a1f5e; }
+      #waveform {
+        display: block;
+        width: 100%;
+        height: 360px;
+        background: #0a0612;
+      }
+      #verdict {
+        padding: 14px 24px;
+        font-family: monospace;
+        font-size: 13px;
+        line-height: 1.55;
+        border-bottom: 1px solid #2a1145;
+        white-space: pre-wrap;
+      }
+      #verdict .pass { color: #66ff99; font-weight: 700; }
+      #verdict .fail { color: #ff5566; font-weight: 700; }
+      #count { padding: 10px 24px; font-size: 13px; color: #a090c0; font-family: monospace; }
+      #notelist {
+        padding: 0 24px 40px;
+        font-family: monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #c8b8e0;
+      }
+      .note { white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>PITCH TEST BENCH</h1>
+      <div id="status">initializing</div>
+    </header>
+    <div id="controls">
+      <label>BPM <input id="bpm" type="number" value="90" min="40" max="200" /></label>
+      <label>FFT
+        <select id="fft">
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option value="4096" selected>4096</option>
+        </select>
+      </label>
+      <label>algo
+        <select id="algo">
+          <option value="YIN" selected>YIN</option>
+          <option value="Macleod">Macleod</option>
+          <option value="AMDF">AMDF</option>
+          <option value="ACF2PLUS">ACF2PLUS</option>
+        </select>
+      </label>
+      <label>YIN thresh <input id="yin" type="number" value="0.10" step="0.01" min="0.01" max="0.5" /></label>
+      <label>tick step <input id="step" type="number" value="512" min="64" max="2048" step="64" /></label>
+      <button id="rerun">RE-RUN</button>
+      <button id="play">▶ PLAY AUDIO</button>
+    </div>
+    <div id="verdict"></div>
+    <canvas id="waveform"></canvas>
+    <div id="count"></div>
+    <div id="notelist"></div>
+    <script type="module" src="/src/test/main.ts"></script>
+  </body>
+</html>
