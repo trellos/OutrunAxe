@@ -1,0 +1,10 @@
+{
+  "description": "Four held bends (B → C, hold C, release back to B). Each starts ~2s apart. Regression for bend tracking — each bend should produce exactly one onset (B at the start) with continuous pitch updates through C and back.",
+  "expected": [
+    { "kind": "bend", "tSec": 2.091, "pitchClass": "B", "pitchPeak": "C", "pitchEnd": "B" },
+    { "kind": "bend", "tSec": 4.075, "pitchClass": "B", "pitchPeak": "C", "pitchEnd": "B" },
+    { "kind": "bend", "tSec": 6.080, "pitchClass": "B", "pitchPeak": "C", "pitchEnd": "B" },
+    { "kind": "bend", "tSec": 8.117, "pitchClass": "B", "pitchPeak": "C", "pitchEnd": "B" }
+  ],
+  "tolerance": { "timeSec": 0.18, "extras": 0 }
+}

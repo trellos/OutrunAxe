@@ -1,11 +1,116 @@
-// Offline pitch-detection test bench. Loads a recording, runs the same
-// algorithm as the live PitchTracker, and renders detected notes against the
-// waveform so we can see what the algorithm sees.
+// Offline pitch-detection test bench. Picks a source (recording file or
+// synth signal), runs the same algorithm as the live PitchTracker, and
+// renders detected notes against the waveform with a PASS/FAIL verdict.
 
 import { analyze, analyzeRaw, envelope, type DetectedNote, type RawTick, type AnalyzeOptions } from "./analyze";
-import { verify, referenceExpected, type VerifyResult } from "./verify";
+import { verify, verifySynth, referenceExpected, type VerifyResult } from "./verify";
+import {
+  SYNTH_SIGNALS,
+  monophonic16thsAt140,
+  bend200,
+  hammerOn,
+  pullOff,
+  type SynthSignal,
+} from "./synthesise";
+import {
+  FIXTURE_IDS,
+  loadFixture,
+  loadAudio,
+  verifyFixture,
+  type FixtureSpec,
+  type FixtureResult,
+} from "./fixtures/fixtures";
+import { BEAT_PROXIMITY_WINDOW, BEAT_PROXIMITY_SUBS_OF_BEAT } from "../audio/Conductor";
 
-const RECORDING_URL = "/samples/outrun-axe-session-2026-05-11-14-21-53.webm";
+interface Source {
+  id: string;
+  label: string;
+  bpm: number;
+  /** Resolves to mono audio + meta. */
+  load: () => Promise<LoadedSource> | LoadedSource;
+}
+
+interface LoadedSource {
+  samples: Float32Array;
+  sampleRate: number;
+  duration: number;
+  numberOfChannels: number;
+  peaks: number[];
+  /** When the player's first note begins (after count-in if applicable). */
+  playStartSec: number;
+  /** Synth-generated signals carry their own expected events. */
+  signal?: SynthSignal;
+  /** Real-recording fixtures carry a JSON-described expected event list. */
+  fixtureSpec?: FixtureSpec;
+  /** Recording sources keep an audio element for playback. */
+  audioElem?: HTMLAudioElement;
+}
+
+const RECORDING_URL = new URLSearchParams(location.search).get("recording")
+  ?? "/samples/outrun-axe-session-2026-05-11-14-21-53.webm";
+
+const SOURCES: Source[] = [
+  {
+    id: "monophonic-reference",
+    label: "Reference recording — 90 BPM 8ths, F#/C# alternating",
+    bpm: 90,
+    load: async () => loadRecording(RECORDING_URL),
+  },
+  {
+    id: "monophonic-16ths-140bpm",
+    label: "Synth — 16ths at 140 BPM, F#/C# alternating",
+    bpm: 140,
+    load: () => loadSynth(monophonic16thsAt140()),
+  },
+  {
+    id: "bend-200",
+    label: "Synth — F#4 bent up to G#4 (200¢) and released",
+    bpm: 90,
+    load: () => loadSynth(bend200()),
+  },
+  {
+    id: "hammer-on",
+    label: "Synth — F#4 plucked, hammer-on to A4",
+    bpm: 90,
+    load: () => loadSynth(hammerOn()),
+  },
+  {
+    id: "pull-off",
+    label: "Synth — A4 plucked, pull-off to F#4",
+    bpm: 90,
+    load: () => loadSynth(pullOff()),
+  },
+  ...FIXTURE_IDS.map((id) => ({
+    id,
+    label: `Fixture — ${id}`,
+    bpm: 120,
+    load: async (): Promise<LoadedSource> => {
+      const { audio, spec } = await loadFixture(id);
+      const audioElem = new Audio(`/samples/${id}.webm`);
+      audioElem.preload = "auto";
+      let max = 0;
+      for (let i = 0; i < audio.samples.length; i++) {
+        const v = Math.abs(audio.samples[i]);
+        if (v > max) max = v;
+      }
+      // Earliest expected event time as the play-start hint.
+      const firstT =
+        spec.expected.length > 0
+          ? Math.min(...spec.expected.map((e) => e.tSec))
+          : 0;
+      return {
+        samples: audio.samples,
+        sampleRate: audio.sampleRate,
+        duration: audio.duration,
+        numberOfChannels: 1,
+        peaks: [max],
+        playStartSec: firstT,
+        fixtureSpec: spec,
+        audioElem,
+      };
+    },
+  })),
+];
 
 const els = {
   status: document.getElementById("status")!,
@@ -17,92 +122,107 @@ const els = {
   yin: document.getElementById("yin") as HTMLInputElement,
   step: document.getElementById("step") as HTMLInputElement,
   algo: document.getElementById("algo") as HTMLSelectElement,
+  source: document.getElementById("source") as HTMLSelectElement | null,
   rerun: document.getElementById("rerun") as HTMLButtonElement,
   play: document.getElementById("play") as HTMLButtonElement,
   verdict: document.getElementById("verdict")!,
 };
 
-let decoded: AudioBuffer | null = null;
+// Populate source dropdown if present.
+if (els.source) {
+  els.source.innerHTML = "";
+  for (const s of SOURCES) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.label;
+    els.source.appendChild(opt);
+  }
+  // Apply ?source=... if set.
+  const initial = new URLSearchParams(location.search).get("source");
+  if (initial && SOURCES.some((s) => s.id === initial)) els.source.value = initial;
+}
+
+let currentSource: Source = SOURCES.find((s) => s.id === (els.source?.value ?? "")) ?? SOURCES[0];
+let loaded: LoadedSource | null = null;
 let detections: DetectedNote[] = [];
 let raw: RawTick[] = [];
-let audioElem: HTMLAudioElement | null = null;
 
-// Expose to window for ad-hoc inspection via preview_eval.
 declare global {
   interface Window {
     __pitchTest: {
-      decoded: AudioBuffer | null;
+      loaded: LoadedSource | null;
       detections: DetectedNote[];
       raw: RawTick[];
+      verifyResult?: VerifyResult;
     };
   }
 }
 
-async function loadRecording() {
-  els.status.textContent = "loading...";
-  const ctx = new AudioContext();
-  const resp = await fetch(RECORDING_URL);
-  const arr = await resp.arrayBuffer();
-  decoded = await ctx.decodeAudioData(arr);
-  await ctx.close();
-
-  // Diagnose per-channel signal so a "silent channel 0" recording doesn't
-  // produce 0 detections silently.
-  const peaks: number[] = [];
-  for (let c = 0; c < decoded.numberOfChannels; c++) {
-    const data = decoded.getChannelData(c);
-    let max = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = Math.abs(data[i]);
-      if (v > max) max = v;
-    }
-    peaks.push(max);
-  }
-
-  els.status.textContent =
-    `loaded · ${decoded.duration.toFixed(2)}s · ${decoded.sampleRate}Hz · ${decoded.numberOfChannels}ch · peaks=[${peaks.map(p => p.toFixed(3)).join(", ")}]`;
-
-  audioElem = new Audio(RECORDING_URL);
+async function loadRecording(url: string): Promise<LoadedSource> {
+  const audio = await loadAudio(url);
+  const audioElem = new Audio(url);
   audioElem.preload = "auto";
-
-  rerun();
+  let max = 0;
+  for (let i = 0; i < audio.samples.length; i++) {
+    const v = Math.abs(audio.samples[i]);
+    if (v > max) max = v;
+  }
+  return {
+    samples: audio.samples,
+    sampleRate: audio.sampleRate,
+    duration: audio.duration,
+    numberOfChannels: 1,
+    peaks: [max],
+    playStartSec: (60 / 90) * 4,
+    audioElem,
+  };
 }
 
-/** Build a beat-proximity provider for offline analysis. */
+function loadSynth(signal: SynthSignal): LoadedSource {
+  let max = 0;
+  for (let i = 0; i < signal.audio.length; i++) {
+    const v = Math.abs(signal.audio[i]);
+    if (v > max) max = v;
+  }
+  return {
+    samples: signal.audio,
+    sampleRate: signal.sampleRate,
+    duration: signal.audio.length / signal.sampleRate,
+    numberOfChannels: 1,
+    peaks: [max],
+    playStartSec: signal.playStartSec,
+    signal,
+  };
+}
+
 function makeBeatProximity(bpm: number, playStartSec: number) {
   const beatDur = 60 / bpm;
-  const subs = [beatDur, beatDur / 2, beatDur / 3];
-  const WINDOW = 0.05;
   return (t: number) => {
     const into = t - playStartSec;
     if (into < 0) return 0;
     let min = Infinity;
-    for (const sub of subs) {
+    for (const frac of BEAT_PROXIMITY_SUBS_OF_BEAT) {
+      const sub = frac * beatDur;
       const closest = Math.round(into / sub) * sub;
       const d = Math.abs(into - closest);
       if (d < min) min = d;
     }
-    return min >= WINDOW ? 0 : 1 - min / WINDOW;
+    return min >= BEAT_PROXIMITY_WINDOW ? 0 : 1 - min / BEAT_PROXIMITY_WINDOW;
   };
 }
 
-/** Mix every channel down to a single mono Float32Array. */
-function getMonoSamples(buf: AudioBuffer): Float32Array {
-  const n = buf.length;
-  const ch = buf.numberOfChannels;
-  if (ch === 1) return buf.getChannelData(0);
-  const out = new Float32Array(n);
-  for (let c = 0; c < ch; c++) {
-    const data = buf.getChannelData(c);
-    for (let i = 0; i < n; i++) out[i] += data[i];
-  }
-  for (let i = 0; i < n; i++) out[i] /= ch;
-  return out;
+async function loadSelectedSource() {
+  els.status.textContent = `loading ${currentSource.label}...`;
+  loaded = await currentSource.load();
+  els.status.textContent =
+    `${currentSource.label} · ${loaded.duration.toFixed(2)}s · ${loaded.sampleRate}Hz · ${loaded.numberOfChannels}ch · peaks=[${loaded.peaks.map((p) => p.toFixed(3)).join(", ")}]`;
+  // Sync BPM input.
+  els.bpm.value = String(currentSource.bpm);
+  rerun();
 }
 
 function rerun() {
-  if (!decoded) return;
-  const samples = getMonoSamples(decoded);
+  if (!loaded) return;
   const bpm = parseFloat(els.bpm.value);
 
   const opts: AnalyzeOptions = {
@@ -110,37 +230,58 @@ function rerun() {
     yinThreshold: parseFloat(els.yin.value),
     tickStep: parseInt(els.step.value, 10),
     inputLatencyHint: 0,
-    algorithm: els.algo.value as any,
-    // The live game's recording feature starts capturing from the count-in,
-    // so play begins after one 4-beat measure. Compute proximity to nearest
-    // quarter / eighth / triplet position from there.
-    beatProximityProvider: makeBeatProximity(bpm, (60 / bpm) * 4),
+    algorithm: els.algo.value as AnalyzeOptions["algorithm"],
+    beatProximityProvider: makeBeatProximity(bpm, loaded.playStartSec),
   };
 
   const t0 = performance.now();
-  detections = analyze(samples, decoded.sampleRate, opts);
-  raw = analyzeRaw(samples, decoded.sampleRate, opts);
+  detections = analyze(loaded.samples, loaded.sampleRate, opts);
+  raw = analyzeRaw(loaded.samples, loaded.sampleRate, opts);
   const dt = performance.now() - t0;
 
-  window.__pitchTest = { decoded, detections, raw };
+  window.__pitchTest = { loaded, detections, raw };
 
   els.count.textContent =
     `${detections.length} notes detected · ${raw.length} raw ticks · analyzed in ${dt.toFixed(0)}ms`;
-  renderList();
-  renderCanvas();
+  renderList(bpm);
+  renderCanvas(bpm);
   renderVerdict();
 }
 
 function renderVerdict() {
-  if (!decoded) return;
-  const expected = referenceExpected();
-  const result: VerifyResult = verify(detections, expected, {
-    recordingDurationSec: decoded.duration,
-  });
-  (window as any).__pitchTest.verifyResult = result;
+  if (!loaded) return;
+  // Fixture sources have their own JSON spec.
+  if (loaded.fixtureSpec) {
+    const fr: FixtureResult = verifyFixture(detections, loaded.fixtureSpec);
+    window.__pitchTest.verifyResult = {
+      passed: fr.passed,
+      expectedCount: fr.expectedCount,
+      detectedNoteCount: fr.detectedOnsetCount,
+      matches: fr.matches,
+      pitchMismatches: fr.pitchMismatches,
+      missing: fr.missing,
+      extras: fr.extras,
+      sustainGaps: 0,
+      details: fr.details,
+    };
+    const header = fr.passed
+      ? `<span class="pass">PASS</span>  ${fr.matches}/${fr.expectedCount} onsets correct, ${fr.extras} extras (tol ${loaded.fixtureSpec.tolerance.extras}).`
+      : `<span class="fail">FAIL</span>  matched ${fr.matches}/${fr.expectedCount}  ·  pitch mismatches ${fr.pitchMismatches}  ·  missing ${fr.missing}  ·  extras ${fr.extras}`;
+    const detailLines = fr.details.slice(0, 15).join("\n");
+    const truncated = fr.details.length > 15 ? `\n... (${fr.details.length - 15} more)` : "";
+    els.verdict.innerHTML = header + (detailLines ? `\n\n${detailLines}${truncated}` : "");
+    return;
+  }
+
+  const result: VerifyResult = loaded.signal
+    ? verifySynth(detections, loaded.signal)
+    : verify(detections, referenceExpected(), {
+        recordingDurationSec: loaded.duration,
+      });
+  window.__pitchTest.verifyResult = result;
 
   const header = result.passed
-    ? `<span class="pass">PASS</span>  ${result.matches}/${result.expectedCount} notes correct, no extras, no sustain gaps.`
+    ? `<span class="pass">PASS</span>  ${result.matches}/${result.expectedCount} notes correct, no extras${result.sustainGaps ? `, ${result.sustainGaps} sustain gaps` : ", no sustain gaps"}.`
     : `<span class="fail">FAIL</span>  matched ${result.matches}/${result.expectedCount}  ·  pitch mismatches ${result.pitchMismatches}  ·  missing ${result.missing}  ·  extras ${result.extras}  ·  sustain gaps ${result.sustainGaps}`;
 
   const detailLines = result.details.slice(0, 15).join("\n");
@@ -151,12 +292,10 @@ function renderVerdict() {
   els.verdict.innerHTML = header + (detailLines ? `\n\n${detailLines}${truncated}` : "");
 }
 
-function renderList() {
-  if (!decoded) return;
+function renderList(bpm: number) {
+  if (!loaded) return;
   els.list.innerHTML = "";
-  const bpm = parseFloat(els.bpm.value);
-  const beatSec = 60 / bpm;
-  const eighthSec = beatSec / 2;
+  const eighthSec = 60 / bpm / 2;
 
   for (const n of detections) {
     const div = document.createElement("div");
@@ -171,8 +310,8 @@ function renderList() {
   }
 }
 
-function renderCanvas() {
-  if (!decoded) return;
+function renderCanvas(bpm: number) {
+  if (!loaded) return;
   const canvas = els.canvas;
   const ctx = canvas.getContext("2d")!;
   const W = canvas.width = canvas.clientWidth;
@@ -181,16 +320,12 @@ function renderCanvas() {
   ctx.fillStyle = "#0a0612";
   ctx.fillRect(0, 0, W, H);
 
-  const samples = getMonoSamples(decoded);
-  const dur = decoded.duration;
-  const env = envelope(samples, Math.floor(samples.length / W));
+  const dur = loaded.duration;
+  const env = envelope(loaded.samples, Math.floor(loaded.samples.length / W));
 
-  // Beat grid
-  const bpm = parseFloat(els.bpm.value);
   const beatSec = 60 / bpm;
   const eighthSec = beatSec / 2;
 
-  // Eighth-note grid (faint)
   ctx.strokeStyle = "#3a1f5e";
   ctx.lineWidth = 1;
   for (let t = 0; t < dur; t += eighthSec) {
@@ -200,7 +335,6 @@ function renderCanvas() {
     ctx.lineTo(x, H);
     ctx.stroke();
   }
-  // Quarter-note grid (brighter)
   ctx.strokeStyle = "#6a3f9e";
   for (let t = 0; t < dur; t += beatSec) {
     const x = (t / dur) * W;
@@ -210,7 +344,6 @@ function renderCanvas() {
     ctx.stroke();
   }
 
-  // Waveform envelope
   ctx.strokeStyle = "#888";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -230,9 +363,6 @@ function renderCanvas() {
   }
   ctx.stroke();
 
-  // Render notes the way PlayScene does: each [onset] starts a new note (dot
-  // + extending line); subsequent [fallback] readings of the same pitch
-  // extend the active line. A pitch change or 200ms gap finalizes it.
   type Active = { midi: number; startX: number; endX: number; y: number; hue: number };
   let active: Active | null = null;
   const finalizeActive = () => {
@@ -265,7 +395,6 @@ function renderCanvas() {
   }
   finalizeActive();
 
-  // Note labels — one per onset only, so the canvas isn't a wall of text.
   ctx.fillStyle = "#fff";
   ctx.font = "10px monospace";
   ctx.textAlign = "center";
@@ -276,7 +405,6 @@ function renderCanvas() {
     ctx.fillText(n.name, x, y - 9);
   }
 
-  // Time axis labels
   ctx.fillStyle = "#888";
   ctx.font = "11px monospace";
   ctx.textAlign = "left";
@@ -288,11 +416,26 @@ function renderCanvas() {
 
 els.rerun.addEventListener("click", rerun);
 els.play.addEventListener("click", () => {
-  if (!audioElem) return;
-  audioElem.currentTime = 0;
-  audioElem.play();
+  if (loaded?.audioElem) {
+    loaded.audioElem.currentTime = 0;
+    loaded.audioElem.play();
+  }
+});
+els.source?.addEventListener("change", () => {
+  const id = els.source!.value;
+  const next = SOURCES.find((s) => s.id === id);
+  if (next) {
+    currentSource = next;
+    loadSelectedSource().catch((err) => {
+      els.status.textContent = `failed: ${err.message}`;
+    });
+  }
 });
 
-loadRecording().catch((err) => {
+// Reference SYNTH_SIGNALS so unused-import linting doesn't complain when we
+// switch to a slimmer source list later.
+void SYNTH_SIGNALS;
+
+loadSelectedSource().catch((err) => {
   els.status.textContent = `failed: ${err.message}`;
 });

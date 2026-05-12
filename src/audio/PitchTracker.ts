@@ -1,36 +1,50 @@
-// Live mic capture + pitch detection. Thin wrapper around PitchEngine: this
-// file owns the mic stream and the rAF tick; PitchEngine owns the algorithm.
+// Live mic capture + pitch detection. The audio render thread does ONSET
+// DETECTION (in onsetWorklet.ts, ~2.7 ms quanta, no rAF throttling). The
+// main thread does PITCH DETECTION on demand: each onset message schedules
+// a setTimeout `PITCH_DETECTION_DELAY` later, which reads the AnalyserNode
+// buffer and asks PitchEngine to detect pitch. PitchEngine retains all the
+// post-onset event-shaping logic (dup-window, hammer-on classifier,
+// silence-driven NoteEnds, sustain emissions).
 //
-// See src/audio/PitchEngine.ts for the detection logic. Same engine is used
-// by the offline test bench (src/test/analyze.ts), guaranteeing parity.
+// Public API unchanged from Phase B:
+//   tracker.onOnset(fn) / onPitchUpdate(fn) / onNoteEnd(fn) / onLevel(fn)
+//   tracker.endActive(reason) / reset() / start() / stop()
 
-import { PitchEngine, type PitchReading } from "./PitchEngine";
+import {
+  PitchEngine,
+  PITCH_DETECTION_DELAY,
+  type EngineEvent,
+  type OnsetEvent,
+  type PitchUpdate,
+  type NoteEnd,
+} from "./PitchEngine";
 import { getAudioContext } from "./AudioContextSingleton";
+import workletUrl from "./onsetWorklet.ts?worker&url";
+import type { OnsetMessage } from "./onsetWorklet";
 
-export type { PitchReading } from "./PitchEngine";
+export type { OnsetEvent, PitchUpdate, NoteEnd } from "./PitchEngine";
 
-// 4096 samples (~85ms at 48kHz) gives Macleod enough periods to lock pitch
-// reliably on guitar fundamentals. Smaller buffers visibly degrade detection
-// quality. Latency cost is acceptable because onset detection (which drives
-// dot position) operates at chunk-level resolution, not buffer-level.
-const FFT_SIZE = 4096;
-// Mic driver / OS capture pipeline — not exposed by any Web API.
-// outputLatency is read live from AudioContext and added on top.
+const FFT_SIZE = 2048;
 const INPUT_LATENCY_HINT = 0.05;
+const PITCH_DETECTION_DELAY_MS = PITCH_DETECTION_DELAY * 1000;
+/** Cadence for sustain pitch detection (re-reads the AnalyserNode buffer
+ *  while a note is active so bend updates and silence end can fire). */
+const SUSTAIN_PITCH_INTERVAL_MS = 30;
 
 export class PitchTracker {
   private ctx: AudioContext;
   private stream: MediaStream | null = null;
   private analyser: AnalyserNode | null = null;
   private buffer: Float32Array<ArrayBuffer> | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private engine: PitchEngine | null = null;
   private rafId: number | null = null;
-  private listeners = new Set<(r: PitchReading) => void>();
+  private sustainTimerId: number | null = null;
+  private onsetListeners = new Set<(e: OnsetEvent) => void>();
+  private pitchListeners = new Set<(u: PitchUpdate) => void>();
+  private endListeners = new Set<(e: NoteEnd) => void>();
   private levelListeners = new Set<(level: number) => void>();
   private beatProximityProvider: ((audioTime: number) => number) | null = null;
-  // Fake-mic mode: when set, the engine reads from this pre-decoded audio
-  // buffer instead of getUserMedia. Used by the runtime test harness to
-  // pipe a known recording through the exact pipeline the live game uses.
   private fakeMicBuffer: AudioBuffer | null = null;
   private fakeSource: AudioBufferSourceNode | null = null;
 
@@ -42,12 +56,10 @@ export class PitchTracker {
     return this.stream;
   }
 
-  /** Configure to use a pre-decoded buffer as the mic source. Call before start(). */
   prepareFakeMic(audioBuffer: AudioBuffer) {
     this.fakeMicBuffer = audioBuffer;
   }
 
-  /** Start the fake-mic playback. Call exactly once when the test should begin. */
   startFakeMicPlayback() {
     this.fakeSource?.start();
   }
@@ -55,19 +67,26 @@ export class PitchTracker {
   async start(): Promise<void> {
     if (this.analyser) return;
 
+    // Load the onset worklet module. Vite serves the worklet at workletUrl
+    // already bundled — onsetGate.ts is inlined into the worklet bundle.
+    await this.ctx.audioWorklet.addModule(workletUrl);
+
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = FFT_SIZE;
     this.buffer = new Float32Array(new ArrayBuffer(this.analyser.fftSize * 4));
 
+    this.workletNode = new AudioWorkletNode(this.ctx, "onset-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    this.workletNode.port.onmessage = (e) => this.handleOnsetMessage(e.data);
+
     if (this.fakeMicBuffer) {
-      // Test mode: feed the pre-decoded buffer through AnalyserNode without
-      // playing it to speakers. AnalyserNode alone doesn't cause the audio
-      // graph to actually pull samples from the source, so we also wire it
-      // through a zero-gain node to the destination — that forces the render
-      // thread to advance the source in real time without any audible output.
       this.fakeSource = this.ctx.createBufferSource();
       this.fakeSource.buffer = this.fakeMicBuffer;
       this.fakeSource.connect(this.analyser);
+      this.fakeSource.connect(this.workletNode);
       const silent = this.ctx.createGain();
       silent.gain.value = 0;
       this.fakeSource.connect(silent);
@@ -82,7 +101,15 @@ export class PitchTracker {
       });
       const source = this.ctx.createMediaStreamSource(this.stream);
       source.connect(this.analyser);
+      source.connect(this.workletNode);
     }
+
+    // Worklet output is unused but must connect somewhere or the node may
+    // be paused by the implementation. Route through a silent gain.
+    const sink = this.ctx.createGain();
+    sink.gain.value = 0;
+    this.workletNode.connect(sink);
+    sink.connect(this.ctx.destination);
 
     this.engine = new PitchEngine({
       sampleRate: this.ctx.sampleRate,
@@ -91,12 +118,21 @@ export class PitchTracker {
       latencyBiasSec: this.totalBias(),
     });
 
+    // Lightweight rAF only for the level meter — onset detection is in the
+    // worklet, pitch detection is scheduled per-onset.
     this.tick();
   }
 
   stop() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
+    if (this.sustainTimerId !== null) clearTimeout(this.sustainTimerId);
+    this.sustainTimerId = null;
+    if (this.workletNode) {
+      this.workletNode.port.onmessage = null;
+      this.workletNode.disconnect();
+    }
+    this.workletNode = null;
     this.analyser = null;
     this.buffer = null;
     this.engine = null;
@@ -104,19 +140,34 @@ export class PitchTracker {
 
   reset() {
     this.engine?.reset();
+    this.workletNode?.port.postMessage("reset");
   }
 
-  /**
-   * Optional. If set, returns 0..1 = "is a note expected at this audio time?".
-   * The engine relaxes thresholds when it's high.
-   */
+  /** Force-end the current note (e.g. on phase change out of "playing"). */
+  endActive(reason: "phase" | "silence" | "newOnset", time?: number) {
+    const evt = this.engine?.endActive(reason, time);
+    if (evt && evt.type === "noteEnd") {
+      this.endListeners.forEach((fn) => fn(evt.noteEnd));
+    }
+  }
+
   setBeatProximityProvider(fn: ((audioTime: number) => number) | null) {
     this.beatProximityProvider = fn;
   }
 
-  onPitch(fn: (r: PitchReading) => void) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+  onOnset(fn: (e: OnsetEvent) => void) {
+    this.onsetListeners.add(fn);
+    return () => this.onsetListeners.delete(fn);
+  }
+
+  onPitchUpdate(fn: (u: PitchUpdate) => void) {
+    this.pitchListeners.add(fn);
+    return () => this.pitchListeners.delete(fn);
+  }
+
+  onNoteEnd(fn: (e: NoteEnd) => void) {
+    this.endListeners.add(fn);
+    return () => this.endListeners.delete(fn);
   }
 
   onLevel(fn: (level: number) => void) {
@@ -124,26 +175,68 @@ export class PitchTracker {
     return () => this.levelListeners.delete(fn);
   }
 
+  /** Worklet posted an onset. Push it through the engine's dup-window check
+   *  and schedule the first pitch read. */
+  private handleOnsetMessage(msg: OnsetMessage) {
+    if (msg.type !== "onset" || !this.engine) return;
+    this.engine.setLatencyBias(this.totalBias());
+    const events = this.engine.acceptChunkOnset(msg.time, msg.rms);
+    this.publishEvents(events);
+    // Schedule the first pitch read once the buffer is dominated by post-
+    // attack audio. Sustain reads start cycling thereafter.
+    setTimeout(() => this.runPitchRead(), PITCH_DETECTION_DELAY_MS);
+    this.scheduleSustainRead();
+  }
+
+  /** Periodic pitch read while a note is active — drives bend updates and
+   *  silence-driven NoteEnds. Self-rescheduling. */
+  private scheduleSustainRead() {
+    if (this.sustainTimerId !== null) return;
+    const tick = () => {
+      this.sustainTimerId = null;
+      if (!this.engine) return;
+      this.runPitchRead();
+      // Keep sustain reads going while a note is active OR until the engine
+      // emits a NoteEnd (which it'll do on silence). We stop scheduling
+      // once the engine has no active note AND no awaiting-first-pitch.
+      if (this.engine && this.shouldKeepSustainPolling()) {
+        this.sustainTimerId = window.setTimeout(tick, SUSTAIN_PITCH_INTERVAL_MS);
+      }
+    };
+    this.sustainTimerId = window.setTimeout(tick, SUSTAIN_PITCH_INTERVAL_MS);
+  }
+
+  /** True if the engine still has an active note that needs sustain reads. */
+  private shouldKeepSustainPolling(): boolean {
+    return !!this.engine?.hasActiveNote();
+  }
+
+  private runPitchRead() {
+    if (!this.engine || !this.analyser || !this.buffer) return;
+    this.analyser.getFloatTimeDomainData(this.buffer);
+    const now = this.ctx.currentTime;
+    const beatProximity = this.beatProximityProvider?.(now) ?? 0;
+    const events = this.engine.detectPitch(this.buffer, now, { beatProximity });
+    this.publishEvents(events);
+  }
+
+  private publishEvents(events: EngineEvent[]) {
+    for (const e of events) {
+      if (e.type === "onset") this.onsetListeners.forEach((fn) => fn(e.onset));
+      else if (e.type === "pitch") this.pitchListeners.forEach((fn) => fn(e.pitch));
+      else this.endListeners.forEach((fn) => fn(e.noteEnd));
+    }
+  }
+
+  /** rAF-paced level meter only. Onset / pitch run off the worklet path. */
   private tick = () => {
     this.rafId = requestAnimationFrame(this.tick);
-    if (!this.analyser || !this.buffer || !this.engine) return;
+    if (!this.analyser || !this.buffer) return;
     this.analyser.getFloatTimeDomainData(this.buffer);
-
-    // Push current latency in case outputLatency changed since startup.
-    this.engine.setLatencyBias(this.totalBias());
-
-    // Cheap RMS for the title-screen mic-level pulse.
     let sumSq = 0;
     for (let i = 0; i < this.buffer.length; i++) sumSq += this.buffer[i] * this.buffer[i];
     const rms = Math.sqrt(sumSq / this.buffer.length);
     this.levelListeners.forEach((fn) => fn(rms));
-
-    const now = this.ctx.currentTime;
-    const beatProximity = this.beatProximityProvider?.(now) ?? 0;
-    const readings = this.engine.process(this.buffer, now, { beatProximity });
-    for (const r of readings) {
-      this.listeners.forEach((fn) => fn(r));
-    }
   };
 
   private totalBias() {

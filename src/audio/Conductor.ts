@@ -25,6 +25,12 @@ const LOOKAHEAD_SEC = 0.1;
 const COUNT_IN_BEATS = 4;
 const PLAY_BEATS = 16; // 4 measures × 4 beats
 
+/** ±window in seconds around an expected attack position. Shared with the
+ *  offline test bench so both callers use identical beat-proximity logic. */
+export const BEAT_PROXIMITY_WINDOW = 0.05;
+/** Beat subdivisions as fractions of a beat (1 = quarter, 0.5 = 8th, 1/3 = triplet 8th). */
+export const BEAT_PROXIMITY_SUBS_OF_BEAT = [1, 0.5, 1 / 3] as const;
+
 export class Conductor {
   private ctx: AudioContext;
   private master: GainNode;
@@ -134,7 +140,7 @@ export class Conductor {
   /**
    * 0..1 estimate of "is a note expected to start at this moment?". 1 right
    * on an expected attack position (quarter / eighth / triplet 8th), falling
-   * linearly to 0 at PROXIMITY_WINDOW away. Used by PitchEngine to relax
+   * linearly to 0 at BEAT_PROXIMITY_WINDOW away. Used by PitchEngine to relax
    * thresholds near expected positions, trading false positives at quiet
    * moments for lower latency at musical moments.
    */
@@ -146,17 +152,15 @@ export class Conductor {
     if (into < 0 || into > PLAY_BEATS * beatDur) return 0;
 
     let minDist = Infinity;
-    // Quarter, eighth, and triplet-eighth subdivisions. These are the
-    // positions a player is most likely to attack on.
-    for (const sub of [beatDur, beatDur / 2, beatDur / 3]) {
+    for (const frac of BEAT_PROXIMITY_SUBS_OF_BEAT) {
+      const sub = frac * beatDur;
       const closest = Math.round(into / sub) * sub;
       const dist = Math.abs(into - closest);
       if (dist < minDist) minDist = dist;
     }
 
-    const PROXIMITY_WINDOW = 0.05; // ±50ms
-    if (minDist >= PROXIMITY_WINDOW) return 0;
-    return 1 - minDist / PROXIMITY_WINDOW;
+    if (minDist >= BEAT_PROXIMITY_WINDOW) return 0;
+    return 1 - minDist / BEAT_PROXIMITY_WINDOW;
   }
 
   /**

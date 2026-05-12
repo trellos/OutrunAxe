@@ -36,6 +36,7 @@
         font-size: 12px;
         width: 70px;
       }
+      #controls select#source { width: 360px; }
       #controls button {
         background: #2a1145;
         color: #ff2bd6;
@@ -79,12 +80,13 @@
       <div id="status">initializing</div>
     </header>
     <div id="controls">
+      <label>source <select id="source"></select></label>
       <label>BPM <input id="bpm" type="number" value="90" min="40" max="200" /></label>
       <label>FFT
         <select id="fft">
           <option value="1024">1024</option>
-          <option value="2048">2048</option>
-          <option value="4096" selected>4096</option>
+          <option value="2048" selected>2048</option>
+          <option value="4096">4096</option>
         </select>
       </label>
       <label>algo

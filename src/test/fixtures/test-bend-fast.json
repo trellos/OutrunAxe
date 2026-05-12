@@ -1,0 +1,10 @@
+{
+  "description": "Four fast bends (immediate B → C, no hold before bend). Each starts ~2s apart. Boundary case — engine may catch B or C as the start pitch; no extras allowed.",
+  "expected": [
+    { "kind": "bend", "tSec": 2.112, "pitchClass": "B" },
+    { "kind": "bend", "tSec": 4.064, "pitchClass": "B" },
+    { "kind": "bend", "tSec": 6.080, "pitchClass": "B" },
+    { "kind": "bend", "tSec": 8.075, "pitchClass": "B" }
+  ],
+  "tolerance": { "timeSec": 0.18, "extras": 0, "allowPitchClasses": ["B", "C"] }
+}

@@ -1,0 +1,22 @@
+{
+  "description": "16 repeated A4 plucks at 120 BPM quarter-note tempo (~500ms gaps). Regression for over-suppression of legitimate same-pitch repeats.",
+  "expected": [
+    { "kind": "pluck", "tSec": 2.080, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 2.485, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 2.965, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 3.467, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 3.957, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 4.448, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 4.960, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 5.483, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 6.101, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 6.464, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 6.976, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 7.488, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 8.000, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 8.480, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 8.981, "pitchClass": "A" },
+    { "kind": "pluck", "tSec": 9.483, "pitchClass": "A" }
+  ],
+  "tolerance": { "timeSec": 0.18, "extras": 0 }
+}

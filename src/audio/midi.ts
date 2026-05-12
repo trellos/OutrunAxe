@@ -9,3 +9,8 @@ export function midiToName(midi: number): string {
   const octave = Math.floor(midi / 12) - 1;
   return `${name}${octave}`;
 }
+
+/** Pitch class only (no octave) — "C#", "F#", etc. */
+export function midiToPitchClass(midi: number): string {
+  return NOTE_NAMES[((midi % 12) + 12) % 12];
+}

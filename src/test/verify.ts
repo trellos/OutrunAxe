@@ -1,13 +1,12 @@
-// Automated test: run the engine against a recording and compare its output
-// against an expected note sequence. The bar is high — every expected note
-// must be detected with the correct pitch class AND each note's sustain must
-// extend up to the next note's onset (no gaps mid-note).
+// Automated tests: run the engine against a recording or synth signal and
+// compare its output against an expected note sequence.
 //
-// This is the single source of truth for "does the algorithm work?". If it
-// says FAIL, the algorithm is wrong; iterate. If it says PASS, the live game
-// will behave correctly on the same input.
+// Source of truth for "does the algorithm work?". If FAIL → iterate. If PASS
+// → the live game will produce the same events on the same input.
 
 import type { DetectedNote } from "./analyze";
+import type { SynthSignal } from "./synthesise";
+import { midiToPitchClass } from "../audio/midi";
 
 export interface ExpectedNote {
   /** Absolute time in the recording, seconds. */
@@ -28,11 +27,6 @@ export interface VerifyResult {
   details: string[];
 }
 
-const PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-
-function pitchClassFor(midi: number): string {
-  return PITCH_CLASSES[((midi % 12) + 12) % 12];
-}
 
 /**
  * Group consecutive same-pitch detections (one onset + its sustain
@@ -53,8 +47,12 @@ export function groupIntoNotes(detections: DetectedNote[]): DetectedSlot[] {
   const slots: DetectedSlot[] = [];
   let current: DetectedSlot | null = null;
   for (const d of detections) {
-    const pc = pitchClassFor(d.midi);
-    if (d.source === "onset" || !current || current.pitchClass !== pc) {
+    const pc = midiToPitchClass(d.midi);
+    // Split only on a real onset marker. A pitch-class change inside a single
+    // note is a bend — keep it inside the current slot. Onsets are the only
+    // source-of-truth for note boundaries (the engine emits a synthetic
+    // onset for hammer-ons / pull-offs precisely so this rule works).
+    if (d.source === "onset" || !current) {
       if (current) slots.push(current);
       current = {
         start: d.time,
@@ -195,4 +193,19 @@ export function referenceExpected(): ExpectedNote[] {
     });
   }
   return out;
+}
+
+/** Verify the engine's output against a synth signal's expected events. */
+export function verifySynth(
+  detections: DetectedNote[],
+  signal: SynthSignal,
+  opts: VerifyOptions = {},
+): VerifyResult {
+  // Synth signals don't define sustain expectations — disable that check.
+  return verify(detections, signal.expected, {
+    ...opts,
+    maxSustainGap: opts.maxSustainGap ?? Infinity,
+    recordingDurationSec:
+      opts.recordingDurationSec ?? signal.audio.length / signal.sampleRate,
+  });
 }

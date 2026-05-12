@@ -1,13 +1,17 @@
 import Phaser from "phaser";
 import type { Conductor, Phase } from "../audio/Conductor";
-import { PitchTracker, type PitchReading } from "../audio/PitchTracker";
+import {
+  PitchTracker,
+  type OnsetEvent,
+  type PitchUpdate,
+  type NoteEnd,
+} from "../audio/PitchTracker";
 import { AudioRecorder } from "../audio/AudioRecorder";
 import { colors } from "../ui/style";
-import { freqToMidi, midiToName } from "../audio/midi";
+import { midiToName } from "../audio/midi";
 
 interface InitData {
   conductor: Conductor;
-  bpm: number;
   tracker?: PitchTracker;
 }
 
@@ -26,16 +30,8 @@ function midiToNorm(midi: number): number {
   return Phaser.Math.Clamp((midi - MIN_MIDI) / (MAX_MIDI - MIN_MIDI), 0, 1);
 }
 
-// Active-note timeout. Set long because the engine's sustain emissions are
-// not strictly periodic — confidence-gating can skip emissions for a sizeable
-// fraction of a note's duration. Anything shorter than ~half a second
-// causes "false finalize" where a same-pitch sustain emission later creates
-// a NEW dot instead of extending the existing line. Real notes are bounded
-// by the next isNewNote=true onset, not by this timeout — this only serves
-// to drop a lingering active-note reference after extended silence.
-const NOTE_HOLD_TIMEOUT = 1.0;
-
 interface ActiveNote {
+  onsetId: number;
   midi: number;
   measure: number;
   startX: number;
@@ -43,14 +39,23 @@ interface ActiveNote {
   line: Phaser.GameObjects.Rectangle;
   lineGlow: Phaser.GameObjects.Rectangle;
   dot: Phaser.GameObjects.Container;
-  lastSeenAudioTime: number;
 }
 
 interface RuntimeSnapshot {
-  /** Every dot PlayScene drew, in order. This is the visual ground truth. */
+  /** Every dot PlayScene drew. Visual ground truth. */
   dots: Array<{ time: number; midi: number; name: string; measure: number }>;
-  /** Every emission received from the engine. */
-  emissions: Array<{ time: number; midi: number; name: string; isNewNote: boolean }>;
+  /** Every onset received from the engine. */
+  onsets: Array<{ id: number; time: number; energy: number; synthetic: boolean }>;
+  /** Every pitch update received from the engine. */
+  pitchUpdates: Array<{
+    onsetId: number;
+    time: number;
+    midi: number;
+    name: string;
+    status: "preliminary" | "settled";
+  }>;
+  /** Every note-end received from the engine. */
+  noteEnds: Array<{ onsetId: number; time: number; reason: string }>;
   phase: string;
   done: boolean;
 }
@@ -69,17 +74,19 @@ export class PlayScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private notesLayer!: Phaser.GameObjects.Container;
   private activeNote: ActiveNote | null = null;
+  /** Onsets received but waiting for their first PitchUpdate to materialise. */
+  private pendingOnsets = new Map<number, { time: number; x: number; measure: number }>();
   private offBeat?: () => boolean;
   private offPhase?: () => boolean;
-  private offPitch?: () => boolean;
+  private offOnset?: () => boolean;
+  private offPitchUpdate?: () => boolean;
+  private offNoteEnd?: () => boolean;
   private recorder: AudioRecorder | null = null;
   private recIndicator: Phaser.GameObjects.Container | null = null;
   private emissionLog: Array<{
     t: number;
-    freq: number;
-    midi: number;
-    name: string;
-    isNewNote: boolean;
+    kind: "onset" | "pitch" | "noteEnd";
+    payload: unknown;
   }> = [];
   private recStartAudioTime = 0;
 
@@ -90,10 +97,11 @@ export class PlayScene extends Phaser.Scene {
   init(data: InitData) {
     this.conductor = data.conductor;
     if (data.tracker) this.tracker = data.tracker;
-    // Reset runtime-test snapshot so each game starts fresh.
     window.__outrunRuntime = {
       dots: [],
-      emissions: [],
+      onsets: [],
+      pitchUpdates: [],
+      noteEnds: [],
       phase: "playing",
       done: false,
     };
@@ -105,7 +113,6 @@ export class PlayScene extends Phaser.Scene {
 
     this.drawHorizonGrid();
 
-    // 4 horizontal bars, stacked vertically.
     const margin = 60;
     const top = 80;
     const usable = height - top - 80;
@@ -123,7 +130,6 @@ export class PlayScene extends Phaser.Scene {
         .setStrokeStyle(2, colors.barStroke);
       this.bars.push(rect);
 
-      // Beat divider lines
       for (let b = 1; b < 4; b++) {
         const lineX = layout.x + (layout.w * b) / 4;
         this.add
@@ -157,9 +163,9 @@ export class PlayScene extends Phaser.Scene {
 
     const trackerPreStarted = !!this.tracker;
     if (!trackerPreStarted) this.tracker = new PitchTracker();
-    this.offPitch = this.tracker.onPitch((r) => this.onPitch(r));
-    // Feed beat proximity to the engine so it can emit sooner near expected
-    // attack positions (priority: rhythmic prior).
+    this.offOnset = this.tracker.onOnset((e) => this.onOnset(e));
+    this.offPitchUpdate = this.tracker.onPitchUpdate((u) => this.onPitchUpdate(u));
+    this.offNoteEnd = this.tracker.onNoteEnd((e) => this.onNoteEnd(e));
     this.tracker.setBeatProximityProvider((t) =>
       this.conductor.proximityToExpectedAttack(t),
     );
@@ -171,9 +177,6 @@ export class PlayScene extends Phaser.Scene {
       });
     }
 
-    // ?record=1 in the URL → capture the mic stream for the whole session and
-    // download it on completion. Drop the file into public/samples/ and point
-    // the test bench at it to iterate offline against your real input.
     if (new URLSearchParams(location.search).has("record")) {
       this.recorder = new AudioRecorder();
       this.recIndicator = this.makeRecIndicator(width / 2, 56);
@@ -189,27 +192,27 @@ export class PlayScene extends Phaser.Scene {
         bpm: this.conductor.currentBpm,
         capturedAt: new Date().toISOString(),
         recStartAudioTime: this.recStartAudioTime,
-        // Times in this log are RELATIVE to the start of the recording, so
-        // they align directly with the WebM timeline.
-        emissions: this.emissionLog,
+        events: this.emissionLog,
       },
       null,
       2,
     );
     const blob = new Blob([json], { type: "application/json" });
-    const ts = new Date()
-      .toISOString()
-      .replace(/[T:.]/g, "-")
-      .replace(/-\d{3}Z$/, "");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `outrun-axe-emissions-${ts}.json`;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      URL.revokeObjectURL(a.href);
-      a.remove();
-    }, 0);
+    triggerDownload(URL.createObjectURL(blob), `outrun-axe-emissions-${recordingTimestamp()}.json`);
+  }
+
+  /**
+   * Snapshot the Phaser canvas (bars + dots + lines as currently rendered) and
+   * download it as a PNG. Paired with the audio + emissions JSON so a debug
+   * artifact has audio + ground-truth detection events + visual side-by-side.
+   */
+  private downloadScreenshot() {
+    this.game.renderer.snapshot((image) => {
+      // Phaser passes an HTMLImageElement whose src is a data URL. Download
+      // directly via that — no canvas → blob round-trip needed.
+      if (!(image instanceof HTMLImageElement)) return;
+      triggerDownload(image.src, `outrun-axe-screen-${recordingTimestamp()}.png`);
+    });
   }
 
   private makeRecIndicator(x: number, y: number): Phaser.GameObjects.Container {
@@ -230,7 +233,12 @@ export class PlayScene extends Phaser.Scene {
 
   update() {
     this.refreshHighlight();
-    this.maybeFinalizeStaleNote();
+    // Extend the active note's line up to the current audio-clock time. No
+    // explicit timeout — notes end on explicit NoteEnd events from the
+    // engine (silence, phase change, or a new onset).
+    if (this.activeNote && this.conductor.currentPhase === "playing") {
+      this.extendActiveLineToNow();
+    }
   }
 
   private refreshHighlight() {
@@ -249,14 +257,7 @@ export class PlayScene extends Phaser.Scene {
   private onPhase(p: Phase) {
     if (p === "countIn") {
       this.statusText.setText("Count-in...");
-      // Runtime test mode: start the fake-mic playback now so its audio is
-      // aligned with the conductor's count-in (the recording was captured
-      // starting at count-in).
       this.tracker?.startFakeMicPlayback();
-
-      // Start recording from the count-in so the captured file includes any
-      // beep bleed and the lead-up to the first pluck — useful for debugging
-      // start-of-game issues.
       const stream = this.tracker?.mediaStream;
       if (this.recorder && stream) {
         this.recorder.start(stream);
@@ -266,115 +267,139 @@ export class PlayScene extends Phaser.Scene {
       }
     }
     else if (p === "playing") {
-      // Wipe any state PitchTracker accumulated from the count-in beeps —
-      // their pitches would otherwise pollute the octave-correction history
-      // and snap the player's first real note up an octave.
       this.tracker?.reset();
       this.statusText.setText("Play!");
     }
     else if (p === "done") {
-      this.finalizeActiveNote();
+      this.tracker?.endActive("phase", this.conductor.audioTime);
       this.statusText.setText("Done — press any key to restart");
-      // Runtime test marker.
       const runtime = window.__outrunRuntime;
       if (runtime) runtime.done = true;
       if (this.recorder) {
         void this.recorder.stopAndDownload();
         this.downloadEmissionLog();
+        this.downloadScreenshot();
         this.recIndicator?.setVisible(false);
       }
       const goBack = () => {
         this.conductor.stop();
         this.scene.start("StartScene");
       };
-      // Auto-return after 10s, but let the player skip ahead with any input.
       this.time.delayedCall(10000, goBack);
       this.input.keyboard?.once("keydown", goBack);
       this.input.once("pointerdown", goBack);
     }
   }
 
-  private onPitch(r: PitchReading) {
+  private onOnset(e: OnsetEvent) {
     if (this.conductor.currentPhase !== "playing") return;
-    // Use the onset-corrected timestamp (r.time) to pick the bar, so a note
-    // attacked just before a bar line still lands in the bar where it was
-    // played, not the next one. Sustain readings carry now() and naturally
-    // map to the current bar.
-    const measure = this.conductor.measureForTime(r.time);
+    const measure = this.conductor.measureForTime(e.time);
     if (measure < 0) return;
-
     const layout = this.barLayouts[measure];
     const measureStart = this.conductor.measureStartTime(measure);
     const measureDur = this.conductor.measureDuration();
-    const t = Phaser.Math.Clamp((r.time - measureStart) / measureDur, 0, 1);
+    const t = Phaser.Math.Clamp((e.time - measureStart) / measureDur, 0, 1);
     const x = layout.x + t * layout.w;
-    const midi = freqToMidi(r.freq);
 
-    // Runtime test: capture every emission, so a test can compare what the
-    // engine sent vs what PlayScene rendered.
-    const runtime = window.__outrunRuntime;
-    runtime?.emissions.push({
-      time: r.time,
-      midi,
-      name: midiToName(midi),
-      isNewNote: r.isNewNote,
+    this.pendingOnsets.set(e.id, { time: e.time, x, measure });
+
+    window.__outrunRuntime?.onsets.push({
+      id: e.id,
+      time: e.time,
+      energy: e.energy,
+      synthetic: e.synthetic,
     });
-
-    // When recording, log every emission so we can compare what the live
-    // algorithm actually emitted against what offline analysis sees in the
-    // captured WebM. The two should agree; if they don't, the divergence
-    // points at the recording fidelity (Opus compression) vs an algorithm
-    // bug.
     if (this.recorder) {
       this.emissionLog.push({
-        t: r.time - this.recStartAudioTime,
-        freq: r.freq,
-        midi,
-        name: midiToName(midi),
-        isNewNote: r.isNewNote,
+        t: e.time - this.recStartAudioTime,
+        kind: "onset",
+        payload: { id: e.id, energy: e.energy, synthetic: e.synthetic },
       });
-    }
-
-    // A reading marked isNewNote represents a fresh attack — even if the
-    // pitch matches the current note (re-pluck of the same string), we want
-    // a new dot, not a continuation.
-    //
-    // For sustain (isNewNote=false): if the active note's pitch matches,
-    // this is the SAME note as before — even if its sustain has crossed a
-    // measure boundary. Only the visible line lives in the active note's
-    // own measure; cross-measure sustain emissions just keep the note alive
-    // (no new dot) until the next real attack or stale-timeout.
-    const isContinuation =
-      !r.isNewNote &&
-      this.activeNote !== null &&
-      this.activeNote.midi === midi;
-    const inActiveMeasure =
-      this.activeNote !== null && this.activeNote.measure === measure;
-
-    if (isContinuation && this.activeNote) {
-      if (inActiveMeasure) {
-        this.extendActiveLine(x, r.time);
-      } else {
-        // Cross-measure sustain. Don't render — just keep the note alive so
-        // a later same-pitch sustain back in its own measure (or a real
-        // onset) is processed correctly.
-        this.activeNote.lastSeenAudioTime = r.time;
-      }
-    } else {
-      this.finalizeActiveNote();
-      this.startNewNote(midi, measure, x, layout, r.time);
     }
   }
 
+  private onPitchUpdate(u: PitchUpdate) {
+    if (this.conductor.currentPhase !== "playing") return;
+
+    window.__outrunRuntime?.pitchUpdates.push({
+      onsetId: u.onsetId,
+      time: u.time,
+      midi: u.midi,
+      name: u.name,
+      status: u.status,
+    });
+    if (this.recorder) {
+      this.emissionLog.push({
+        t: u.time - this.recStartAudioTime,
+        kind: "pitch",
+        payload: { onsetId: u.onsetId, midi: u.midi, name: u.name, status: u.status },
+      });
+    }
+
+    // First pitch for a pending onset → materialise the dot.
+    const pending = this.pendingOnsets.get(u.onsetId);
+    if (pending && u.status === "preliminary") {
+      this.pendingOnsets.delete(u.onsetId);
+      // Engine should have already emitted noteEnd for any previous note, but
+      // defensively finalise just in case.
+      this.activeNote = null;
+      this.startNewNote(u.onsetId, u.midi, pending.measure, pending.x, u.time);
+      return;
+    }
+
+    // Refinement / sustain update on the currently active note.
+    if (this.activeNote && this.activeNote.onsetId === u.onsetId) {
+      // Phase A: we don't visually refine yet (pitch labels stay as drawn).
+      // Phase B will update the dot's y-position for bends here.
+    }
+  }
+
+  private onNoteEnd(e: NoteEnd) {
+    window.__outrunRuntime?.noteEnds.push({
+      onsetId: e.onsetId,
+      time: e.time,
+      reason: e.reason,
+    });
+    if (this.recorder) {
+      this.emissionLog.push({
+        t: e.time - this.recStartAudioTime,
+        kind: "noteEnd",
+        payload: { onsetId: e.onsetId, reason: e.reason },
+      });
+    }
+    if (this.activeNote && this.activeNote.onsetId === e.onsetId) {
+      // Snap the line to the engine's noteEnd time before freezing. The
+      // worklet path delivers noteEnd events whose `time` may be in the
+      // past relative to conductor.audioTime (worklet-to-main-thread
+      // roundtrip latency), so the most-recent extendActiveLineToNow
+      // overshoots. Without this snap the line visibly extends past the
+      // start of the next note.
+      this.snapActiveLineToTime(e.time);
+      this.activeNote = null;
+    }
+    this.pendingOnsets.delete(e.onsetId);
+  }
+
+  private snapActiveLineToTime(time: number) {
+    if (!this.activeNote) return;
+    const layout = this.barLayouts[this.activeNote.measure];
+    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
+    const measureDur = this.conductor.measureDuration();
+    const t = Phaser.Math.Clamp((time - measureStart) / measureDur, 0, 1);
+    const xEnd = layout.x + t * layout.w;
+    const w = Math.max(0, xEnd - this.activeNote.startX);
+    this.activeNote.line.setSize(w, this.activeNote.line.height);
+    this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
+  }
+
   private startNewNote(
+    onsetId: number,
     midi: number,
     measure: number,
     x: number,
-    layout: BarLayout,
     time: number,
   ) {
-    // Snap y to the semitone position so the line is perfectly horizontal even
-    // if pitch wobbles slightly during the note.
+    const layout = this.barLayouts[measure];
     const y = layout.y + layout.h - midiToNorm(midi) * layout.h;
 
     const lineGlow = this.add
@@ -387,16 +412,14 @@ export class PlayScene extends Phaser.Scene {
       .setOrigin(0, 0.5);
     this.notesLayer.add(line);
 
-    const dot = this.makeNoteDot(x, y, midiToName(midi));
+    const name = midiToName(midi);
+    const dot = this.makeNoteDot(x, y, name);
     this.notesLayer.add(dot);
 
-    // Runtime test: every dot drawn is recorded here. This is the visual
-    // ground truth — if a test queries dot count it gets EXACTLY what
-    // PlayScene rendered.
-    const runtime = window.__outrunRuntime;
-    runtime?.dots.push({ time, midi, name: midiToName(midi), measure });
+    window.__outrunRuntime?.dots.push({ time, midi, name, measure });
 
     this.activeNote = {
+      onsetId,
       midi,
       measure,
       startX: x,
@@ -404,36 +427,23 @@ export class PlayScene extends Phaser.Scene {
       line,
       lineGlow,
       dot,
-      lastSeenAudioTime: time,
     };
   }
 
-  private extendActiveLine(x: number, time: number) {
+  private extendActiveLineToNow() {
     if (!this.activeNote) return;
-    const w = Math.max(0, x - this.activeNote.startX);
+    const layout = this.barLayouts[this.activeNote.measure];
+    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
+    const measureDur = this.conductor.measureDuration();
+    const t = Phaser.Math.Clamp(
+      (this.conductor.audioTime - measureStart) / measureDur,
+      0,
+      1,
+    );
+    const xNow = layout.x + t * layout.w;
+    const w = Math.max(0, xNow - this.activeNote.startX);
     this.activeNote.line.setSize(w, this.activeNote.line.height);
     this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
-    this.activeNote.lastSeenAudioTime = time;
-  }
-
-  private finalizeActiveNote() {
-    // The line stays where it is — it represents how long the note was held.
-    // Just drop the reference so the next reading starts fresh.
-    this.activeNote = null;
-  }
-
-  private maybeFinalizeStaleNote() {
-    if (!this.activeNote) return;
-    const audioTime = this.conductor.audioTime;
-    const aged = audioTime - this.activeNote.lastSeenAudioTime > NOTE_HOLD_TIMEOUT;
-    // Don't finalize on measure change — a note that sustains across a bar
-    // line is still the same note; we just don't extend its line into the
-    // new bar (handled in onPitch). Finalizing here would force the next
-    // sustain emission to start a fresh dot, defeating the cross-measure
-    // handling.
-    if (aged) {
-      this.finalizeActiveNote();
-    }
   }
 
   private makeNoteDot(x: number, y: number, label: string): Phaser.GameObjects.Container {
@@ -441,8 +451,6 @@ export class PlayScene extends Phaser.Scene {
     const glow = this.add.circle(0, 0, 22, colors.note, 0.22);
     c.add(glow);
     const fill = this.add.circle(0, 0, 14, colors.note, 1).setStrokeStyle(1, 0xffffff, 0.6);
-    // Dark text on bright cyan reads better than light text. Drop the octave
-    // suffix when 4+ chars (e.g. "G#3") would crowd the dot.
     const text = this.add
       .text(0, 0, label, {
         fontFamily: "monospace",
@@ -459,7 +467,6 @@ export class PlayScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const g = this.add.graphics();
     g.lineStyle(1, colors.beatLine, 0.25);
-    // Horizontal lines fanning toward a vanishing point at the top.
     const vanishY = -height * 0.3;
     const baseY = height + 20;
     for (let i = 0; i <= 12; i++) {
@@ -474,8 +481,30 @@ export class PlayScene extends Phaser.Scene {
   private cleanup() {
     this.offBeat?.();
     this.offPhase?.();
-    this.offPitch?.();
+    this.offOnset?.();
+    this.offPitchUpdate?.();
+    this.offNoteEnd?.();
     this.tracker.stop();
     this.activeNote = null;
+    this.pendingOnsets.clear();
   }
+}
+
+function recordingTimestamp(): string {
+  return new Date()
+    .toISOString()
+    .replace(/[T:.]/g, "-")
+    .replace(/-\d{3}Z$/, "");
+}
+
+function triggerDownload(href: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    if (href.startsWith("blob:")) URL.revokeObjectURL(href);
+    a.remove();
+  }, 0);
 }

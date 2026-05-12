@@ -2,6 +2,9 @@
 // PitchEngine the live PitchTracker uses, so results are guaranteed to match
 // what the live game would produce on the same audio (modulo cadence — see
 // note on tickStep).
+//
+// The engine now emits OnsetEvent/PitchUpdate/NoteEnd. This file converts
+// them back to a flat `DetectedNote[]` for the test bench UI / verifier.
 
 import { PitchEngine, type Algorithm } from "../audio/PitchEngine";
 import { freqToMidi, midiToName } from "../audio/midi";
@@ -53,21 +56,34 @@ export function analyze(
   const buffer = new Float32Array(fftSize);
   const out: DetectedNote[] = [];
 
+  // Track current onset id so PitchUpdates without a paired OnsetEvent (e.g.
+  // continuation reads) can still be rendered.
+  let lastOnsetTime = 0;
+
   for (let cursor = fftSize; cursor <= samples.length; cursor += step) {
     buffer.set(samples.subarray(cursor - fftSize, cursor));
     const tickTime = cursor / sampleRate;
 
     const beatProximity = opts.beatProximityProvider?.(tickTime) ?? 0;
-    const readings = engine.process(buffer, tickTime, { beatProximity });
-    for (const r of readings) {
-      const midi = freqToMidi(r.freq);
-      out.push({
-        time: r.time,
-        freq: r.freq,
-        midi,
-        name: midiToName(midi),
-        source: r.isNewNote ? "onset" : "fallback",
-      });
+    const events = engine.process(buffer, tickTime, { beatProximity });
+    for (const e of events) {
+      if (e.type === "onset") {
+        lastOnsetTime = e.onset.time;
+      } else if (e.type === "pitch") {
+        const midi = freqToMidi(e.pitch.freq);
+        out.push({
+          // For a preliminary pitch (the first reading of a new note), use
+          // the onset time so the dot anchors at the attack. Subsequent
+          // settled readings use their own time.
+          time: e.pitch.status === "preliminary" ? lastOnsetTime : e.pitch.time,
+          freq: e.pitch.freq,
+          midi,
+          name: midiToName(midi),
+          source: e.pitch.status === "preliminary" ? "onset" : "fallback",
+        });
+      }
+      // noteEnd events are dropped here — the test bench doesn't render them
+      // as DetectedNotes. The verifier consumes them separately if needed.
     }
   }
 
@@ -75,22 +91,13 @@ export function analyze(
 }
 
 /**
- * Per-tick trace for diagnosis. Bypasses the engine's gates — runs a *second*
- * pass over the audio with a fresh detector, mirroring the engine's setup but
- * returning what YIN/Macleod sees at every tick.
- *
- * Used only by the test bench UI; not part of the live path.
+ * Per-tick trace for diagnosis. Bypasses the engine — just dumps per-tick RMS.
  */
 export function analyzeRaw(
   samples: Float32Array,
-  sampleRate: number,
+  _sampleRate: number,
   opts: AnalyzeOptions = {},
 ): RawTick[] {
-  // Lightweight raw view: just dump per-tick RMS + the engine's emissions
-  // mapped back to their tick. The detailed YIN/Macleod-by-tick trace from
-  // the prior implementation was useful during diagnosis but is no longer
-  // worth maintaining a second algorithm path for. If we need it again, add
-  // an introspection hook on PitchEngine instead.
   const fftSize = opts.fftSize ?? 2048;
   const step = opts.tickStep ?? 512;
   const buffer = new Float32Array(fftSize);
@@ -98,7 +105,7 @@ export function analyzeRaw(
   const out: RawTick[] = [];
   for (let cursor = fftSize; cursor <= samples.length; cursor += step) {
     buffer.set(samples.subarray(cursor - fftSize, cursor));
-    const time = cursor / sampleRate;
+    const time = cursor / _sampleRate;
 
     let sumSq = 0;
     for (let i = 0; i < buffer.length; i++) sumSq += buffer[i] * buffer[i];

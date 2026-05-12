@@ -131,10 +131,13 @@ export class StartScene extends Phaser.Scene {
     });
 
     if (autoPlay) {
-      // Give time for fakeMic decode and the conductor's preroll to settle.
-      this.time.delayedCall(800, () => {
-        trackerStart.then(() => this.startGame()).catch(() => {});
-      });
+      // setTimeout (not Phaser's time.delayedCall) so the runtime test works
+      // in environments where rAF is throttled (e.g. headless previews).
+      setTimeout(() => {
+        trackerStart
+          .then(() => this.startGame())
+          .catch((err) => console.error("[autoPlay]", err));
+      }, 800);
     }
 
     this.offBeat = this.conductor.onBeat((info) => {
@@ -327,7 +330,6 @@ export class StartScene extends Phaser.Scene {
     this.offLevel?.();
     this.scene.start("PlayScene", {
       conductor: this.conductor,
-      bpm: this.bpm,
       tracker: this.tracker,
     });
   }
