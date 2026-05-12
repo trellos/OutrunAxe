@@ -308,8 +308,12 @@ export class PlayScene extends Phaser.Scene {
     const measure = this.conductor.measureForTime(e.time);
     if (measure < 0) return;
     const layout = this.barLayouts[measure];
-    const measureStart = this.conductor.measureStartTime(measure);
+    let measureStart = this.conductor.measureStartTime(measure);
     const measureDur = this.conductor.measureDuration();
+    const beatDur = 60 / this.conductor.currentBpm;
+    if (measure === 0) {
+      measureStart -= beatDur / 16;
+    }
     const t = Phaser.Math.Clamp((e.time - measureStart) / measureDur, 0, 1);
     const x = layout.x + t * layout.w;
 
@@ -441,8 +445,12 @@ export class PlayScene extends Phaser.Scene {
     const last = this.activeNote.points[this.activeNote.points.length - 1];
     if (last && last.midi === midi) return; // no change worth recording
     const layout = this.barLayouts[this.activeNote.measure];
-    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
+    let measureStart = this.conductor.measureStartTime(this.activeNote.measure);
     const measureDur = this.conductor.measureDuration();
+    const beatDur = 60 / this.conductor.currentBpm;
+    if (this.activeNote.measure === 0) {
+      measureStart -= beatDur / 16;
+    }
     const t = Phaser.Math.Clamp((time - measureStart) / measureDur, 0, 1);
     const x = layout.x + t * layout.w;
     const y = layout.y + layout.h - midiToNorm(midi) * layout.h;
@@ -458,8 +466,12 @@ export class PlayScene extends Phaser.Scene {
   private redrawActiveLine(endTime: number) {
     if (!this.activeNote) return;
     const layout = this.barLayouts[this.activeNote.measure];
-    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
+    let measureStart = this.conductor.measureStartTime(this.activeNote.measure);
     const measureDur = this.conductor.measureDuration();
+    const beatDur = 60 / this.conductor.currentBpm;
+    if (this.activeNote.measure === 0) {
+      measureStart -= beatDur / 16;
+    }
     const t = Phaser.Math.Clamp((endTime - measureStart) / measureDur, 0, 1);
     const xEnd = layout.x + t * layout.w;
     const points = this.activeNote.points;
