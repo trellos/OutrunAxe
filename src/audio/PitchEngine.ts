@@ -337,10 +337,13 @@ export class PitchEngine {
 
     const cents = this.lastFreq > 0 ? 1200 * Math.log2(freq / this.lastFreq) : Infinity;
 
-    // Tentative onset deferred for string-settle check. Run pitch detection;
-    // if it matches the last emitted note's pitch class, drop the tentative
-    // entirely. Otherwise promote it to a real onset and emit OnsetEvent +
-    // PitchUpdate together.
+    // Tentative onset deferred for string-settle / slide check. Run pitch
+    // detection; drop the tentative if the new pitch class matches the last
+    // emitted (string-settle artefact) OR is exactly one semitone away
+    // (Bug 5: a sliding finger between adjacent scale notes momentarily
+    // sounds the chromatic in-between pitch — F→F#→G, A→A#→B, etc. Real
+    // 8th-note scale plays sit OUTSIDE the dup window so the legitimate
+    // step still fires; only mid-slide reads inside the window are killed.)
     if (this.pendingDuplicateOnset) {
       if (audioTime - this.pendingDuplicateOnset.time < PITCH_DETECTION_DELAY) return out;
 
@@ -348,8 +351,10 @@ export class PitchEngine {
       const samePitch =
         this.lastEmittedNoteMidi >= 0 &&
         ((newMidi % 12) + 12) % 12 === ((this.lastEmittedNoteMidi % 12) + 12) % 12;
-      if (samePitch) {
-        // String-settle artefact — drop without emitting anything.
+      const chromaticNeighbor =
+        this.lastEmittedNoteMidi >= 0 &&
+        Math.abs(newMidi - this.lastEmittedNoteMidi) === 1;
+      if (samePitch || chromaticNeighbor) {
         this.pendingDuplicateOnset = null;
         return out;
       }

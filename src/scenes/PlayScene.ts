@@ -30,14 +30,26 @@ function midiToNorm(midi: number): number {
   return Phaser.Math.Clamp((midi - MIN_MIDI) / (MAX_MIDI - MIN_MIDI), 0, 1);
 }
 
+interface BendPoint {
+  /** x in screen space — derived from audio time at the moment we appended. */
+  x: number;
+  /** y in screen space — derived from the midi value at the moment. */
+  y: number;
+  /** midi at this vertex, used to detect changes worth appending a new vertex. */
+  midi: number;
+}
+
 interface ActiveNote {
   onsetId: number;
-  midi: number;
   measure: number;
   startX: number;
-  y: number;
-  line: Phaser.GameObjects.Rectangle;
-  lineGlow: Phaser.GameObjects.Rectangle;
+  /** Polyline vertices. Drawn point→point with a horizontal extension from
+   *  the last vertex to the current audio time at the last vertex's y.
+   *  A simple plucked note has just the start vertex; bends accumulate
+   *  vertices as pitch changes. */
+  points: BendPoint[];
+  line: Phaser.GameObjects.Graphics;
+  lineGlow: Phaser.GameObjects.Graphics;
   dot: Phaser.GameObjects.Container;
 }
 
@@ -347,10 +359,12 @@ export class PlayScene extends Phaser.Scene {
       return;
     }
 
-    // Refinement / sustain update on the currently active note.
+    // Refinement / sustain update on the currently active note. If the
+    // engine reports a different midi (a bend), append a polyline vertex
+    // at this time/pitch — the next redraw will draw a diagonal segment
+    // from the previous vertex up/down to the new pitch.
     if (this.activeNote && this.activeNote.onsetId === u.onsetId) {
-      // Phase A: we don't visually refine yet (pitch labels stay as drawn).
-      // Phase B will update the dot's y-position for bends here.
+      this.appendBendPoint(u.midi, u.time);
     }
   }
 
@@ -381,15 +395,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private snapActiveLineToTime(time: number) {
-    if (!this.activeNote) return;
-    const layout = this.barLayouts[this.activeNote.measure];
-    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
-    const measureDur = this.conductor.measureDuration();
-    const t = Phaser.Math.Clamp((time - measureStart) / measureDur, 0, 1);
-    const xEnd = layout.x + t * layout.w;
-    const w = Math.max(0, xEnd - this.activeNote.startX);
-    this.activeNote.line.setSize(w, this.activeNote.line.height);
-    this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
+    this.redrawActiveLine(time);
   }
 
   private startNewNote(
@@ -402,14 +408,10 @@ export class PlayScene extends Phaser.Scene {
     const layout = this.barLayouts[measure];
     const y = layout.y + layout.h - midiToNorm(midi) * layout.h;
 
-    const lineGlow = this.add
-      .rectangle(x, y, 0, 14, colors.note, 0.18)
-      .setOrigin(0, 0.5);
+    const lineGlow = this.add.graphics();
     this.notesLayer.add(lineGlow);
 
-    const line = this.add
-      .rectangle(x, y, 0, 4, colors.note, 1)
-      .setOrigin(0, 0.5);
+    const line = this.add.graphics();
     this.notesLayer.add(line);
 
     const name = midiToName(midi);
@@ -420,30 +422,61 @@ export class PlayScene extends Phaser.Scene {
 
     this.activeNote = {
       onsetId,
-      midi,
       measure,
       startX: x,
-      y,
+      points: [{ x, y, midi }],
       line,
       lineGlow,
       dot,
     };
+    this.redrawActiveLine(this.conductor.audioTime);
+  }
+
+  /** A sustain pitch reading came in for the active note. If the midi
+   *  changed since the last vertex, append a new vertex at the current x
+   *  and the new y. The result: a polyline that goes diagonally up to the
+   *  bent pitch and then horizontally at the new pitch. */
+  private appendBendPoint(midi: number, time: number) {
+    if (!this.activeNote) return;
+    const last = this.activeNote.points[this.activeNote.points.length - 1];
+    if (last && last.midi === midi) return; // no change worth recording
+    const layout = this.barLayouts[this.activeNote.measure];
+    const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
+    const measureDur = this.conductor.measureDuration();
+    const t = Phaser.Math.Clamp((time - measureStart) / measureDur, 0, 1);
+    const x = layout.x + t * layout.w;
+    const y = layout.y + layout.h - midiToNorm(midi) * layout.h;
+    this.activeNote.points.push({ x, y, midi });
   }
 
   private extendActiveLineToNow() {
+    this.redrawActiveLine(this.conductor.audioTime);
+  }
+
+  /** Redraw the polyline from points[] plus a horizontal extension to
+   *  `endTime` at the last vertex's y. Called every frame and at noteEnd. */
+  private redrawActiveLine(endTime: number) {
     if (!this.activeNote) return;
     const layout = this.barLayouts[this.activeNote.measure];
     const measureStart = this.conductor.measureStartTime(this.activeNote.measure);
     const measureDur = this.conductor.measureDuration();
-    const t = Phaser.Math.Clamp(
-      (this.conductor.audioTime - measureStart) / measureDur,
-      0,
-      1,
-    );
-    const xNow = layout.x + t * layout.w;
-    const w = Math.max(0, xNow - this.activeNote.startX);
-    this.activeNote.line.setSize(w, this.activeNote.line.height);
-    this.activeNote.lineGlow.setSize(w, this.activeNote.lineGlow.height);
+    const t = Phaser.Math.Clamp((endTime - measureStart) / measureDur, 0, 1);
+    const xEnd = layout.x + t * layout.w;
+    const points = this.activeNote.points;
+    const last = points[points.length - 1];
+    const xClamped = Math.max(xEnd, last.x);
+
+    const drawPath = (g: Phaser.GameObjects.Graphics, width: number, alpha: number) => {
+      g.clear();
+      g.lineStyle(width, colors.note, alpha);
+      g.beginPath();
+      g.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) g.lineTo(points[i].x, points[i].y);
+      g.lineTo(xClamped, last.y);
+      g.strokePath();
+    };
+    drawPath(this.activeNote.lineGlow, 14, 0.18);
+    drawPath(this.activeNote.line, 4, 1);
   }
 
   private makeNoteDot(x: number, y: number, label: string): Phaser.GameObjects.Container {
