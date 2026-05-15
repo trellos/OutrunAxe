@@ -1,16 +1,15 @@
-import Phaser from "phaser";
-import { StartScene } from "./scenes/StartScene";
-import { PlayScene } from "./scenes/PlayScene";
-import { colors } from "./ui/style";
+import "./style.css";
+import { Game } from "./engine/Game";
+import { BootState } from "./states/BootState";
 
-new Phaser.Game({
-  type: Phaser.AUTO,
-  parent: "game",
-  backgroundColor: colors.bg,
-  scale: {
-    mode: Phaser.Scale.RESIZE,
-    width: window.innerWidth,
-    height: window.innerHeight,
-  },
-  scene: [StartScene, PlayScene],
-});
+const root = document.getElementById("game");
+if (!root) throw new Error("missing #game");
+
+const hud = document.createElement("div");
+hud.id = "hud";
+document.body.appendChild(hud);
+
+const game = new Game(root);
+(window as unknown as { __game: Game }).__game = game;
+game.setState(new BootState(hud));
+game.start();
