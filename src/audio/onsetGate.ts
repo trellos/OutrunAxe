@@ -57,6 +57,12 @@ export interface OnsetState {
   localMin: number;
   /** Previous chunk's RMS — used for the sharp-rise check. */
   prevChunkRms: number;
+  /** True if any chunk since the last accepted onset dropped below the
+   *  silence floor. Lets the energy-ratio gate relax: real new attacks
+   *  after a clean silence gap are accepted even if quietly played, while
+   *  body-fluctuation false positives (no silence between) still get
+   *  filtered by the strict ratio. Reset to false on each accepted onset. */
+  silenceSinceLastOnset: boolean;
 }
 
 export function newOnsetState(): OnsetState {
@@ -65,6 +71,7 @@ export function newOnsetState(): OnsetState {
     lastOnsetChunkRms: 0,
     localMin: Infinity,
     prevChunkRms: 0,
+    silenceSinceLastOnset: false,
   };
 }
 
@@ -86,8 +93,9 @@ export function onsetGate(
   // this guard, scans whose buffer still spans pre-attack silence pull
   // localMin down to ~0 — which trivially satisfies DECAY_REQUIRED and lets
   // mid-body fluctuations fire as onsets.
-  if (chunkEndTime > state.lastOnsetTime && chunkRms < state.localMin) {
-    state.localMin = chunkRms;
+  if (chunkEndTime > state.lastOnsetTime) {
+    if (chunkRms < state.localMin) state.localMin = chunkRms;
+    if (chunkRms < ONSET_MIN_RMS) state.silenceSinceLastOnset = true;
   }
 
   // Seed prevRms so the first chunk after silence (no predecessor) can pass
@@ -111,8 +119,13 @@ export function onsetGate(
   const decayedEnough =
     state.lastOnsetChunkRms === 0 ||
     state.localMin <= state.lastOnsetChunkRms * DECAY_REQUIRED;
+  // Energy-ratio gate is strict for body fluctuations (no silence since the
+  // last accepted onset) but relaxes when the previous note's body has
+  // decayed to silence — at that point a quietly-played fresh pluck is
+  // legitimately distinguishable from a mid-body bump.
   const energyEnough =
     state.lastOnsetChunkRms === 0 ||
+    state.silenceSinceLastOnset ||
     chunkRms >= state.lastOnsetChunkRms * ONSET_ENERGY_FLOOR_RATIO;
   if (!decayedEnough || !energyEnough) return false;
 
@@ -120,6 +133,7 @@ export function onsetGate(
   state.lastOnsetTime = chunkStartTime;
   state.lastOnsetChunkRms = chunkRms;
   state.localMin = chunkRms;
+  state.silenceSinceLastOnset = false;
   return true;
 }
 

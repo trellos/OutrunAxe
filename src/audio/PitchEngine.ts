@@ -116,6 +116,15 @@ const BEND_RATE_THRESHOLD = 1500;
 // same-pitch repeats inside this window are also suppressed.
 const DUPLICATE_ONSET_WINDOW = 0.25;
 
+// Tighter window for the chromatic-neighbor (slide) suppression. A fretboard
+// slide between adjacent scale tones momentarily sounds the in-between pitch
+// (F→F#→G, A→A#→B). The slide artefact lands within ~180 ms; legit 120 BPM
+// 8ths have a 250 ms target interval (actual gaps land in 200–300 ms in
+// practice) so they stay clear of this gate. At faster tempos (e.g. 16ths
+// at 140 BPM = 107 ms) a real half-step would fall inside this window and
+// get suppressed — known limitation.
+const SLIDE_NEIGHBOR_WINDOW = 0.18;
+
 interface DetectorResult {
   freq: number;
   probability: number;
@@ -348,12 +357,18 @@ export class PitchEngine {
       if (audioTime - this.pendingDuplicateOnset.time < PITCH_DETECTION_DELAY) return out;
 
       const newMidi = freqToMidi(freq);
+      const gapSinceLast =
+        this.pendingDuplicateOnset.time - this.lastEmittedNoteTime;
       const samePitch =
         this.lastEmittedNoteMidi >= 0 &&
         ((newMidi % 12) + 12) % 12 === ((this.lastEmittedNoteMidi % 12) + 12) % 12;
+      // Slide suppression is tighter than the string-settle window so we
+      // don't accidentally drop legitimate half-step scale steps at typical
+      // 8th-note tempos.
       const chromaticNeighbor =
         this.lastEmittedNoteMidi >= 0 &&
-        Math.abs(newMidi - this.lastEmittedNoteMidi) === 1;
+        Math.abs(newMidi - this.lastEmittedNoteMidi) === 1 &&
+        gapSinceLast < SLIDE_NEIGHBOR_WINDOW;
       if (samePitch || chromaticNeighbor) {
         this.pendingDuplicateOnset = null;
         return out;
