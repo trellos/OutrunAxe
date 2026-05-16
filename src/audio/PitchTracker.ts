@@ -175,6 +175,19 @@ export class PitchTracker {
     return () => this.levelListeners.delete(fn);
   }
 
+  emitSyntheticNote(midi: number, audioTime: number) {
+    const u: PitchUpdate = {
+      onsetId: -Math.floor(Math.random() * 1e9),
+      time: audioTime,
+      freq: 440 * Math.pow(2, (midi - 69) / 12),
+      midi,
+      name: "",
+      confidence: 1,
+      status: "settled",
+    };
+    this.pitchListeners.forEach((fn) => fn(u));
+  }
+
   /** Worklet posted an onset. Push it through the engine's dup-window check
    *  and schedule the first pitch read. */
   private handleOnsetMessage(msg: OnsetMessage) {

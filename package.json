@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "phaser": "^3.80.1",
-    "pitchfinder": "^2.3.2"
+    "@types/three": "^0.184.1",
+    "pitchfinder": "^2.3.2",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "typescript": "^5.4.5",
