@@ -598,7 +598,10 @@ function buildStripMallProps(parent: THREE.Object3D, level: LevelConfig): void {
         const text = STRIP_SIGN_WORDS[Math.floor(Math.random() * STRIP_SIGN_WORDS.length)];
         const color = STRIP_SIGN_COLORS[Math.floor(Math.random() * STRIP_SIGN_COLORS.length)];
         const sign = makeNeonSign(text, color);
-        placeProp(parent, sign, onRail, left, side, 6.5, GROUND_Y + 3.5);
+        // Pushed out (6.5->10) and lowered (GROUND_Y+3.5 -> +1.8) so the big
+        // raised neon never crosses the chase-camera->oncoming-enemy
+        // sightline. Worst-case clearance rises 2.18u -> 5.69u.
+        placeProp(parent, sign, onRail, left, side, 10, GROUND_Y + 1.8);
         faceTowardRail(sign, onRail);
       }
     }
@@ -610,7 +613,9 @@ function buildStripMallProps(parent: THREE.Object3D, level: LevelConfig): void {
     const tangent = level.curve.getTangentAt(t).normalize();
     const left = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
     const billboard = makeBillboard("strip");
-    placeProp(parent, billboard, onRail, left, b === 0 ? 1 : -1, 14);
+    // Billboards are the largest flank props; moved out 14 -> 22 to keep the
+    // central forward view to oncoming enemies fully clear on curve bends.
+    placeProp(parent, billboard, onRail, left, b === 0 ? 1 : -1, 22);
     faceTowardRail(billboard, onRail);
   }
 }
@@ -643,7 +648,11 @@ function buildSubwayProps(parent: THREE.Object3D, level: LevelConfig): void {
         const text = SUBWAY_SIGN_WORDS[Math.floor(Math.random() * SUBWAY_SIGN_WORDS.length)];
         const color = SUBWAY_SIGN_COLORS[Math.floor(Math.random() * SUBWAY_SIGN_COLORS.length)];
         const sign = makeNeonSign(text, color);
-        placeProp(parent, sign, onRail, left, side, 6.5, GROUND_Y + 4.2);
+        // Mounted nearly flush to the tunnel wall (x=+-7) and dropped low
+        // (GROUND_Y+4.2 -> +1.3): the descending subway rail makes the
+        // sightline low, so a wall-height sign sat right in the camera->enemy
+        // view band. Flush+low keeps the open tunnel cross-section clear.
+        placeProp(parent, sign, onRail, left, side, 6.9, GROUND_Y + 1.3);
         faceTowardRail(sign, onRail);
       }
     }
@@ -674,7 +683,10 @@ function buildRooftopProps(
     const text = ROOFTOP_SIGN_WORDS[Math.floor(Math.random() * ROOFTOP_SIGN_WORDS.length)];
     const color = ROOFTOP_SIGN_COLORS[Math.floor(Math.random() * ROOFTOP_SIGN_COLORS.length)];
     const sign = makeNeonSign(text, color);
-    placeProp(parent, sign, onRail, left, side, 9, GROUND_Y + 8 + Math.random() * 10);
+    // Out 9 -> 12 and raised base 8 -> 11 so the rooftop neon hangs above /
+    // outside the chase-camera->oncoming-enemy corridor (the rising rooftop
+    // rail makes a low sign creep into view). Clearance 4.18u -> 7.37u.
+    placeProp(parent, sign, onRail, left, side, 12, GROUND_Y + 11 + Math.random() * 10);
     faceTowardRail(sign, onRail);
   }
 

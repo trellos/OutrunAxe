@@ -3,13 +3,16 @@ import type { PitchTracker } from "../audio/PitchTracker";
 import { BarAccumulator } from "./noteBars";
 
 const ROWS = 3;
-const BEATS_PER_ROW = 16;
-const PX_PER_BEAT = 36;
-const ROW_HEIGHT = 56;
+// One row == exactly one 4-beat measure. Widened PX_PER_BEAT keeps the row a
+// similar on-screen width (~576px) to the old 16-beat row.
+const BEATS_PER_ROW = 4;
+const PX_PER_BEAT = 144;
+// Compact rows so the 3-row stack fits inside the top ≤25vh band.
+const ROW_HEIGHT = 26;
 const MIDI_MIN = 40;
 const MIDI_MAX = 76;
-const BAND_HEIGHT = 6;
-const COUNT_IN_BEATS = 4;
+// Thin horizontal segment at the note's pitch-y, not a tall block.
+const BAND_HEIGHT = 3;
 // Brief bright pulse fades over this window after its beat fires.
 const PULSE_FADE_MS = 150;
 
@@ -88,15 +91,16 @@ export class Timeline {
       }
       if (info.phase !== "playing") return;
       if (info.beatInPhase !== 0) return;
-      const phraseIdx = Math.floor(info.measureInPlay / 4);
+      // One row == one play measure. measureStart tracks the play measure
+      // index 0..3 directly.
+      const measureIdx = info.measureInPlay;
       const targetRow = ROWS - 1;
-      const measureStartOfRow = phraseIdx * 4;
-      // Only (re)allocate + redraw a row when the phrase actually changes.
+      // Only (re)allocate + redraw a row when the measure actually changes.
       // shiftRowsUp() redraws the fresh bottom row's grid. Calling drawGrid()
       // every downbeat would clearRect() the canvas and wipe the notes the
-      // player already played this phrase.
-      if (this.rows[targetRow].measureStart !== measureStartOfRow) {
-        this.shiftRowsUp(measureStartOfRow);
+      // player already played this measure.
+      if (this.rows[targetRow].measureStart !== measureIdx) {
+        this.shiftRowsUp(measureIdx);
       }
     });
 
@@ -140,9 +144,13 @@ export class Timeline {
     if (row.measureStart < -1) return;
     if (row.measureStart === -1 && this.countInStart < 0) return;
 
+    // A row is always exactly 4 beats (count-in measure or play measure), so
+    // beat N of the recorded measure maps to the Nth vertical grid line at
+    // x = N*PX_PER_BEAT. Track the ACTUAL conductor clock vs the active row
+    // origin so the pulse moves left→right in lockstep with the metronome.
     const beatDur = 60 / this.bpm;
     const rowStartTime = this.rowStartTime(row.measureStart);
-    const totalBeats = row.measureStart === -1 ? COUNT_IN_BEATS : BEATS_PER_ROW;
+    const totalBeats = BEATS_PER_ROW;
     const into = this.conductor.audioTime - rowStartTime;
     if (into < 0 || into > totalBeats * beatDur) return;
 
@@ -225,15 +233,19 @@ export class Timeline {
     const row = this.rows[this.activeRow];
     if (row.measureStart < -1) return;
     if (row.measureStart === -1 && this.countInStart < 0) return;
+    // Row is always exactly 4 beats (count-in measure or play measure).
     const beatDur = 60 / this.bpm;
     const rowStartTime = this.rowStartTime(row.measureStart);
-    const rowSpan =
-      (row.measureStart === -1 ? COUNT_IN_BEATS : BEATS_PER_ROW) * beatDur;
+    const rowSpan = BEATS_PER_ROW * beatDur;
     const into = audioTime - rowStartTime;
     if (into < 0 || into > rowSpan) return;
-    const x = (into / beatDur) * PX_PER_BEAT;
+    // Clamp the placed time into [0, 4*beatDur] so a note on beat 1/2/3/4
+    // lands centred on column 0/1/2/3 and never spills past the row edge.
+    const clamped = Math.max(0, Math.min(BEATS_PER_ROW * beatDur, into));
+    const x = (clamped / beatDur) * PX_PER_BEAT;
     const norm = Math.max(0, Math.min(1, (midi - MIDI_MIN) / (MIDI_MAX - MIDI_MIN)));
-    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 8) - 4;
+    const pad = Math.min(4, ROW_HEIGHT / 4);
+    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 2 * pad) - pad;
     const ctx = row.ctx;
     ctx.fillStyle = "#00f0ff";
 

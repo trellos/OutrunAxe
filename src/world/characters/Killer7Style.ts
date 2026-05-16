@@ -97,12 +97,54 @@ export function buildK7Guitar(guitar: GuitarId): {
   const group = new THREE.Group();
   const mats: THREE.Material[] = [];
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.34, 0.1), k7Mat(c.body));
-  part(group, body, mats, { outlineScale: 1.06 });
-
-  const bevel = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.3, 0.06), k7Mat(c.body));
-  group.add(bevel);
-  mats.push(bevel.material as THREE.Material);
+  // Per-guitar body silhouette as a flat extruded profile in the X/Y plane.
+  // +X = toward the neck join, so each outline keeps the same mount/scale.
+  const bodyShape = new THREE.Shape();
+  if (guitar === "blackstrat") {
+    // Stratocaster: double-cutaway, two horns by the neck (upper horn
+    // longer), slight offset waist.
+    bodyShape.moveTo(0.30, 0.00); // neck join
+    bodyShape.lineTo(0.30, 0.20); // base of upper horn
+    bodyShape.quadraticCurveTo(0.34, 0.30, 0.22, 0.30); // long upper horn tip
+    bodyShape.quadraticCurveTo(0.02, 0.27, -0.10, 0.20); // upper bout
+    bodyShape.quadraticCurveTo(-0.34, 0.12, -0.34, -0.04); // round lower bout
+    bodyShape.quadraticCurveTo(-0.32, -0.22, -0.10, -0.24); // bottom
+    bodyShape.quadraticCurveTo(0.06, -0.24, 0.16, -0.18); // offset waist
+    bodyShape.lineTo(0.26, -0.16); // base of lower horn
+    bodyShape.quadraticCurveTo(0.34, -0.22, 0.30, -0.06); // shorter lower horn
+    bodyShape.lineTo(0.30, 0.00);
+  } else if (guitar === "goldtop") {
+    // Les Paul: single-cutaway, one treble-side horn near the neck,
+    // fuller rounded lower bout.
+    bodyShape.moveTo(0.30, 0.02); // neck join
+    bodyShape.quadraticCurveTo(0.36, 0.22, 0.20, 0.24); // single cutaway horn
+    bodyShape.quadraticCurveTo(0.00, 0.26, -0.14, 0.22); // upper bout
+    bodyShape.quadraticCurveTo(-0.36, 0.14, -0.38, -0.06); // full lower bout
+    bodyShape.quadraticCurveTo(-0.36, -0.26, -0.10, -0.28); // rounded bottom
+    bodyShape.quadraticCurveTo(0.14, -0.27, 0.26, -0.18); // bout up to neck
+    bodyShape.quadraticCurveTo(0.31, -0.10, 0.30, 0.02);
+  } else {
+    // Jazzmaster: large asymmetric offset-waist body.
+    bodyShape.moveTo(0.30, 0.04); // neck join
+    bodyShape.quadraticCurveTo(0.36, 0.26, 0.16, 0.30); // upper horn
+    bodyShape.quadraticCurveTo(-0.06, 0.34, -0.22, 0.24); // wide upper bout
+    bodyShape.quadraticCurveTo(-0.42, 0.10, -0.40, -0.08); // long lower bout
+    bodyShape.quadraticCurveTo(-0.36, -0.30, -0.06, -0.30); // dropped bottom
+    bodyShape.quadraticCurveTo(0.18, -0.28, 0.24, -0.14); // strong offset waist
+    bodyShape.quadraticCurveTo(0.33, -0.06, 0.30, 0.04);
+  }
+  const bodyDepth = guitar === "goldtop" ? 0.13 : 0.1; // Les Paul is thicker
+  const bodyGeo = new THREE.ExtrudeGeometry(bodyShape, {
+    depth: bodyDepth,
+    bevelEnabled: true,
+    bevelThickness: 0.018,
+    bevelSize: 0.02,
+    bevelSegments: 1,
+    curveSegments: 8,
+  });
+  bodyGeo.center();
+  const body = new THREE.Mesh(bodyGeo, k7Mat(c.body));
+  part(group, body, mats, { outlineScale: 1.05 });
 
   const guard = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.12), k7Mat(c.guard));
   guard.position.set(-0.08, -0.02, 0.01);
@@ -183,6 +225,14 @@ export interface RigShape {
   shoulders?: number;
   /** Hip span multiplier (1 = default). */
   hips?: number;
+  /** Pelvis-width + lower-torso taper multiplier (default 1); <1 with shoulders>1 gives a V-taper. */
+  waist?: number;
+  /** Upper-arm + forearm radius scale, independent of build (default = build bulk). */
+  armThickness?: number;
+  /** Thigh + shin radius scale, independent of build (default = build bulk). */
+  legThickness?: number;
+  /** Render the upper arm in `skin` instead of `top` for bare arms (default false). */
+  sleeveless?: boolean;
 }
 
 const BUILD_BULK: Record<NonNullable<RigShape["build"]>, number> = {
@@ -215,6 +265,14 @@ export class HumanoidRig {
   readonly handL = new THREE.Group();
   /** Chest-level pivot a guitar (or prop) attaches to. */
   readonly heldPivot = new THREE.Group();
+  /** Right upper-arm mid pivot for bicep bulges/sleeves; posed with the limb. */
+  readonly upperArmAnchorR = new THREE.Group();
+  /** Left upper-arm mid pivot for bicep bulges/sleeves; posed with the limb. */
+  readonly upperArmAnchorL = new THREE.Group();
+  /** Right forearm mid pivot for bracers/cuffs; posed with the limb. */
+  readonly foreArmAnchorR = new THREE.Group();
+  /** Left forearm mid pivot for bracers/cuffs; posed with the limb. */
+  readonly foreArmAnchorL = new THREE.Group();
   /** Collected materials so callers can tint on damage/flash. */
   readonly mats: THREE.Material[] = [];
 
@@ -229,7 +287,16 @@ export class HumanoidRig {
     const H = this.height;
     const bust = shape.bust ?? 0;
     const sh = (shape.shoulders ?? 1) * this.bulk;
-    const hp = (shape.hips ?? 1) * this.bulk;
+    const waist = shape.waist ?? 1;
+    const hp = (shape.hips ?? 1) * this.bulk * waist;
+    const armBulk = shape.armThickness ?? this.bulk;
+    // Original forearm bottom radius was a fixed 0.038 (un-bulked); only scale
+    // it when armThickness is explicitly set so defaults stay pixel-identical.
+    const faRb = shape.armThickness != null ? 0.038 * armBulk : 0.038;
+    const legBulk = shape.legThickness ?? this.bulk;
+    // Original shin bottom radius was a fixed 0.045 (un-bulked); same rule.
+    const shinRb = shape.legThickness != null ? 0.045 * legBulk : 0.045;
+    const sleeveless = shape.sleeveless ?? false;
 
     const skin = () => this.reg(k7Mat(palette.skin));
     const top = () => this.reg(k7Mat(palette.top));
@@ -260,6 +327,13 @@ export class HumanoidRig {
     const chest = this.box(0.3 * sh, torsoLen, 0.2 + bust * 0.06, top());
     chest.position.y = torsoLen * 0.5;
     part(torso.group, chest, this.mats);
+    // Lower-torso taper: a slimmer block at the waistline so shoulders>1 +
+    // waist<1 reads as a V. Defaults (waist=1) match the old single block.
+    if (waist !== 1) {
+      const lower = this.box(0.3 * sh * waist, torsoLen * 0.42, (0.2 + bust * 0.06) * 0.96, top());
+      lower.position.y = torsoLen * 0.21;
+      part(torso.group, lower, this.mats, { outlineScale: 1.05 });
+    }
     if (bust > 0.05) {
       const b = this.box(0.26 * sh, 0.14 * (0.6 + bust), 0.12 + bust * 0.12, top());
       b.position.set(0, torsoLen * 0.62, 0.12 + bust * 0.05);
@@ -296,36 +370,47 @@ export class HumanoidRig {
     head.group.add(this.headAnchor);
 
     // ---- arms ----
-    const mkArm = (side: -1 | 1, hand: THREE.Group, key: string) => {
+    const mkArm = (
+      side: -1 | 1,
+      hand: THREE.Group,
+      key: string,
+      uaAnchor: THREE.Group,
+      faAnchor: THREE.Group,
+    ) => {
       const shoulder = this.joint(`${key}Shoulder`, torso.group, new THREE.Euler(0, 0, side * 0.12));
       shoulder.group.position.set(side * 0.2 * sh, torsoLen * 0.92, 0);
-      const ua = this.cyl(0.05 * this.bulk, 0.045 * this.bulk, upperArm, top());
+      const ua = this.cyl(0.05 * armBulk, 0.045 * armBulk, upperArm, sleeveless ? skin() : top());
       ua.position.y = -upperArm * 0.5;
       part(shoulder.group, ua, this.mats, { outlineScale: 1.05 });
+      uaAnchor.position.y = -upperArm * 0.5;
+      shoulder.group.add(uaAnchor);
       const elbow = this.joint(`${key}Elbow`, shoulder.group, new THREE.Euler(0, 0, 0));
       elbow.group.position.y = -upperArm;
-      const fa = this.cyl(0.042 * this.bulk, 0.038, foreArm, skin());
+      const fa = this.cyl(0.042 * armBulk, faRb, foreArm, skin());
       fa.position.y = -foreArm * 0.5;
       part(elbow.group, fa, this.mats, { outlineScale: 1.05 });
+      faAnchor.position.y = -foreArm * 0.5;
+      elbow.group.add(faAnchor);
       hand.position.y = -foreArm;
       elbow.group.add(hand);
       const palm = this.box(0.06, 0.09, 0.04, skin());
       palm.position.y = -0.04;
       part(hand, palm, this.mats, { outline: false });
     };
-    mkArm(-1, this.handR, "armR"); // character's right = scene -X when facing +Z
-    mkArm(1, this.handL, "armL");
+    // character's right = scene -X when facing +Z
+    mkArm(-1, this.handR, "armR", this.upperArmAnchorR, this.foreArmAnchorR);
+    mkArm(1, this.handL, "armL", this.upperArmAnchorL, this.foreArmAnchorL);
 
     // ---- legs ----
     const mkLeg = (side: -1 | 1, key: string) => {
       const hipJ = this.joint(`${key}Hip`, hips.group, new THREE.Euler(0, 0, 0));
       hipJ.group.position.set(side * 0.1 * hp, -0.06, 0);
-      const thigh = this.cyl(0.07 * this.bulk, 0.06 * this.bulk, thighLen, bottom());
+      const thigh = this.cyl(0.07 * legBulk, 0.06 * legBulk, thighLen, bottom());
       thigh.position.y = -thighLen * 0.5;
       part(hipJ.group, thigh, this.mats, { outlineScale: 1.05 });
       const knee = this.joint(`${key}Knee`, hipJ.group, new THREE.Euler(0, 0, 0));
       knee.group.position.y = -thighLen;
-      const shin = this.cyl(0.055 * this.bulk, 0.045, shinLen, bottom());
+      const shin = this.cyl(0.055 * legBulk, shinRb, shinLen, bottom());
       shin.position.y = -shinLen * 0.5;
       part(knee.group, shin, this.mats, { outlineScale: 1.05 });
       const foot = this.box(0.09, 0.06, 0.2, shoes());
@@ -351,6 +436,8 @@ export class HumanoidRig {
     this.group.position.y = 0;
     this.group.rotation.set(0, this.group.rotation.y, 0);
     this.group.scale.setScalar(1);
+    // The "play" strum flicks the wrist directly; clear it for other anims.
+    this.handR.rotation.set(0, 0, 0);
 
     switch (anim) {
       case "idle": {
@@ -364,19 +451,30 @@ export class HumanoidRig {
         break;
       }
       case "play": {
-        // Planted rock stance + groove bob + strum hand pump.
+        // Planted rock stance + subtle groove. The motion of interest is a
+        // small, tight down–up strum arc in the RIGHT forearm/wrist across
+        // the guitar body near the strings — not a big shoulder/hip pump.
+        const strum = Math.sin(t * 8.0); // strum tempo
+        const strumArc = strum * 0.16; // ~0.16 rad tight down–up arc
         set("hips", 0, 0, 0);
-        set("torso", 0.06 + groove * 0.04, Math.sin(t * 2.5) * 0.06, groove * 0.03);
-        set("head", groove * 0.12 - 0.05, Math.sin(t * 2.5) * 0.1, 0);
-        set("armLShoulder", -0.5, 0.2, -0.55); // fretting arm up the neck
+        // Toned-down body groove so the eye reads the hand, not the torso.
+        set("torso", 0.05 + groove * 0.02, Math.sin(t * 2.5) * 0.03, groove * 0.015);
+        set("head", groove * 0.06 - 0.04, Math.sin(t * 2.5) * 0.05, 0);
+        // Left arm planted up the neck (fretting) — held steady.
+        set("armLShoulder", -0.5, 0.2, -0.55);
         set("armLElbow", 0.9, 0, 0);
-        set("armRShoulder", -0.35, 0, 0.2);
-        set("armRElbow", 0.6 + Math.sin(t * 10) * 0.45, 0, 0); // strum pump
+        // Right arm: shoulder/upper-arm parked over the guitar body so the
+        // hand sits on the strings; the strum lives in elbow + wrist only.
+        set("armRShoulder", -0.34, 0, 0.2);
+        set("armRElbow", 0.62 + strumArc, 0, 0);
+        // Wrist flick adds the across-the-strings feel at low amplitude.
+        this.handR.rotation.set(strumArc * 0.7, 0, strum * 0.08);
         set("legRHip", 0, 0, -0.16);
         set("legLHip", 0, 0, 0.16);
         set("legRKnee", 0.12, 0, 0);
-        this.group.position.y = Math.abs(groove) * 0.02;
-        this.heldPivot.rotation.x = -0.16 + Math.sin(t * 10) * 0.06;
+        this.group.position.y = Math.abs(groove) * 0.012;
+        // Guitar stays slung across the chest, only a faint string vibration.
+        this.heldPivot.rotation.x = -0.16 + Math.sin(t * 16) * 0.012;
         break;
       }
       case "walk": {

@@ -180,4 +180,31 @@ asked, what was done, resulting commit(s) if any.
   picking a character now rolls a random variant and the variant
   buttons were removed. `npx tsc --noEmit` clean.
 
+- **2026-05-15** — Bug pass #2 (7 parallel agents).
+  **Timeline:** rebuilt so one row = ONE 4-beat measure (was 16 beats),
+  so clean quarter notes land exactly on the beat verticals (x
+  0/144/288/432) instead of bunched far-left; beat pulse now fires
+  beat 1→4 left→right tracking the conductor; whole timeline +
+  MenuPulse confined to the top ≤25vh as a thin compact strip (3px
+  bars) so it no longer obscures the title/character/gameplay.
+  `BarAccumulator` API + `barCount` test left intact.
+  **Killer7Style:** strum animation reworked to a tight wrist/forearm
+  arc across the strings (no hip pump); guitar silhouettes — blackstrat
+  = Stratocaster (double cutaway, two horns), goldtop = Les Paul
+  (single cutaway), jazzmaster = offset. `RigShape` extended:
+  `waist`, `armThickness`, `legThickness`, `sleeveless`; new anchors
+  `upperArmAnchorR/L`, `foreArmAnchorR/L` (defaults reproduce old
+  output).
+  **Physiques:** Dirty Velvet — V-shape (shoulders ~1.4, waist ~0.62,
+  pec/lat plate) all variants. Winter — sleeveless, armThickness 1.7,
+  waist 0.7, bicep/tricep/forearm silhouette meshes on the new arm
+  anchors. Prayer — all 3 variants uniformly tall (1.95) & skinny
+  (slim build, thin arm/leg thickness).
+  **Level sightline:** deterministic replay of curve+camera+enemy math
+  over 40 RNG seeds × full run × all spawns × approach path = 77,520
+  camera→enemy ray tests, 0 blocked after moving strip/subway/rooftop
+  neon signs + strip billboards out of the forward corridor (only
+  `Environment.ts` changed; buildings/camera already clear).
+  `npx tsc --noEmit` clean.
+
 <!-- Append new actions here -->

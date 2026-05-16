@@ -15,6 +15,7 @@ import {
   part,
   k7Flat,
   type RigPalette,
+  type RigShape,
 } from "./Killer7Style";
 import type { GuitarId } from "../../state/Loadout";
 
@@ -25,9 +26,23 @@ import type { GuitarId } from "../../state/Loadout";
 interface GunslingerVariant {
   readonly variant: CharacterVariant;
   readonly palette: RigPalette;
+  /** Per-variant V-physique rig shape (broad shoulders → cinched waist). */
+  readonly shape: RigShape;
   /** Decorate the rig with variant-specific silhouette pieces. */
   decorate(rig: HumanoidRig): void;
 }
+
+// Classic 80s rockstar V: broad chest/shoulders tapering to a narrow waist.
+// Lean build (it's the taper that reads, not mass), flat male chest, slim
+// hips. Each variant tweaks the V slightly to match its identity.
+const V_PHYSIQUE: RigShape = {
+  height: 1.85,
+  build: "average",
+  bust: 0,
+  shoulders: 1.42,
+  waist: 0.64,
+  hips: 0.9,
+};
 
 /** v1 "Top Hat" — Slash: huge dark curls + black top hat, open black vest. */
 const TOP_HAT: GunslingerVariant = {
@@ -40,6 +55,8 @@ const TOP_HAT: GunslingerVariant = {
     shoes: 0x0a0a0a,
     accent: 0xc41020, // blood-red
   },
+  // Lean Slash silhouette: broad shoulders, very cinched waist.
+  shape: { ...V_PHYSIQUE, build: "slim", shoulders: 1.4, waist: 0.62 },
   decorate(rig) {
     const m = rig.mats;
     // Huge curly mane — stacked dark blocks ringing the skull.
@@ -79,6 +96,8 @@ const SNAKESKIN: GunslingerVariant = {
     shoes: 0xf4f4f0, // white hi-tops
     accent: 0xff1f8f, // hot magenta/pink
   },
+  // Shirtless gym-rat V: widest shoulders, hardest waist taper.
+  shape: { ...V_PHYSIQUE, build: "average", shoulders: 1.48, waist: 0.62 },
   decorate(rig) {
     const m = rig.mats;
     const hair = SNAKESKIN.palette.hair;
@@ -117,6 +136,14 @@ const BANDANA: GunslingerVariant = {
     bottom: 0x14233a,
     shoes: 0x101014,
     accent: 0x18e0ff, // electric cyan
+  },
+  // Sleeveless denim: broad shoulders, bare arms, narrow waist.
+  shape: {
+    ...V_PHYSIQUE,
+    build: "average",
+    shoulders: 1.38,
+    waist: 0.66,
+    sleeveless: true,
   },
   decorate(rig) {
     const m = rig.mats;
@@ -188,9 +215,32 @@ function addBracelet(rig: HumanoidRig, accent: number): void {
 // Builder
 // ---------------------------------------------------------------------------
 
+/**
+ * A broad pec/lat shoulder plate on the torso anchor. In the flat Killer7
+ * style a single chest block can read narrow head-on; this wide, shallow
+ * wedge widens the upper silhouette so the V (vs. the cinched waist below)
+ * is unmistakable from the front in the play pose.
+ */
+function addVShoulderPlate(rig: HumanoidRig, garment: number): void {
+  const m = rig.mats;
+  // Wide shallow slab across the upper chest = broad pec line.
+  const pecs = k7Box(rig.torsoAnchor, 0.5, 0.2, 0.05, garment, m, { outlineScale: 1.04 });
+  pecs.position.set(0, 0.1, 0.02);
+  // Angled lat wedges flaring out under each shoulder, tapering inward.
+  for (const a of [-1, 1] as const) {
+    const lat = k7Box(rig.torsoAnchor, 0.16, 0.26, 0.06, garment, m, { outlineScale: 1.04 });
+    lat.position.set(a * 0.21, 0.04, 0.0);
+    lat.rotation.z = a * 0.34; // splay outward at the top, narrow at the waist
+  }
+}
+
 function build(variantId: string, opts?: { guitar?: GuitarId }): BuiltCharacter {
   const v = VARIANTS[variantId] ?? TOP_HAT;
-  const rig = new HumanoidRig(v.palette, { height: 1.85, build: "slim", hips: 0.92 });
+  const rig = new HumanoidRig(v.palette, v.shape);
+  // Broaden the upper body before variant flourishes so the V reads in the
+  // flat Killer7 style; tinted to the variant's torso colour (skin when
+  // shirtless/sleeveless so it reads as a built chest, not a garment).
+  addVShoulderPlate(rig, v.palette.top);
   v.decorate(rig);
 
   let guitar = buildK7Guitar(opts?.guitar ?? "goldtop");

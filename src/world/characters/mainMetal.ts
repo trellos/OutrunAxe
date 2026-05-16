@@ -31,8 +31,66 @@ interface MetalVariant {
   id: string;
   label: string;
   palette: RigPalette;
-  /** Decorate the rig; return an optional hair group for the play whip. */
-  dress(rig: HumanoidRig): THREE.Group | null;
+  /**
+   * Decorate the rig; return an optional hair group for the play whip.
+   * `ownedGeo` collects any geometry this file allocates so the per-build
+   * `dispose` can free it.
+   */
+  dress(rig: HumanoidRig, ownedGeo: THREE.BufferGeometry[]): THREE.Group | null;
+}
+
+/**
+ * Big-bicep silhouette: a rounded skin-tone bulge on the upper-arm anchor
+ * plus a leaner forearm "vein" ridge on the forearm anchor. Parented to the
+ * limb-segment mids so the muscle reads in the flat Killer7 style and tracks
+ * the arm through the pose. Anchors face down the limb (-Y toward the hand).
+ * Geometry it allocates is pushed into `ownedGeo` so the per-build `dispose`
+ * can free it (the rig disposes its own geo + the shared mats).
+ */
+function metalArms(
+  rig: HumanoidRig,
+  skin: number,
+  ownedGeo: THREE.BufferGeometry[],
+) {
+  const trackGeo = <T extends THREE.BufferGeometry>(g: T): T => {
+    ownedGeo.push(g);
+    return g;
+  };
+  for (const ua of [rig.upperArmAnchorR, rig.upperArmAnchorL]) {
+    // Outer bicep peak — a squashed sphere bulging forward off the arm.
+    const peak = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.082, 10, 8)),
+      k7Mat(skin),
+    );
+    peak.scale.set(1.0, 1.35, 1.05);
+    peak.position.set(0, 0.01, 0.035);
+    part(ua, peak, rig.mats, { outlineScale: 1.06 });
+    // Tricep counter-mass so the arm reads thick from every angle, not just
+    // a front lump.
+    const tri = new THREE.Mesh(
+      trackGeo(new THREE.BoxGeometry(0.1, 0.18, 0.09)),
+      k7Mat(skin),
+    );
+    tri.position.set(0, -0.02, -0.03);
+    part(ua, tri, rig.mats, { outlineScale: 1.05 });
+  }
+  for (const fa of [rig.foreArmAnchorR, rig.foreArmAnchorL]) {
+    // Forearm flexor swell + a thin raised vein ridge.
+    const flex = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.055, 8, 7)),
+      k7Mat(skin),
+    );
+    flex.scale.set(1.0, 1.5, 1.0);
+    flex.position.set(0, 0.03, 0.02);
+    part(fa, flex, rig.mats, { outlineScale: 1.05 });
+    const vein = new THREE.Mesh(
+      trackGeo(new THREE.BoxGeometry(0.012, 0.14, 0.012)),
+      k7Mat(skin),
+    );
+    vein.position.set(0.02, 0.0, 0.05);
+    vein.rotation.z = 0.18;
+    part(fa, vein, rig.mats, { outlineScale: 1.06 });
+  }
 }
 
 const BLACK = 0x0a0a0a;
@@ -204,7 +262,7 @@ const VARIANTS: MetalVariant[] = [
       shoes: BLACK,
       accent: 0xc7ff2b, // toxic lime
     },
-    dress(rig) {
+    dress(rig, ownedGeo) {
       const hair = longHair(rig, BLACK, 0.95); // waist-length
       beard(rig.headAnchor, rig.mats, BLACK);
       bullseye(rig, 0xc7ff2b);
@@ -214,8 +272,10 @@ const VARIANTS: MetalVariant[] = [
         new THREE.BoxGeometry(0.42, 0.08, 0.26),
         k7Mat(NEAR_BLACK),
       );
+      ownedGeo.push(hem.geometry);
       hem.position.set(0, -0.16, 0);
       part(rig.torsoAnchor, hem, rig.mats, { outlineScale: 1.04 });
+      metalArms(rig, this.palette.skin, ownedGeo);
       return hair;
     },
   },
@@ -230,7 +290,7 @@ const VARIANTS: MetalVariant[] = [
       shoes: BLACK,
       accent: 0xc81f1f, // blood red
     },
-    dress(rig) {
+    dress(rig, ownedGeo) {
       // Bandana cap (no long hair group → bald-with-bandana silhouette).
       const bandana = new THREE.Mesh(
         new THREE.BoxGeometry(0.21, 0.1, 0.21),
@@ -248,6 +308,7 @@ const VARIANTS: MetalVariant[] = [
       battleVest(rig, 0xc81f1f);
       wristband(rig.handR, rig.mats, 0xd0d0d0);
       wristband(rig.handL, rig.mats, 0xd0d0d0);
+      metalArms(rig, this.palette.skin, ownedGeo);
       return null; // no whip-hair on this one
     },
   },
@@ -262,7 +323,7 @@ const VARIANTS: MetalVariant[] = [
       shoes: BLACK,
       accent: 0x7fc8ff, // ice blue
     },
-    dress(rig) {
+    dress(rig, ownedGeo) {
       const hair = longHair(rig, BLACK, 0.78);
       corpsePaint(rig);
       spikePad(rig, -1, 0x7fc8ff);
@@ -274,6 +335,7 @@ const VARIANTS: MetalVariant[] = [
       const h = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.03, 0.02), k7Flat(0x7fc8ff));
       h.position.set(0, 0.06, 0.03);
       rig.torsoAnchor.add(h);
+      metalArms(rig, this.palette.skin, ownedGeo);
       return hair;
     },
   },
@@ -288,9 +350,19 @@ function build(variantId: string, opts?: { guitar?: GuitarId }): BuiltCharacter 
   const rig = new HumanoidRig(v.palette, {
     height: 1.88,
     build: "buff",
-    shoulders: 1.2,
+    // Wide-shoulder / cinched-waist V so the bare arms read as the focal
+    // mass: thick biceps via armThickness (kept above the buff bulk so the
+    // arms dominate without ballooning the whole torso) and a tighter waist.
+    shoulders: 1.22,
+    waist: 0.7,
+    armThickness: 1.7,
+    sleeveless: true,
   });
-  const hairGroup = v.dress(rig);
+  // Geometry this file allocates for the bicep/forearm silhouettes (and the
+  // v1 hem) — scoped per build so disposing one instance never frees
+  // another's geo. The rig owns its own geo + the shared materials.
+  const ownedGeo: THREE.BufferGeometry[] = [];
+  const hairGroup = v.dress(rig, ownedGeo);
 
   let guitar = buildK7Guitar(opts?.guitar ?? "goldtop");
   rig.heldPivot.add(guitar.group);
@@ -315,6 +387,9 @@ function build(variantId: string, opts?: { guitar?: GuitarId }): BuiltCharacter 
     dispose() {
       rig.dispose();
       guitar.dispose();
+      // Free the bicep/forearm silhouette geometry this file allocated
+      // (materials are registered in rig.mats and freed by rig.dispose).
+      for (const g of ownedGeo) g.dispose();
     },
   };
 }

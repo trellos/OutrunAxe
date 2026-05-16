@@ -21,11 +21,13 @@ const KEY_TO_MIDI: Record<string, number> = {
 };
 
 const BEATS = 4;
-const PX_PER_BEAT = 36;
-const ROW_HEIGHT = 44;
+// One looping 4-beat measure spanning a compact strip at the very top.
+const PX_PER_BEAT = 120;
+const ROW_HEIGHT = 24;
 const MIDI_MIN = 40;
 const MIDI_MAX = 76;
-const BAND_HEIGHT = 6;
+// Thin horizontal segment, not a tall block that covers the title/character.
+const BAND_HEIGHT = 3;
 // Brief bright pulse fades over this window after its beat fires.
 const PULSE_FADE_MS = 150;
 
@@ -245,9 +247,11 @@ export class MenuPulse {
     const span = BEATS * beatDur;
     const into = audioTime - this.measureStart;
     if (into < 0 || into > span) return;
-    const x = (into / beatDur) * PX_PER_BEAT;
+    const clamped = Math.max(0, Math.min(span, into));
+    const x = (clamped / beatDur) * PX_PER_BEAT;
     const norm = Math.max(0, Math.min(1, (midi - MIDI_MIN) / (MIDI_MAX - MIDI_MIN)));
-    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 8) - 4;
+    const pad = Math.min(4, ROW_HEIGHT / 4);
+    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 2 * pad) - pad;
     const ctx = this.ctx;
     ctx.fillStyle = "#00f0ff";
 

@@ -37,7 +37,16 @@ const V1: SilvaVariant = {
     shoes: 0xf2f2f2, // chunky white sneakers
     accent: 0x18e7ff, // electric cyan
   },
-  shape: { height: 1.88, build: "slim", hips: 0.9, shoulders: 0.88, bust: 0.34 },
+  shape: {
+    height: 1.95,
+    build: "slim",
+    shoulders: 0.86,
+    hips: 0.88,
+    waist: 0.85,
+    bust: 0.3,
+    armThickness: 0.75,
+    legThickness: 0.78,
+  },
   decorate(rig, pal, extra) {
     const a = pal.accent;
 
@@ -83,7 +92,16 @@ const V2: SilvaVariant = {
     shoes: 0x16131a, // knee-high boots
     accent: 0xff2f86, // hot pink
   },
-  shape: { height: 1.86, build: "slim", hips: 0.92, shoulders: 0.86, bust: 0.36 },
+  shape: {
+    height: 1.95,
+    build: "slim",
+    shoulders: 0.86,
+    hips: 0.88,
+    waist: 0.85,
+    bust: 0.3,
+    armThickness: 0.75,
+    legThickness: 0.78,
+  },
   decorate(rig, pal, extra) {
     const a = pal.accent;
 
@@ -137,7 +155,16 @@ const V3: SilvaVariant = {
     shoes: 0xf0f0ee, // trainers
     accent: 0xb6ff2e, // lime green
   },
-  shape: { height: 1.87, build: "slim", hips: 0.9, shoulders: 0.9, bust: 0.32 },
+  shape: {
+    height: 1.95,
+    build: "slim",
+    shoulders: 0.86,
+    hips: 0.88,
+    waist: 0.85,
+    bust: 0.3,
+    armThickness: 0.75,
+    legThickness: 0.78,
+  },
   decorate(rig, pal, extra) {
     const a = pal.accent;
 
