@@ -36,7 +36,11 @@ export class Renderer {
 
     this.composer = new Composer(this.renderer, this.worldScene, this.worldCamera);
 
-    window.addEventListener("resize", () => this.resize());
+    let resizeTimer: number | null = null;
+    window.addEventListener("resize", () => {
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => { resizeTimer = null; this.resize(); }, 150);
+    });
     this.resize();
   }
 
