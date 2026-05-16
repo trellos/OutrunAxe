@@ -157,4 +157,27 @@ asked, what was done, resulting commit(s) if any.
   tinting) was deliberately deferred so variants can be picked/iterated in
   the gallery first.
 
+- **2026-05-15** — Bug pass (3 parallel agents).
+  **Timeline:** notes now group strictly by `PitchUpdate.onsetId` via a
+  shared pure `src/hud/noteBars.ts` `BarAccumulator` (reused by
+  `Timeline` + `MenuPulse`) — a held note is one continuous bar instead
+  of a dot row (mic pitch wobble no longer fragments it). Beat-pulse
+  overlay canvas added (own rAF, torn down on detach/stop) so the
+  recording beat line pulses on its beat. New sample-audio regression:
+  `src/test/barCount.ts` + `notes-90bpm` source
+  (`/pitch-test.html?source=notes-90bpm`) asserts bars==onsets and no
+  inflation — PASS (17 bars / 17 onsets from 65 raw detections).
+  **Camera:** building setback raised (strip 9→17, subway 14→20,
+  rooftop 12→20); chase camera trail 5.5→4.6, height +2.0→+2.6.
+  Deterministic full-curve sweep shows ~9–12u camera↔building
+  clearance (live in-motion view not visually confirmable headless —
+  screenshot tooling times out, audio-gated rail won't advance in
+  introspection; verified by geometry sweep + the larger setback).
+  **Characters/Character Select:** mains renamed — 80s Gunslinger→
+  **Dirty Velvet**, Skinny Singer→**Prayer**, Metal→**Winter** (label
+  only; ids unchanged). Loadout avatar faces the camera (guitar toward
+  camera) with a subtle sway + live strum tick (no more constant spin);
+  picking a character now rolls a random variant and the variant
+  buttons were removed. `npx tsc --noEmit` clean.
+
 <!-- Append new actions here -->

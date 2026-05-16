@@ -12,6 +12,7 @@
 import { Conductor } from "../audio/Conductor";
 import { PitchTracker } from "../audio/PitchTracker";
 import { getAudioContext } from "../audio/AudioContextSingleton";
+import { BarAccumulator } from "./noteBars";
 
 const KEY_TO_MIDI: Record<string, number> = {
   KeyZ: 48, KeyS: 49, KeyX: 50, KeyD: 51, KeyC: 52, KeyV: 53,
@@ -25,13 +26,8 @@ const ROW_HEIGHT = 44;
 const MIDI_MIN = 40;
 const MIDI_MAX = 76;
 const BAND_HEIGHT = 6;
-
-interface LastPoint {
-  x: number;
-  y: number;
-  time: number;
-  midi: number;
-}
+// Brief bright pulse fades over this window after its beat fires.
+const PULSE_FADE_MS = 150;
 
 export class MenuPulse {
   private container: HTMLDivElement;
@@ -45,13 +41,19 @@ export class MenuPulse {
   // Audio time of the current measure window's beat 0. Advances one measure
   // at a time so plotting wraps cleanly and the row clears each loop.
   private measureStart = -1;
-  private last: LastPoint | null = null;
+  // Same shared bar grouper as hud/Timeline.ts: group strictly by onsetId so
+  // a sustained note draws as one solid bar instead of fragmenting on wobble.
+  private bars = new BarAccumulator(PX_PER_BEAT / 10);
+  private overlay: HTMLCanvasElement;
+  private overlayCtx: CanvasRenderingContext2D;
+  private rafId = 0;
   private stopped = false;
   private keyHandler?: (e: KeyboardEvent) => void;
 
   constructor(parent: HTMLElement) {
     this.container = document.createElement("div");
     this.container.className = "outrun-timeline outrun-menupulse";
+    this.container.style.position = "relative";
 
     const label = document.createElement("div");
     label.className = "menupulse-label";
@@ -64,6 +66,17 @@ export class MenuPulse {
     this.canvas.className = "timeline-row";
     this.container.appendChild(this.canvas);
     this.ctx = this.canvas.getContext("2d")!;
+
+    // Transparent, non-interactive beat-pulse overlay layered over the row.
+    this.overlay = document.createElement("canvas");
+    this.overlay.width = BEATS * PX_PER_BEAT;
+    this.overlay.height = ROW_HEIGHT;
+    this.overlay.style.position = "absolute";
+    this.overlay.style.left = "0";
+    this.overlay.style.bottom = "0";
+    this.overlay.style.pointerEvents = "none";
+    this.container.appendChild(this.overlay);
+    this.overlayCtx = this.overlay.getContext("2d")!;
 
     parent.appendChild(this.container);
 
@@ -88,15 +101,23 @@ export class MenuPulse {
       // Each measure downbeat opens a fresh single-measure window.
       if (info.beat % BEATS === 0) {
         this.measureStart = info.time;
-        this.last = null;
+        // Each measure window opens fresh — a new bar must start cleanly.
+        this.bars.reset();
         this.drawGrid();
       }
     });
 
     this.offTracker = this.tracker.onPitchUpdate((u) => {
       if (this.stopped) return;
-      this.plotPitch(u.time, u.midi);
+      this.plotPitch(u.time, u.midi, u.onsetId);
     });
+
+    // Private rAF loop owned by MenuPulse — pulse drawn on the overlay only.
+    const tick = () => {
+      this.drawPulse();
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
 
     // The keyboard piano is an instrument on the menus too: make sound and
     // feed the tracker so the signal chain reads with or without a mic.
@@ -147,11 +168,47 @@ export class MenuPulse {
     this.stopped = true;
     if (this.keyHandler) window.removeEventListener("keydown", this.keyHandler);
     this.keyHandler = undefined;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
     this.offBeat?.();
     this.offTracker?.();
     this.tracker.stop();
     this.conductor.stop();
+    this.overlay.remove();
     this.container.remove();
+  }
+
+  /**
+   * Pulse the vertical beat line for the beat currently being recorded in the
+   * active measure window. Drawn ONLY on the transparent overlay — the note
+   * canvas is never cleared/redrawn here. Pulses whenever a window is open.
+   */
+  private drawPulse() {
+    const ctx = this.overlayCtx;
+    ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
+    if (this.stopped || this.measureStart < 0) return;
+
+    const beatDur = 60 / this.bpm;
+    const into = this.conductor.audioTime - this.measureStart;
+    if (into < 0 || into > BEATS * beatDur) return;
+
+    const beatIdx = Math.floor(into / beatDur);
+    if (beatIdx < 0 || beatIdx >= BEATS) return;
+
+    const sinceBeatMs = (into - beatIdx * beatDur) * 1000;
+    const alpha = Math.max(0, 1 - sinceBeatMs / PULSE_FADE_MS);
+    if (alpha <= 0) return;
+
+    const x = beatIdx * PX_PER_BEAT;
+    ctx.strokeStyle = `rgba(0, 240, 255, ${alpha})`;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
+    ctx.shadowBlur = 8 * alpha;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, this.overlay.height);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
   }
 
   private drawGrid() {
@@ -182,7 +239,7 @@ export class MenuPulse {
     }
   }
 
-  private plotPitch(audioTime: number, midi: number) {
+  private plotPitch(audioTime: number, midi: number, onsetId: number) {
     if (this.measureStart < 0) return;
     const beatDur = 60 / this.bpm;
     const span = BEATS * beatDur;
@@ -194,20 +251,15 @@ export class MenuPulse {
     const ctx = this.ctx;
     ctx.fillStyle = "#00f0ff";
 
-    const sameBar =
-      this.last !== null &&
-      audioTime - this.last.time < beatDur / 8 &&
-      audioTime >= this.last.time &&
-      Math.abs(midi - this.last.midi) < 2;
-
-    if (sameBar && this.last) {
-      const x0 = Math.min(this.last.x, x);
-      const x1 = Math.max(this.last.x, x);
-      ctx.fillRect(x0, y - BAND_HEIGHT / 2, Math.max(1, x1 - x0), BAND_HEIGHT);
-    } else {
-      ctx.fillRect(x, y - BAND_HEIGHT / 2, 2, BAND_HEIGHT);
-    }
-
-    this.last = { x, y, time: audioTime, midi };
+    // Group strictly by onsetId (see hud/noteBars.ts) so a sustained note is
+    // one solid bar even when mic pitch wobbles ≥2 semitones between reads.
+    const bar = this.bars.feed(onsetId, x, y);
+    if (!bar) return;
+    ctx.fillRect(
+      bar.x0,
+      bar.y - BAND_HEIGHT / 2,
+      Math.max(1, bar.x1 - bar.x0),
+      BAND_HEIGHT,
+    );
   }
 }

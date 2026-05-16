@@ -272,14 +272,20 @@ export class LevelState implements GameState {
 
     // Chase camera: behind + above the player, gently angled so the character
     // fills the lower-center and the road/enemies ahead read above them.
+    // Trail is kept short (4.6) so the rotating -forward offset swings the
+    // camera less laterally on curve bends (it used to be 5.5, which pushed
+    // the camera into the flanking building line); height is raised a touch
+    // (2.6) so the avatar still fills lower-center and stays inside the subway
+    // tunnel envelope on bends. Buildings are set well back in Environment.ts
+    // so a clear corridor always exists for this trailing offset.
     camera.position.set(
-      railPos.x - fwd.x * 5.5,
-      railPos.y + 2.0,
-      railPos.z - fwd.z * 5.5,
+      railPos.x - fwd.x * 4.6,
+      railPos.y + 2.6,
+      railPos.z - fwd.z * 4.6,
     );
     camera.lookAt(
       railPos.x + fwd.x * 7,
-      railPos.y + 1.0,
+      railPos.y + 1.1,
       railPos.z + fwd.z * 7,
     );
     this.anchor.position.copy(railPos);

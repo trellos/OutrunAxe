@@ -13,6 +13,10 @@ import {
   type MainId,
 } from "../state/Loadout";
 
+function randomVariantId(): string {
+  return VARIANTS[Math.floor(Math.random() * VARIANTS.length)].id;
+}
+
 export class LoadoutState implements GameState {
   readonly name = "loadout";
   private hudParent: HTMLElement;
@@ -38,6 +42,9 @@ export class LoadoutState implements GameState {
     worldCamera.lookAt(0, 0, 0);
 
     this.loadout = loadLoadout();
+    // Randomize the variant so the first shown character isn't always v1.
+    this.loadout = { ...this.loadout, variant: randomVariantId() };
+    saveLoadout(this.loadout);
     this.buildAvatar();
 
     const dir = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -80,9 +87,13 @@ export class LoadoutState implements GameState {
     this.overlay = null;
   }
 
-  update(dt: number) {
+  update(_dt: number) {
     if (this.avatar) {
-      this.avatar.rotation.y += dt * 0.4;
+      const t = performance.now() / 1000;
+      // Posed hero shot: face the +Z camera with only a subtle sway.
+      this.avatar.rotation.y = Math.sin(t) * 0.12;
+      // Tick the rig so the "play" strumming animation actually plays.
+      this.avatar.update(t);
     }
     this.pulse?.tick();
   }
@@ -94,7 +105,9 @@ export class LoadoutState implements GameState {
       this.avatar = null;
     }
     const av = new Avatar(this.loadout);
-    av.rotation.y = Math.PI;
+    // Rig faces +Z and holds the guitar on its +Z chest front; the loadout
+    // camera sits at +Z, so face it directly (guitar toward camera).
+    av.rotation.y = 0;
     this.game.renderer.worldScene.add(av);
     this.avatar = av;
   }
@@ -105,13 +118,6 @@ export class LoadoutState implements GameState {
       return `<button class="loadout-pick char-pick${sel}" data-char="${c.id}">
         <span class="loadout-label">${c.label}</span>
         <span class="loadout-tag">${c.tag}</span>
-      </button>`;
-    }).join("");
-
-    const variantButtons = VARIANTS.map((v) => {
-      const sel = v.id === this.loadout.variant ? " selected" : "";
-      return `<button class="loadout-pick variant-pick${sel}" data-variant="${v.id}">
-        <span class="loadout-label">${v.label}</span>
       </button>`;
     }).join("");
 
@@ -128,8 +134,6 @@ export class LoadoutState implements GameState {
         <div class="loadout-title">LOADOUT</div>
         <div class="loadout-section-label">CHARACTER</div>
         <div class="loadout-row">${charButtons}</div>
-        <div class="loadout-section-label">VARIANT</div>
-        <div class="loadout-row">${variantButtons}</div>
         <div class="loadout-section-label">GUITAR</div>
         <div class="loadout-row">${guitarButtons}</div>
         <div class="loadout-actions">
@@ -146,22 +150,10 @@ export class LoadoutState implements GameState {
       btn.addEventListener("click", () => {
         const id = btn.dataset.char as MainId | undefined;
         if (!id) return;
-        this.loadout = { ...this.loadout, character: id };
+        // Picking a character also reshuffles to a random variant.
+        this.loadout = { ...this.loadout, character: id, variant: randomVariantId() };
         saveLoadout(this.loadout);
         charBtns.forEach((b) => b.classList.remove("selected"));
-        btn.classList.add("selected");
-        this.buildAvatar();
-      });
-    });
-
-    const variantBtns = this.overlay.querySelectorAll<HTMLButtonElement>(".variant-pick");
-    variantBtns.forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const id = btn.dataset.variant;
-        if (!id) return;
-        this.loadout = { ...this.loadout, variant: id };
-        saveLoadout(this.loadout);
-        variantBtns.forEach((b) => b.classList.remove("selected"));
         btn.classList.add("selected");
         this.buildAvatar();
       });

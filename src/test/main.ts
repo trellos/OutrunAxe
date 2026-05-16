@@ -21,6 +21,7 @@ import {
   type FixtureResult,
 } from "./fixtures/fixtures";
 import { BEAT_PROXIMITY_WINDOW, BEAT_PROXIMITY_SUBS_OF_BEAT } from "../audio/Conductor";
+import { countBars, type BarCountResult } from "./barCount";
 
 interface Source {
   id: string;
@@ -55,6 +56,15 @@ const SOURCES: Source[] = [
     label: "Reference recording — 90 BPM 8ths, F#/C# alternating",
     bpm: 90,
     load: async () => loadRecording(RECORDING_URL),
+  },
+  {
+    // Sample-audio regression for the held-note bar fix. 90 BPM quarter/eighth
+    // notes — each held note must register as ONE bar, not many tiny dots.
+    // Run: open /pitch-test.html?source=notes-90bpm
+    id: "notes-90bpm",
+    label: "Sample — 0510 90 BPM quarter/eighth notes (bar-count regression)",
+    bpm: 90,
+    load: async () => loadRecording("/samples/0510_90bpmNotes.mp3"),
   },
   {
     id: "monophonic-16ths-140bpm",
@@ -154,6 +164,8 @@ declare global {
       detections: DetectedNote[];
       raw: RawTick[];
       verifyResult?: VerifyResult;
+      /** Bar-count regression result (only set for the notes-90bpm source). */
+      barCount?: BarCountResult;
     };
   }
 }
@@ -250,6 +262,28 @@ function rerun() {
 
 function renderVerdict() {
   if (!loaded) return;
+
+  // Sample-audio bar-count regression. The held-note fix groups pitch
+  // updates strictly by onsetId (hud/noteBars.ts), so feeding the detections
+  // through the SAME BarAccumulator must yield one bar per detected onset —
+  // NOT the ~3-5x inflated count the old time/pitch-proximity logic produced.
+  // True note count: 90 BPM quarter/eighth notes over the audible play span
+  // (after the 4-beat count-in), bounded between a quarter-note floor and an
+  // eighth-note ceiling so the assertion is deterministic and clip-agnostic.
+  if (currentSource.id === "notes-90bpm") {
+    const beatDur = 60 / 90;
+    const playSpan = Math.max(0, loaded.duration - loaded.playStartSec);
+    // Use the eighth-note count as the nominal "true note count" target.
+    const expectedNotes = Math.max(1, Math.round(playSpan / (beatDur / 2)));
+    const bc = countBars(detections, expectedNotes);
+    window.__pitchTest.barCount = bc;
+    const header = bc.passed
+      ? `<span class="pass">PASS</span>  ${bc.barCount} bars for ${bc.onsetCount} detected notes — no dot fragmentation.`
+      : `<span class="fail">FAIL</span>  ${bc.barCount} bars vs ${bc.onsetCount} onsets / ~${bc.expectedNotes} expected notes — bars must not fragment.`;
+    els.verdict.innerHTML = header + `\n\n${bc.details.join("\n")}`;
+    return;
+  }
+
   // Fixture sources have their own JSON spec.
   if (loaded.fixtureSpec) {
     const fr: FixtureResult = verifyFixture(detections, loaded.fixtureSpec);

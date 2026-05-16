@@ -13,9 +13,9 @@ export interface Loadout {
 }
 
 export const MAINS: { id: MainId; label: string; tag: string }[] = [
-  { id: "main-gunslinger", label: "80s Gunslinger", tag: "shirt open, big hair" },
-  { id: "main-silva", label: "Skinny Singer", tag: "crop tee, long legs" },
-  { id: "main-metal", label: "Metal", tag: "biceps, all black" },
+  { id: "main-gunslinger", label: "Dirty Velvet", tag: "shirt open, big hair" },
+  { id: "main-silva", label: "Prayer", tag: "crop tee, long legs" },
+  { id: "main-metal", label: "Winter", tag: "biceps, all black" },
 ];
 
 export const VARIANTS: { id: string; label: string }[] = [

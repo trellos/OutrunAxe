@@ -221,7 +221,7 @@ function build(variantId: string, opts?: { guitar?: GuitarId }): BuiltCharacter 
 export const def: CharacterDef = {
   id: "main-gunslinger",
   kind: "main",
-  label: "80s Gunslinger",
+  label: "Dirty Velvet",
   variants: [TOP_HAT.variant, SNAKESKIN.variant, BANDANA.variant],
   build,
 };

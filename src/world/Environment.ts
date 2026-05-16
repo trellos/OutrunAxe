@@ -971,7 +971,14 @@ export function buildEnvironment(scene: THREE.Scene, level: LevelConfig): THREE.
       if (placed >= BUILDING_CAP) break;
       const kind = pickKind(theme);
       const { w, h, d } = sizeFor(kind);
-      const baseDist = theme === "subway" ? 14 : theme === "rooftop" ? 12 : 9;
+      // Buildings are tall (18-32u) so the camera can't clear them by going
+      // over. The chase camera trails ~4.6u behind on a curve that sways +-4u
+      // in X, so its lateral offset can swing ~8-9u toward one building line.
+      // Set buildings well back so a clear corridor always exists for the
+      // trailing camera; low props (lampposts/cars/signs) stay near and are
+      // unchanged since they don't occlude. The subway tunnel walls (side*7,
+      // built in buildSubwayTunnel) are intentionally close and untouched.
+      const baseDist = theme === "subway" ? 20 : theme === "rooftop" ? 20 : 17;
       const dist = baseDist + Math.random() * 4;
       const offset = left.clone().multiplyScalar(side * dist);
       const facadeIdx = Math.floor(Math.random() * facadeCount);

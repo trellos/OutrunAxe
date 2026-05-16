@@ -1,5 +1,6 @@
 import type { Conductor } from "../audio/Conductor";
 import type { PitchTracker } from "../audio/PitchTracker";
+import { BarAccumulator } from "./noteBars";
 
 const ROWS = 3;
 const BEATS_PER_ROW = 16;
@@ -9,18 +10,13 @@ const MIDI_MIN = 40;
 const MIDI_MAX = 76;
 const BAND_HEIGHT = 6;
 const COUNT_IN_BEATS = 4;
+// Brief bright pulse fades over this window after its beat fires.
+const PULSE_FADE_MS = 150;
 
 interface RowState {
   measureStart: number;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
-}
-
-interface LastPoint {
-  x: number;
-  y: number;
-  time: number;
-  midi: number;
 }
 
 export class Timeline {
@@ -33,11 +29,20 @@ export class Timeline {
   // count-in plotting needs its own time origin since measureStartTime() only
   // covers the play measures; this is the audio time of count-in beat 0.
   private countInStart = -1;
-  private last: LastPoint | null = null;
+  // Single shared bar grouper: notes are grouped strictly by onsetId so a
+  // sustained note (many wobbling reads, one onsetId) is one solid bar.
+  private bars = new BarAccumulator(PX_PER_BEAT / 10);
+  // Beat-pulse overlay: a transparent canvas layered over the bottom row.
+  // We draw a brief bright vertical pulse at the currently-recorded beat's
+  // x WITHOUT ever clearing/redrawing the note canvas.
+  private overlay: HTMLCanvasElement;
+  private overlayCtx: CanvasRenderingContext2D;
+  private rafId = 0;
 
   constructor(parent: HTMLElement, private conductor: Conductor) {
     this.container = document.createElement("div");
     this.container.className = "outrun-timeline";
+    this.container.style.position = "relative";
     parent.appendChild(this.container);
 
     for (let i = 0; i < ROWS; i++) {
@@ -49,6 +54,18 @@ export class Timeline {
       const ctx = canvas.getContext("2d")!;
       this.rows.push({ measureStart: -1, canvas, ctx });
     }
+
+    // Overlay sits on top of the bottom (active) row only. Transparent and
+    // non-interactive so it never occludes input or the note canvas.
+    this.overlay = document.createElement("canvas");
+    this.overlay.width = BEATS_PER_ROW * PX_PER_BEAT;
+    this.overlay.height = ROW_HEIGHT;
+    this.overlay.style.position = "absolute";
+    this.overlay.style.left = "0";
+    this.overlay.style.bottom = "0";
+    this.overlay.style.pointerEvents = "none";
+    this.container.appendChild(this.overlay);
+    this.overlayCtx = this.overlay.getContext("2d")!;
 
     this.bpm = conductor.currentBpm;
   }
@@ -86,14 +103,67 @@ export class Timeline {
     this.offTracker = tracker.onPitchUpdate((u) => {
       const phase = this.conductor.currentPhase;
       if (phase !== "playing" && phase !== "countIn") return;
-      this.plotPitch(u.time, u.midi);
+      this.plotPitch(u.time, u.midi, u.onsetId);
     });
+
+    // Private rAF loop owned by Timeline: draws the beat pulse on the overlay
+    // only. Cancelled in detach() so it never leaks across retries.
+    const tick = () => {
+      this.drawPulse();
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
   }
 
   detach() {
     this.offConductor?.();
     this.offTracker?.();
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+    this.overlay.remove();
     this.container.remove();
+  }
+
+  /**
+   * Pulse the vertical beat line for the beat currently being recorded. The
+   * measure's 1st line pulses on beat 1, etc. Drawn ONLY on the transparent
+   * overlay — the note canvas is never cleared/redrawn here.
+   */
+  private drawPulse() {
+    const ctx = this.overlayCtx;
+    ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
+
+    const phase = this.conductor.currentPhase;
+    if (phase !== "countIn" && phase !== "playing") return;
+
+    const row = this.rows[this.activeRow];
+    if (row.measureStart < -1) return;
+    if (row.measureStart === -1 && this.countInStart < 0) return;
+
+    const beatDur = 60 / this.bpm;
+    const rowStartTime = this.rowStartTime(row.measureStart);
+    const totalBeats = row.measureStart === -1 ? COUNT_IN_BEATS : BEATS_PER_ROW;
+    const into = this.conductor.audioTime - rowStartTime;
+    if (into < 0 || into > totalBeats * beatDur) return;
+
+    const beatIdx = Math.floor(into / beatDur);
+    if (beatIdx < 0 || beatIdx >= totalBeats) return;
+
+    // Brightness fades over PULSE_FADE_MS after the beat's downbeat.
+    const sinceBeatMs = (into - beatIdx * beatDur) * 1000;
+    const alpha = Math.max(0, 1 - sinceBeatMs / PULSE_FADE_MS);
+    if (alpha <= 0) return;
+
+    const x = beatIdx * PX_PER_BEAT;
+    ctx.strokeStyle = `rgba(0, 240, 255, ${alpha})`;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
+    ctx.shadowBlur = 8 * alpha;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, this.overlay.height);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
   }
 
   private shiftRowsUp(newBottomMeasureStart: number) {
@@ -108,7 +178,9 @@ export class Timeline {
     this.drawGrid(bottom);
     this.activeRow = ROWS - 1;
     // A row boundary breaks bar continuity — the next pitch starts a new bar.
-    this.last = null;
+    // This fires both when a play phrase advances and when the count-in row
+    // is allocated (shiftRowsUp(-1)).
+    this.bars.reset();
   }
 
   private drawGrid(row: RowState) {
@@ -149,7 +221,7 @@ export class Timeline {
     return this.conductor.measureStartTime(measureStart);
   }
 
-  private plotPitch(audioTime: number, midi: number) {
+  private plotPitch(audioTime: number, midi: number, onsetId: number) {
     const row = this.rows[this.activeRow];
     if (row.measureStart < -1) return;
     if (row.measureStart === -1 && this.countInStart < 0) return;
@@ -165,25 +237,16 @@ export class Timeline {
     const ctx = row.ctx;
     ctx.fillStyle = "#00f0ff";
 
-    // A sustained pitch arrives as a stream of close-in-time updates at a
-    // similar midi. Connect consecutive updates into one continuous bar; a
-    // large time gap or pitch jump (a new onset) starts a fresh bar.
-    const sameBar =
-      this.last !== null &&
-      audioTime - this.last.time < beatDur / 8 &&
-      audioTime >= this.last.time &&
-      Math.abs(midi - this.last.midi) < 2;
-
-    if (sameBar && this.last) {
-      const x0 = Math.min(this.last.x, x);
-      const x1 = Math.max(this.last.x, x);
-      ctx.fillRect(x0, y - BAND_HEIGHT / 2, Math.max(1, x1 - x0), BAND_HEIGHT);
-    } else {
-      // New onset: seed the bar with a short cap so a single short note still
-      // reads as a small bar rather than vanishing.
-      ctx.fillRect(x, y - BAND_HEIGHT / 2, 2, BAND_HEIGHT);
-    }
-
-    this.last = { x, y, time: audioTime, midi };
+    // Group strictly by onsetId. Same onsetId (a sustained note, even with
+    // ≥2 semitone pitch wobble between reads) extends ONE bar; a new onsetId
+    // (a fresh pluck / hammer-on / keyboard note) starts a new bar.
+    const bar = this.bars.feed(onsetId, x, y);
+    if (!bar) return;
+    ctx.fillRect(
+      bar.x0,
+      bar.y - BAND_HEIGHT / 2,
+      Math.max(1, bar.x1 - bar.x0),
+      BAND_HEIGHT,
+    );
   }
 }

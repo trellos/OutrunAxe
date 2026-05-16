@@ -322,7 +322,7 @@ function build(variantId: string, opts?: { guitar?: GuitarId }): BuiltCharacter 
 export const def: CharacterDef = {
   id: "main-metal",
   kind: "main",
-  label: "Metal",
+  label: "Winter",
   variants: VARIANTS.map((v) => ({ id: v.id, label: v.label })),
   build,
 };
