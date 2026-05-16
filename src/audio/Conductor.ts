@@ -24,6 +24,8 @@ const SCHEDULE_INTERVAL_MS = 25;
 const LOOKAHEAD_SEC = 0.1;
 const COUNT_IN_BEATS = 4;
 const PLAY_BEATS = 16; // 4 measures × 4 beats
+export const MIN_BPM = 60;
+export const MAX_BPM = 120;
 
 /** ±window in seconds around an expected attack position. Shared with the
  *  offline test bench so both callers use identical beat-proximity logic. */
@@ -43,6 +45,7 @@ export class Conductor {
   private playStartBeat = -1;  // beat at which count-in begins
   private phase: Phase = "idle";
   private timer: number | null = null;
+  private finishTimer: number | null = null;
   private beatLog: BeatInfo[] = []; // recent scheduled beats (for visuals)
   private listeners = new Set<(b: BeatInfo) => void>();
   private phaseListeners = new Set<(p: Phase) => void>();
@@ -67,7 +70,7 @@ export class Conductor {
 
   setBpm(bpm: number) {
     if (this.phase !== "idle" && this.phase !== "preroll") return;
-    const clamped = Math.max(60, Math.min(120, bpm));
+    const clamped = Math.max(MIN_BPM, Math.min(MAX_BPM, bpm));
     if (this.phase === "preroll") {
       // Re-anchor so the next scheduled beat lands at the same audio time but
       // future beats use the new spacing.
@@ -106,6 +109,10 @@ export class Conductor {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.finishTimer !== null) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
     }
     this.phase = "idle";
     this.playStartBeat = -1;
@@ -217,7 +224,7 @@ export class Conductor {
         // then transition to done.
         const endAt = time + spb;
         const delay = Math.max(0, (endAt - this.ctx.currentTime) * 1000);
-        window.setTimeout(() => this.finish(), delay);
+        this.finishTimer = window.setTimeout(() => this.finish(), delay);
       }
     }
 
