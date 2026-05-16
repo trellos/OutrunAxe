@@ -412,8 +412,15 @@ export class LevelState implements GameState {
    */
   private playNoteFeedback(midi: number, m: number, audioTime: number) {
     const ctx = getAudioContext();
+    // `audioTime` is the onset-corrected attack time — PitchEngine BACKDATES
+    // it by the pipeline latency, so it's almost always in the PAST relative
+    // to ctx.currentTime. Scheduling the envelope at a past t0 means it has
+    // already decayed to silence by the time it sounds (the bug: "can't hear
+    // the note"). This is immediate feedback, so start at now; only honour
+    // audioTime if it's genuinely in the future.
+    const now = ctx.currentTime;
     const t0 =
-      Number.isFinite(audioTime) && audioTime > 0 ? audioTime : ctx.currentTime;
+      Number.isFinite(audioTime) && audioTime > now ? audioTime : now;
     const freq = 440 * Math.pow(2, (midi - 69) / 12);
 
     const bpm = this.conductor?.currentBpm ?? this.level.bpm;
@@ -423,8 +430,8 @@ export class LevelState implements GameState {
 
     // Volume floor->max scaled by strength. Peak kept modest so it layers
     // over drums without clipping. (~0.05 quiet -> ~0.22 strong.)
-    const VOL_FLOOR = 0.05;
-    const VOL_MAX = 0.22;
+    const VOL_FLOOR = 0.14;
+    const VOL_MAX = 0.4;
     const peak = VOL_FLOOR + (VOL_MAX - VOL_FLOOR) * THREE.MathUtils.clamp(m, 0, 1);
 
     // Shared percussive envelope: ~3ms attack, exponential decay to note end.
