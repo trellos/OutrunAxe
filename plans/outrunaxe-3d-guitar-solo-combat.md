@@ -417,3 +417,55 @@ Reviewed against the Blueprint anti-pattern catalog before finalizing:
 - Step 1 is the largest and load-bearing. If it slips, everything slips — flagged as strongest-model.
 - Step 6 (combo detection) is the trickiest algorithmically — flagged as strongest-model and demands unit tests.
 - No physics engine introduced. Hit detection is event-driven off pitch-fired, not collider-based — documented as an explicit anti-pattern guard.
+
+---
+
+## As Built (status: executed, committed `a2c57d2`)
+
+The plan was executed end to end. Notable deviations and additions discovered
+during the build:
+
+**Delivered**
+- Phaser fully removed; Three.js renderer + `Game` state machine
+  (`Boot → Loadout → LevelSelect → Level → Results`).
+- On-rails `RailRunner` (CatmullRomCurve3) with a **chase camera** (avatar is
+  a world object, camera trails behind+above) — this replaced the originally
+  sketched camera-parented avatar after the latter caused skinned-mesh
+  culling/lighting bugs.
+- Real CC0 `RobotExpressive` GLB character via `GLTFLoader` + SkeletonUtils;
+  procedural guitar; cel-shaded; strum animation on `pitchFired`.
+- 3 outfits × 3 guitars loadout with live preview + `localStorage` persistence.
+- `KeyResolver` candidate-key narrowing; `ComboScorer` with all 5 multipliers
+  (start/end-on-root, two-octave run, repeated triplet, repeated 16th) applied
+  as a retroactive damage burst.
+- `EnemyDirector` + 12 distinct enemy designs (boombox/cassette/disco/…/5
+  robots) with faces, outlines, eased approach, death pop; `BulletSystem`
+  tracers.
+- Timeline HUD (3 lines × 4 measures, scrolls up), HP/status/combo overlay.
+- 3 levels (Strip Mall 90 / Subway 110 / Rooftop 130 BPM) with per-theme
+  procedural canvas-textured environments + props (cars, lamps, hydrants,
+  dumpsters, neon signage, billboards).
+- Cel pipeline: `MeshToonMaterial` + shared 3-step ramp, inverse-hull
+  outlines, `EffectComposer` (bloom + colour grade), ACES tone mapping.
+- `BackingTrack` per-level bass/pad/arp synth on the Conductor clock.
+- Audio engine (`src/audio/`) preserved unchanged as planned.
+
+**Deviations from plan**
+- Combo detection shipped without the unit-test suite the plan flagged for
+  Step 6 (verified live instead — `ROOT START + ROOT END ×2.0` confirmed
+  on-screen). Tests remain open work.
+- Step 6's "no physics" guard held; hit detection is purely event-driven.
+
+**Hard-won gotchas now documented in `AGENTS.md`** (do not regress):
+GLB rig-binding (wrap clone in outer group, step mixer frame-0 before
+measuring), skinned-mesh `frustumCulled=false`, high bloom threshold (~0.9)
+to avoid white-blob blowout, world-space avatar lighting.
+
+**Open work**
+- ComboScorer unit tests.
+- Live audible verification of `BackingTrack` mix balance (built + wired,
+  validated structurally not sonically).
+- Difficulty tuning beyond Level 1 (L1 clears 100/100 with auto-fire; L2/L3
+  spawn density not yet balanced for unaided human play).
+- Mic-latency calibration screen (carried-over open item from the original
+  project).
