@@ -7,11 +7,20 @@ const PX_PER_BEAT = 36;
 const ROW_HEIGHT = 56;
 const MIDI_MIN = 40;
 const MIDI_MAX = 76;
+const BAND_HEIGHT = 6;
+const COUNT_IN_BEATS = 4;
 
 interface RowState {
   measureStart: number;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
+}
+
+interface LastPoint {
+  x: number;
+  y: number;
+  time: number;
+  midi: number;
 }
 
 export class Timeline {
@@ -21,6 +30,10 @@ export class Timeline {
   private offConductor?: () => boolean;
   private activeRow = ROWS - 1;
   private bpm = 90;
+  // count-in plotting needs its own time origin since measureStartTime() only
+  // covers the play measures; this is the audio time of count-in beat 0.
+  private countInStart = -1;
+  private last: LastPoint | null = null;
 
   constructor(parent: HTMLElement, private conductor: Conductor) {
     this.container = document.createElement("div");
@@ -46,6 +59,16 @@ export class Timeline {
     for (const row of this.rows) this.drawGrid(row);
 
     this.offConductor = this.conductor.onBeat((info) => {
+      // Count-in records into a virtual measure of index -1 so plotting has a
+      // home before play measure 0 exists. Allocate that row on count-in
+      // downbeat and capture its audio-time origin.
+      if (info.phase === "countIn") {
+        if (info.beatInPhase === 0 && this.rows[ROWS - 1].measureStart !== -1) {
+          this.countInStart = info.time;
+          this.shiftRowsUp(-1);
+        }
+        return;
+      }
       if (info.phase !== "playing") return;
       if (info.beatInPhase !== 0) return;
       const phraseIdx = Math.floor(info.measureInPlay / 4);
@@ -61,7 +84,8 @@ export class Timeline {
     });
 
     this.offTracker = tracker.onPitchUpdate((u) => {
-      if (this.conductor.currentPhase !== "playing") return;
+      const phase = this.conductor.currentPhase;
+      if (phase !== "playing" && phase !== "countIn") return;
       this.plotPitch(u.time, u.midi);
     });
   }
@@ -83,6 +107,8 @@ export class Timeline {
     bottom.ctx.clearRect(0, 0, bottom.canvas.width, ROW_HEIGHT);
     this.drawGrid(bottom);
     this.activeRow = ROWS - 1;
+    // A row boundary breaks bar continuity — the next pitch starts a new bar.
+    this.last = null;
   }
 
   private drawGrid(row: RowState) {
@@ -115,20 +141,49 @@ export class Timeline {
     }
   }
 
+  /** Audio time at which the active row begins. measureStart === -1 is the
+   *  count-in row (origin captured on the count-in downbeat); otherwise it's
+   *  a play measure resolved via the conductor. */
+  private rowStartTime(measureStart: number): number {
+    if (measureStart === -1) return this.countInStart;
+    return this.conductor.measureStartTime(measureStart);
+  }
+
   private plotPitch(audioTime: number, midi: number) {
     const row = this.rows[this.activeRow];
-    if (row.measureStart < 0) return;
+    if (row.measureStart < -1) return;
+    if (row.measureStart === -1 && this.countInStart < 0) return;
     const beatDur = 60 / this.bpm;
-    const rowStartTime = this.conductor.measureStartTime(row.measureStart);
+    const rowStartTime = this.rowStartTime(row.measureStart);
+    const rowSpan =
+      (row.measureStart === -1 ? COUNT_IN_BEATS : BEATS_PER_ROW) * beatDur;
     const into = audioTime - rowStartTime;
-    if (into < 0 || into > BEATS_PER_ROW * beatDur) return;
+    if (into < 0 || into > rowSpan) return;
     const x = (into / beatDur) * PX_PER_BEAT;
     const norm = Math.max(0, Math.min(1, (midi - MIDI_MIN) / (MIDI_MAX - MIDI_MIN)));
     const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 8) - 4;
     const ctx = row.ctx;
     ctx.fillStyle = "#00f0ff";
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
+
+    // A sustained pitch arrives as a stream of close-in-time updates at a
+    // similar midi. Connect consecutive updates into one continuous bar; a
+    // large time gap or pitch jump (a new onset) starts a fresh bar.
+    const sameBar =
+      this.last !== null &&
+      audioTime - this.last.time < beatDur / 8 &&
+      audioTime >= this.last.time &&
+      Math.abs(midi - this.last.midi) < 2;
+
+    if (sameBar && this.last) {
+      const x0 = Math.min(this.last.x, x);
+      const x1 = Math.max(this.last.x, x);
+      ctx.fillRect(x0, y - BAND_HEIGHT / 2, Math.max(1, x1 - x0), BAND_HEIGHT);
+    } else {
+      // New onset: seed the bar with a short cap so a single short note still
+      // reads as a small bar rather than vanishing.
+      ctx.fillRect(x, y - BAND_HEIGHT / 2, 2, BAND_HEIGHT);
+    }
+
+    this.last = { x, y, time: audioTime, midi };
   }
 }

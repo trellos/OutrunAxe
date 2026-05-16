@@ -6,6 +6,7 @@ import { LevelSelectState } from "./LevelSelectState";
 import { level1 } from "../levels/level1";
 import { level2 } from "../levels/level2";
 import { level3 } from "../levels/level3";
+import { MenuPulse } from "../hud/MenuPulse";
 
 export class BootState implements GameState {
   readonly name = "boot";
@@ -13,6 +14,7 @@ export class BootState implements GameState {
   private hudParent: HTMLElement;
   private rotor: THREE.Object3D | null = null;
   private game!: Game;
+  private pulse: MenuPulse | null = null;
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -86,10 +88,15 @@ export class BootState implements GameState {
 
     const btn = this.overlay.querySelector(".boot-play") as HTMLButtonElement;
     btn.addEventListener("click", () => this.startLevel());
+
+    this.pulse = new MenuPulse(this.hudParent);
+    void this.pulse.start();
   }
 
   exit() {
     if (this.rotor) this.game.renderer.worldScene.remove(this.rotor);
+    this.pulse?.stop();
+    this.pulse = null;
     this.overlay?.remove();
   }
 
@@ -98,6 +105,7 @@ export class BootState implements GameState {
       this.rotor.rotation.y += dt * 0.6;
       this.rotor.rotation.x += dt * 0.3;
     }
+    this.pulse?.tick();
   }
 
   private startLevel() {

@@ -210,6 +210,23 @@ html, body {
   image-rendering: pixelated;
 }
 
+.outrun-menupulse {
+  top: auto;
+  bottom: 18px;
+  gap: 3px;
+  opacity: 0.82;
+  transform: translateX(-50%) scale(0.78);
+  transform-origin: bottom center;
+}
+
+.menupulse-label {
+  font-size: 9px;
+  letter-spacing: 3px;
+  color: #00f0ff;
+  text-align: center;
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.6);
+}
+
 .outrun-results {
   position: absolute;
   inset: 0;

@@ -4,6 +4,7 @@ import type { LevelConfig } from "../levels/level1";
 import { level1 } from "../levels/level1";
 import { level2 } from "../levels/level2";
 import { level3 } from "../levels/level3";
+import { MenuPulse } from "../hud/MenuPulse";
 
 interface LevelEntry {
   level: LevelConfig;
@@ -20,6 +21,7 @@ export class LevelSelectState implements GameState {
   private icos: THREE.Mesh[] = [];
   private lights: THREE.Light[] = [];
   private entries: LevelEntry[];
+  private pulse: MenuPulse | null = null;
 
   constructor(hudParent: HTMLElement, onPick: (level: LevelConfig) => void) {
     this.hudParent = hudParent;
@@ -124,9 +126,14 @@ export class LevelSelectState implements GameState {
         if (entry) this.onPick(entry.level);
       });
     });
+
+    this.pulse = new MenuPulse(this.hudParent);
+    void this.pulse.start();
   }
 
   exit() {
+    this.pulse?.stop();
+    this.pulse = null;
     const { worldScene } = this.game.renderer;
     for (const m of this.icos) {
       worldScene.remove(m);
@@ -146,6 +153,7 @@ export class LevelSelectState implements GameState {
     for (const m of this.icos) {
       m.rotation.y += dt * 0.5;
     }
+    this.pulse?.tick();
   }
 }
 

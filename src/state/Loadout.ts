@@ -1,10 +1,28 @@
 export type OutfitId = "rocker70s" | "emo90s" | "genz20s";
 export type GuitarId = "goldtop" | "blackstrat" | "jazzmaster";
+export type MainId = "main-gunslinger" | "main-silva" | "main-metal";
 
 export interface Loadout {
-  outfit: OutfitId;
+  /** Selected Killer7 main character (registry id). */
+  character: MainId;
+  /** Variant id within that character (v1/v2/v3). */
+  variant: string;
   guitar: GuitarId;
+  /** Legacy palette key — kept for the cel-shade fallback path only. */
+  outfit: OutfitId;
 }
+
+export const MAINS: { id: MainId; label: string; tag: string }[] = [
+  { id: "main-gunslinger", label: "80s Gunslinger", tag: "shirt open, big hair" },
+  { id: "main-silva", label: "Skinny Singer", tag: "crop tee, long legs" },
+  { id: "main-metal", label: "Metal", tag: "biceps, all black" },
+];
+
+export const VARIANTS: { id: string; label: string }[] = [
+  { id: "v1", label: "Variant 1" },
+  { id: "v2", label: "Variant 2" },
+  { id: "v3", label: "Variant 3" },
+];
 
 export const OUTFITS: { id: OutfitId; label: string; tag: string }[] = [
   { id: "rocker70s", label: "Sunset Strip '78", tag: "denim & bandana" },
@@ -20,17 +38,29 @@ export const GUITARS: { id: GuitarId; label: string; tag: string }[] = [
 
 const KEY = "outrunaxe.loadout";
 
+const DEFAULT_LOADOUT: Loadout = {
+  character: "main-gunslinger",
+  variant: "v1",
+  guitar: "goldtop",
+  outfit: "rocker70s",
+};
+
 export function loadLoadout(): Loadout {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.outfit && parsed.guitar) return parsed;
+      const parsed = JSON.parse(raw) as Partial<Loadout>;
+      return {
+        character: parsed.character ?? DEFAULT_LOADOUT.character,
+        variant: parsed.variant ?? DEFAULT_LOADOUT.variant,
+        guitar: parsed.guitar ?? DEFAULT_LOADOUT.guitar,
+        outfit: parsed.outfit ?? DEFAULT_LOADOUT.outfit,
+      };
     }
   } catch {
     // ignore
   }
-  return { outfit: "rocker70s", guitar: "goldtop" };
+  return { ...DEFAULT_LOADOUT };
 }
 
 export function saveLoadout(l: Loadout) {

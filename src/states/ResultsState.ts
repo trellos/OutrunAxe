@@ -1,9 +1,11 @@
 import type { Game, GameState } from "../engine/Game";
 import type { PlayerStats } from "../combat/PlayerStats";
+import { MenuPulse } from "../hud/MenuPulse";
 
 export class ResultsState implements GameState {
   readonly name = "results";
   private overlay: HTMLDivElement | null = null;
+  private pulse: MenuPulse | null = null;
 
   constructor(
     private hudParent: HTMLElement,
@@ -52,11 +54,18 @@ export class ResultsState implements GameState {
     this.overlay
       .querySelector(".results-levelselect")!
       .addEventListener("click", () => this.onLevelSelect());
+
+    this.pulse = new MenuPulse(this.hudParent);
+    void this.pulse.start();
   }
 
   exit() {
+    this.pulse?.stop();
+    this.pulse = null;
     this.overlay?.remove();
   }
 
-  update() {}
+  update() {
+    this.pulse?.tick();
+  }
 }

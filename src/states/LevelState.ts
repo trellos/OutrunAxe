@@ -233,7 +233,10 @@ export class LevelState implements GameState {
     this.timeline.detach();
     this.overlay.root.remove();
     for (const g of this.envGroups) this.game.renderer.worldScene.remove(g);
-    if (this.avatar) this.game.renderer.worldScene.remove(this.avatar);
+    if (this.avatar) {
+      this.game.renderer.worldScene.remove(this.avatar);
+      this.avatar.dispose();
+    }
     for (const l of this.charLights) {
       this.game.renderer.worldScene.remove(l);
       if ((l as THREE.SpotLight).target) {
