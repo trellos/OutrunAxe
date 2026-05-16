@@ -94,7 +94,19 @@ export function buildK7Guitar(guitar: GuitarId): {
   dispose: () => void;
 } {
   const c = GUITAR_COLORS[guitar];
+  // `inner` holds the actual built geometry at its native (oversized) scale;
+  // `group` is the returned wrapper we shrink so the body reads like a real
+  // electric guitar held by a ~1.85u figure. The Shape+ExtrudeGeometry bodies
+  // span ~0.68–0.78u wide natively (plus bevel + ink outline), which towered
+  // over the rig torso (~0.3u wide). GUITAR_SCALE brings the body major
+  // dimension back to roughly the OLD box footprint (~0.62w × ~0.34h × ~0.1d),
+  // i.e. ≈0.5–0.65u, not ≈1.5u. Neck/head/strings are children of `inner`,
+  // so they shrink proportionally and the mount orientation is preserved.
+  const GUITAR_SCALE = 0.82;
   const group = new THREE.Group();
+  const inner = new THREE.Group();
+  inner.scale.setScalar(GUITAR_SCALE);
+  group.add(inner);
   const mats: THREE.Material[] = [];
 
   // Per-guitar body silhouette as a flat extruded profile in the X/Y plane.
@@ -144,45 +156,45 @@ export function buildK7Guitar(guitar: GuitarId): {
   });
   bodyGeo.center();
   const body = new THREE.Mesh(bodyGeo, k7Mat(c.body));
-  part(group, body, mats, { outlineScale: 1.05 });
+  part(inner, body, mats, { outlineScale: 1.05 });
 
   const guard = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.12), k7Mat(c.guard));
   guard.position.set(-0.08, -0.02, 0.01);
-  part(group, guard, mats, { outline: false });
+  part(inner, guard, mats, { outline: false });
 
   for (const px of [-0.02, 0.12]) {
     const pickup = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 0.13), k7Mat(0x141418));
     pickup.position.set(px, 0, 0.01);
-    group.add(pickup);
+    inner.add(pickup);
     mats.push(pickup.material as THREE.Material);
   }
 
   const neck = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.78, 0.05), k7Mat(c.neck));
   neck.position.set(0.42, 0, 0);
   neck.rotation.z = -Math.PI / 2;
-  part(group, neck, mats, { outlineScale: 1.05 });
+  part(inner, neck, mats, { outlineScale: 1.05 });
 
   const board = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.1, 0.012), k7Mat(0x1c1208));
   board.position.set(0.42, 0, 0.03);
-  group.add(board);
+  inner.add(board);
   mats.push(board.material as THREE.Material);
   for (let i = 1; i <= 7; i++) {
     const fret = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.1, 0.014), k7Flat(0xd8d2bc));
     fret.position.set(0.1 + i * 0.085, 0, 0.034);
-    group.add(fret);
+    inner.add(fret);
   }
 
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.04), k7Mat(c.head));
   head.position.set(0.86, 0.03, 0);
   head.rotation.z = -Math.PI / 2 + 0.16;
-  part(group, head, mats, { outlineScale: 1.06 });
+  part(inner, head, mats, { outlineScale: 1.06 });
 
   const strMat = k7Flat(0xe9e4c6);
   for (let s = 0; s < 6; s++) {
     const str = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.86, 0.003), strMat);
     str.position.set(0.42, -0.03 + s * 0.012, 0.05);
     str.rotation.z = -Math.PI / 2;
-    group.add(str);
+    inner.add(str);
   }
 
   return {

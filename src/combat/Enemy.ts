@@ -154,7 +154,9 @@ export class Enemy {
     this.baseEmissive = this.toonMats.map((m) => m.emissiveIntensity);
 
     this.label = makeLabelSprite(opts.pitchClass, colorHex);
-    this.label.position.set(0, 1.35, 0);
+    // Nudged up from 1.35 → 1.75 so the now-larger square label still floats
+    // clearly above the enemy body instead of overlapping it.
+    this.label.position.set(0, 1.75, 0);
     this.object.add(this.label);
   }
 
@@ -893,52 +895,57 @@ function generateMicGrilleTexture(accent: number): THREE.CanvasTexture {
 // ===== Label sprite ========================================================
 
 function makeLabelSprite(text: string, color: number): THREE.Sprite {
+  // High-res square canvas keeps the big glyph crisp at gameplay distance.
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 128;
+  canvas.width = 512;
+  canvas.height = 512;
   const ctx = canvas.getContext("2d")!;
+  // No background panel — fully transparent canvas, only the glyph is drawn.
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Dark rounded-rect backing so the letter pops against bright bodies.
-  const bx = 64, by = 26, bw = 128, bh = 76, br = 22;
-  ctx.fillStyle = "rgba(8,8,12,0.78)";
-  roundRect(ctx, bx, by, bw, bh, br);
-  ctx.fill();
-  ctx.strokeStyle = hexToCSS(color);
-  ctx.lineWidth = 5;
-  roundRect(ctx, bx, by, bw, bh, br);
-  ctx.stroke();
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
 
-  ctx.font = "bold 84px monospace";
+  ctx.font = "900 320px 'Arial Black', 'Helvetica Neue', Arial, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+
+  // Soft colored glow so the block letter separates from bright neon.
   ctx.shadowColor = hexToCSS(color);
-  ctx.shadowBlur = 22;
-  ctx.fillStyle = "#fff";
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
-  ctx.shadowBlur = 0;
+  ctx.shadowBlur = 36;
+
+  // Thick black outline pass (drawn under the fill) for contrast against
+  // both bright buildings and the dark sky.
   ctx.strokeStyle = "#000";
-  ctx.lineWidth = 4;
-  ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+  ctx.lineWidth = 26;
+  ctx.strokeText(text, cx, cy);
+
+  // Second, slightly tighter dark outline kills any glow bleed at the edge.
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(0,0,0,0.9)";
+  ctx.lineWidth = 12;
+  ctx.strokeText(text, cx, cy);
+
+  // Bright fill: white core with a thin note-color rim keeps per-note color
+  // coding readable while staying high-contrast.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, cx, cy);
+  ctx.strokeStyle = hexToCSS(color);
+  ctx.lineWidth = 5;
+  ctx.strokeText(text, cx, cy);
 
   const t = new THREE.CanvasTexture(canvas);
   t.minFilter = THREE.LinearFilter;
   t.magFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(1.8, 0.9, 1);
+  // Bigger in-world and square aspect to match the 512×512 canvas (was
+  // 1.8×0.9 on a 2:1 canvas → roughly 1.7× the footprint now).
+  sprite.scale.set(3.0, 3.0, 1);
   sprite.renderOrder = 999;
   return sprite;
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
 }
 
 // ===== Utilities ===========================================================

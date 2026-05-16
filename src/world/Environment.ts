@@ -973,6 +973,56 @@ export function buildEnvironment(scene: THREE.Scene, level: LevelConfig): THREE.
   const sampleSlots = Math.max(1, Math.ceil(BUILDING_CAP / 2));
   const buildings: Array<{ mesh: THREE.Mesh; h: number; w: number; d: number }> = [];
   let placed = 0;
+
+  // --- Corridor cull -------------------------------------------------------
+  // The bug: a building placed lateral to ONE curve sample can still swing
+  // into the camera's FORWARD view, because the curve bends and the chase
+  // camera (railPos - fwd*4.6, looking railPos + fwd*7) sees sideways into
+  // the flanking building line on those bends. Per-sample setback is not
+  // enough — the guarantee must hold against the ENTIRE curve.
+  //
+  // So: densely sample the whole curve once, and for every candidate building
+  // compute the minimum XZ distance from its (rotated) footprint to ANY curve
+  // point. If that nearest-point distance is below the corridor clearance
+  // CLEAR, push the building further out along its lateral `left` direction
+  // until it clears (or drop it if it can't fit within reason). Buildings
+  // that still end up relatively near are also height-capped so that even if
+  // they are peripherally visible they never wall off the forward view.
+  //
+  // The subway tunnel walls (built at side*7 in buildSubwayTunnel) are
+  // intentionally close and are left untouched; here we only ensure no extra
+  // building intrudes the tunnel interior/mouth (effective CLEAR >= ~9 keeps
+  // every building footprint outside the 7u tunnel wall).
+  const CURVE_SAMPLES = 280;
+  const curvePts: THREE.Vector3[] = [];
+  for (let i = 0; i <= CURVE_SAMPLES; i++) {
+    curvePts.push(level.curve.getPointAt(i / CURVE_SAMPLES));
+  }
+  // Centre-to-nearest-curve-point clearance. Generous so nothing dominates
+  // the forward view on bends. Subway is a touch tighter (tunnel is narrow
+  // by design) but still keeps footprints well outside the 7u wall.
+  const CLEAR = theme === "subway" ? 21 : 24;
+  // Buildings whose nearest-curve distance is below this must be shorter so a
+  // peripherally-visible slab can't wall off the view.
+  const HEIGHT_CAP_RANGE = 32;
+  const NEAR_HEIGHT_CAP = 12;
+
+  // Minimum XZ distance from a footprint centre `c` (rotated box of half
+  // extents hx along local X, hz along local Z, yaw `rotY`) to the whole
+  // curve. Conservative: treat the footprint as its circumscribed circle so
+  // the corridor holds for every orientation the lookAt() yaw can produce.
+  function nearestCurveDist(c: THREE.Vector3): number {
+    let best = Infinity;
+    for (let i = 0; i < curvePts.length; i++) {
+      const p = curvePts[i];
+      const dx = c.x - p.x;
+      const dz = c.z - p.z;
+      const dd = dx * dx + dz * dz;
+      if (dd < best) best = dd;
+    }
+    return Math.sqrt(best);
+  }
+
   for (let s = 0; s < sampleSlots && placed < BUILDING_CAP; s++) {
     const t = (s + 0.5) / sampleSlots;
     const onRail = level.curve.getPointAt(Math.min(0.999, t));
@@ -982,20 +1032,45 @@ export function buildEnvironment(scene: THREE.Scene, level: LevelConfig): THREE.
     for (const side of [-1, 1]) {
       if (placed >= BUILDING_CAP) break;
       const kind = pickKind(theme);
-      const { w, h, d } = sizeFor(kind);
-      // Buildings are tall (18-32u) so the camera can't clear them by going
-      // over. The chase camera trails ~4.6u behind on a curve that sways +-4u
-      // in X, so its lateral offset can swing ~8-9u toward one building line.
-      // Set buildings well back so a clear corridor always exists for the
-      // trailing camera; low props (lampposts/cars/signs) stay near and are
-      // unchanged since they don't occlude. The subway tunnel walls (side*7,
-      // built in buildSubwayTunnel) are intentionally close and untouched.
+      const size = sizeFor(kind);
+      const { w, d } = size;
+      let { h } = size;
+      // Conservative footprint radius: circumscribed circle of the w x d box
+      // (orientation-independent, so the corridor holds for any lookAt yaw).
+      const footRadius = 0.5 * Math.hypot(w, d);
+
       const baseDist = theme === "subway" ? 20 : theme === "rooftop" ? 20 : 17;
-      const dist = baseDist + Math.random() * 4;
-      const offset = left.clone().multiplyScalar(side * dist);
+      let dist = baseDist + Math.random() * 4;
+
+      // Push outward until the footprint's nearest point to the WHOLE curve
+      // is at least CLEAR. (nearestCentre - footRadius >= CLEAR.)
+      const candidate = new THREE.Vector3();
+      let nearestCentre = 0;
+      let ok = false;
+      for (let attempt = 0; attempt < 64; attempt++) {
+        candidate.copy(onRail).add(left.clone().multiplyScalar(side * dist));
+        nearestCentre = nearestCurveDist(candidate);
+        if (nearestCentre - footRadius >= CLEAR) {
+          ok = true;
+          break;
+        }
+        // Step out by the remaining deficit (plus a margin) along `left`.
+        const deficit = CLEAR + footRadius - nearestCentre;
+        dist += Math.max(1.5, deficit + 1);
+        // Hard cap: a building shoved absurdly far is just dropped.
+        if (dist > baseDist + 70) break;
+      }
+      if (!ok) continue; // can't fit a clear corridor here — drop it.
+
+      // Height cap for buildings that are still relatively near: even a
+      // peripherally-visible building must not be a towering wall.
+      if (nearestCentre - footRadius < HEIGHT_CAP_RANGE) {
+        h = Math.min(h, NEAR_HEIGHT_CAP);
+      }
+
       const facadeIdx = Math.floor(Math.random() * facadeCount);
       const mesh = new THREE.Mesh(sharedBox(w, h, d), matPool[facadeIdx]);
-      mesh.position.copy(onRail).add(offset);
+      mesh.position.copy(candidate);
       mesh.position.y = h / 2 - 1.55;
       mesh.lookAt(onRail.x, mesh.position.y, onRail.z);
       buildingsGroup.add(mesh);

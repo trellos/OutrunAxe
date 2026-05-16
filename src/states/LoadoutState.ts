@@ -38,8 +38,14 @@ export class LoadoutState implements GameState {
     const { worldScene, worldCamera } = game.renderer;
     worldScene.background = new THREE.Color(0x0a0612);
 
-    worldCamera.position.set(0, 0, 3.2);
-    worldCamera.lookAt(0, 0, 0);
+    // Frame the WHOLE figure (feet y≈0 → head ~2.2u, plus the slung guitar)
+    // with headroom, vertically centred behind the lower overlay card.
+    // worldCamera vertical FOV = 70° → visible half-height = d·tan(35°),
+    // tan(35°) ≈ 0.7002. At d ≈ 2.6 the full visible height ≈ 3.64u, so a
+    // ~2.3u figure fills ~63% of frame height (well under the 0.8× crop
+    // limit of ~2.91u) — full body in frame, no giant close-up.
+    worldCamera.position.set(0, 1.05, 2.6);
+    worldCamera.lookAt(0, 1.0, 0);
 
     this.loadout = loadLoadout();
     // Randomize the variant so the first shown character isn't always v1.

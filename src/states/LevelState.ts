@@ -71,6 +71,10 @@ export class LevelState implements GameState {
   private finishedAt = 0;
   private done = false;
   private measureDamageBuckets: Map<number, number> = new Map();
+  // Latest measure combo multiplier (1 = no combo). Tracked so per-note audio
+  // feedback can blend in the player's current scoring streak. Tweak the
+  // normalization in `playNoteFeedback`.
+  private lastComboMultiplier = 1;
 
   constructor(hudParent: HTMLElement, level: LevelConfig = level1) {
     this.hudParent = hudParent;
@@ -186,6 +190,21 @@ export class LevelState implements GameState {
         flashCombo(this.overlay, `${ev.pitchClass}  miss`, "#888");
       }
       this.avatar?.triggerStrum(ev.audioTime);
+
+      // Quick synthesized "good note" blip at the played pitch. Strength `m`
+      // blends note confidence with the current combo multiplier; it drives
+      // both volume and a sine->sawtooth waveform morph (see playNoteFeedback).
+      const comboNorm = THREE.MathUtils.clamp(
+        (this.lastComboMultiplier - 1) / (5 - 1),
+        0,
+        1,
+      );
+      const strength = THREE.MathUtils.clamp(
+        ev.confidence * 0.6 + comboNorm * 0.4,
+        0,
+        1,
+      );
+      this.playNoteFeedback(ev.midi, strength, ev.audioTime);
     });
 
     this.offCombo = this.comboScorer.bus.on("measureCombo", (combo) => {
@@ -334,6 +353,10 @@ export class LevelState implements GameState {
   }
 
   private applyMeasureCombo(combo: MeasureComboResult) {
+    // Remember the latest streak so the per-note audio blip can scale its
+    // volume/waveform with the player's current combo (decayed-back-to-1 logic
+    // could live here later; for now it tracks the most recent measure).
+    this.lastComboMultiplier = combo.totalMultiplier;
     if (combo.tags.length === 0) return;
     const baseDmg = this.measureDamageBuckets.get(combo.measureIdx) ?? 0;
     // Bonus damage = (multiplier - 1) * what they already did this measure.
@@ -362,6 +385,84 @@ export class LevelState implements GameState {
       `${text}  x${combo.totalMultiplier.toFixed(1)}`,
       "#c7ff2b",
     );
+  }
+
+  /**
+   * Synthesize a short "good note" blip at the played pitch.
+   *
+   * @param midi      MIDI note number of the detected note.
+   * @param m         Strength in [0,1] (confidence blended with combo). Drives
+   *                  volume and the sine->sawtooth waveform morph.
+   * @param audioTime Audio-clock time to schedule at (event time).
+   *
+   * Envelope/duration: a THIRTY-SECOND note = (60 / bpm) / 8 seconds. Sharp
+   * ~3ms attack then exponential decay to the note end so it reads as a quick
+   * percussive blip rather than a sustained tone (~0.094s at 80 BPM).
+   *
+   * Volume: scales with m from a quiet floor (~0.05) up to a modest max
+   * (~0.22) so a strong note sits over the drums without clipping. m is
+   * already clamped to [0,1] by the caller, so a strong note reaches max
+   * without needing an unrealistic multiplier.
+   *
+   * Waveform: WebAudio oscillators can't morph type continuously, so two
+   * oscillators at the same freq (one sine, one sawtooth) are crossfaded by
+   * per-osc gains: sineGain = (1 - m), sawGain = m. m=0 => pure sine,
+   * m=1 => pure sawtooth, smooth between. Both feed a shared envelope gain ->
+   * gentle highpass -> destination, and auto-stop at the note end (no leaks).
+   */
+  private playNoteFeedback(midi: number, m: number, audioTime: number) {
+    const ctx = getAudioContext();
+    const t0 =
+      Number.isFinite(audioTime) && audioTime > 0 ? audioTime : ctx.currentTime;
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+
+    const bpm = this.conductor?.currentBpm ?? this.level.bpm;
+    // Thirty-second note: a beat is (60 / bpm)s; a 1/32 note is 1/8 of that.
+    const dur = (60 / bpm) / 8;
+    const end = t0 + dur;
+
+    // Volume floor->max scaled by strength. Peak kept modest so it layers
+    // over drums without clipping. (~0.05 quiet -> ~0.22 strong.)
+    const VOL_FLOOR = 0.05;
+    const VOL_MAX = 0.22;
+    const peak = VOL_FLOOR + (VOL_MAX - VOL_FLOOR) * THREE.MathUtils.clamp(m, 0, 1);
+
+    // Shared percussive envelope: ~3ms attack, exponential decay to note end.
+    const env = ctx.createGain();
+    const attack = Math.min(0.003, dur * 0.25);
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.linearRampToValueAtTime(peak, t0 + attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, end);
+
+    // Sine<->sawtooth crossfade via two oscillators at the same freq.
+    const mm = THREE.MathUtils.clamp(m, 0, 1);
+    const sineOsc = ctx.createOscillator();
+    sineOsc.type = "sine";
+    sineOsc.frequency.value = freq;
+    const sineGain = ctx.createGain();
+    sineGain.gain.value = 1 - mm;
+
+    const sawOsc = ctx.createOscillator();
+    sawOsc.type = "sawtooth";
+    sawOsc.frequency.value = freq;
+    const sawGain = ctx.createGain();
+    sawGain.gain.value = mm;
+
+    // Gentle highpass so it stays crisp over the drums (mirrors the keyboard
+    // tone path).
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 220;
+
+    sineOsc.connect(sineGain).connect(env);
+    sawOsc.connect(sawGain).connect(env);
+    env.connect(hp).connect(ctx.destination);
+
+    // Fire-and-forget: bounded start/stop means nothing persists past exit().
+    sineOsc.start(t0);
+    sawOsc.start(t0);
+    sineOsc.stop(end);
+    sawOsc.stop(end);
   }
 
   private restart = () => {

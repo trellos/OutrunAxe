@@ -207,4 +207,29 @@ asked, what was done, resulting commit(s) if any.
   `Environment.ts` changed; buildings/camera already clear).
   `npx tsc --noEmit` clean.
 
+- **2026-05-15** — Bug pass #3 (5 parallel agents + live verification).
+  **Timeline:** notes now sit in 12 discrete pitch-class lanes
+  (B/C/D/E no longer smear into one blob); crisp 1:1 canvas, no
+  antialias blur (imageSmoothingEnabled off, integer coords,
+  `image-rendering:pixelated`, no scaling transforms); still ≤25vh.
+  **Character Select:** guitar shrunk (scale 0.82 → body ≈0.59u, was
+  ~1.5u and hid the character); loadout camera reframed to
+  (0,1.05,2.6)/look(0,1,0) so the whole figure fits (~57% frame).
+  **Enemy note labels:** background panel removed; big bold floating
+  block glyph (512² canvas, 900-weight, thick outline+glow), sprite
+  scale 3.0, raised to y=1.75.
+  **Audio feedback:** each detected note plays a 1/32-note blip
+  ((60/bpm)/8 s) at the played pitch; volume 0.05→0.22 and waveform
+  sine→sawtooth (two crossfaded oscs) driven by m =
+  0.6·confidence + 0.4·comboNorm. Tunable in `LevelState`.
+  **City unblocked (the big one):** `Environment.ts` now guarantees a
+  clear corridor — each building is pushed outward until its footprint
+  is ≥ CLEAR (strip/rooftop 24u, subway 21u) from the NEAREST point of
+  the WHOLE curve (not just one sample), plus a height cap for any
+  building within 32u. Verified by the agent (60 RNG seeds × full run ×
+  FOV-70 frustum, worst in-cone ~49–54u) AND independently by me on the
+  live shipped code forcing the rail: L1 25u surface / 46u in forward
+  cone, L2 (subway) 22u / 42u — street is open. `npx tsc --noEmit`
+  clean; no console errors.
+
 <!-- Append new actions here -->

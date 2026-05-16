@@ -7,12 +7,38 @@ const ROWS = 3;
 // similar on-screen width (~576px) to the old 16-beat row.
 const BEATS_PER_ROW = 4;
 const PX_PER_BEAT = 144;
-// Compact rows so the 3-row stack fits inside the top ≤25vh band.
-const ROW_HEIGHT = 26;
-const MIDI_MIN = 40;
-const MIDI_MAX = 76;
-// Thin horizontal segment at the note's pitch-y, not a tall block.
-const BAND_HEIGHT = 3;
+// 12 discrete pitch-class lanes (one per semitone of the octave). Adjacent
+// scale notes (semitones apart) used to map to y positions <1px apart in a
+// 26px row and smear together; quantising to fixed lanes makes each pitch
+// class occupy its own non-overlapping slot.
+//   lane 0  = C  (bottom)
+//   lane 11 = B  (top)
+// LANE_PITCH is the centre-to-centre spacing; BAR_HEIGHT < LANE_PITCH and the
+// centres are LANE_PITCH apart, so BAR_HEIGHT + 1 ≤ LANE_PITCH guarantees a
+// ≥1px gap between two different pitch classes — they can NEVER overlap.
+const LANES = 12;
+const LANE_PITCH = 7;
+const BAND_HEIGHT = 5;
+// Vertical padding above/below the lane stack inside a row.
+const LANE_PAD = 4;
+// Row is tall enough for 12 lanes plus padding: 4 + 12*7 + 4 = 92. The 3-row
+// stack (3*92 + 2*3px gap + 6px top inset + borders ≈ 290px) stays inside the
+// top 25vh band (≈270–300px on common 1080–1200px viewports).
+const ROW_HEIGHT = LANES * LANE_PITCH + 2 * LANE_PAD;
+
+/**
+ * Quantise a MIDI note to its pitch-class lane and return the INTEGER y of
+ * that lane's centre. lane 0 (C) sits at the bottom, lane 11 (B) at the top.
+ * Two different pitch classes are always ≥ LANE_PITCH (= BAND_HEIGHT + 2) px
+ * apart at their centres, so their BAND_HEIGHT-tall bars never overlap.
+ */
+function laneY(midi: number): number {
+  const lane = ((Math.round(midi) % 12) + 12) % 12;
+  // lane 0 -> bottom, lane 11 -> top.
+  return Math.round(
+    ROW_HEIGHT - LANE_PAD - lane * LANE_PITCH - LANE_PITCH / 2,
+  );
+}
 // Brief bright pulse fades over this window after its beat fires.
 const PULSE_FADE_MS = 150;
 
@@ -50,11 +76,18 @@ export class Timeline {
 
     for (let i = 0; i < ROWS; i++) {
       const canvas = document.createElement("canvas");
+      // Backing store == displayed CSS box (1:1). The canvas is shown at its
+      // attribute pixel size; CSS must not stretch it (see .timeline-row).
       canvas.width = BEATS_PER_ROW * PX_PER_BEAT;
       canvas.height = ROW_HEIGHT;
+      canvas.style.width = `${BEATS_PER_ROW * PX_PER_BEAT}px`;
+      canvas.style.height = `${ROW_HEIGHT}px`;
       canvas.className = "timeline-row";
       this.container.appendChild(canvas);
       const ctx = canvas.getContext("2d")!;
+      // No resampling: every blit/draw lands on integer pixels with hard
+      // edges so bars are crisp blocks, not antialiased fuzz.
+      ctx.imageSmoothingEnabled = false;
       this.rows.push({ measureStart: -1, canvas, ctx });
     }
 
@@ -63,12 +96,15 @@ export class Timeline {
     this.overlay = document.createElement("canvas");
     this.overlay.width = BEATS_PER_ROW * PX_PER_BEAT;
     this.overlay.height = ROW_HEIGHT;
+    this.overlay.style.width = `${BEATS_PER_ROW * PX_PER_BEAT}px`;
+    this.overlay.style.height = `${ROW_HEIGHT}px`;
     this.overlay.style.position = "absolute";
     this.overlay.style.left = "0";
     this.overlay.style.bottom = "0";
     this.overlay.style.pointerEvents = "none";
     this.container.appendChild(this.overlay);
     this.overlayCtx = this.overlay.getContext("2d")!;
+    this.overlayCtx.imageSmoothingEnabled = false;
 
     this.bpm = conductor.currentBpm;
   }
@@ -162,7 +198,7 @@ export class Timeline {
     const alpha = Math.max(0, 1 - sinceBeatMs / PULSE_FADE_MS);
     if (alpha <= 0) return;
 
-    const x = beatIdx * PX_PER_BEAT;
+    const x = Math.round(beatIdx * PX_PER_BEAT) + 0.5;
     ctx.strokeStyle = `rgba(0, 240, 255, ${alpha})`;
     ctx.lineWidth = 3;
     ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
@@ -198,7 +234,9 @@ export class Timeline {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     for (let b = 0; b <= BEATS_PER_ROW; b++) {
-      const x = b * PX_PER_BEAT;
+      // +0.5 puts a 1px/2px stroke on an exact pixel boundary so vertical
+      // grid lines stay hard-edged instead of blurring across two columns.
+      const x = Math.round(b * PX_PER_BEAT) + 0.5;
       const isMeasure = b % 4 === 0;
       ctx.strokeStyle = isMeasure ? "rgba(255,43,214,0.7)" : "rgba(74,42,122,0.5)";
       ctx.lineWidth = isMeasure ? 2 : 1;
@@ -209,13 +247,15 @@ export class Timeline {
     }
 
     ctx.strokeStyle = "rgba(74,42,122,0.25)";
-    ctx.lineWidth = 0.5;
+    ctx.lineWidth = 1;
+    const tickTop = Math.round(ROW_HEIGHT * 0.25);
+    const tickBot = Math.round(ROW_HEIGHT * 0.75);
     for (let b = 0; b < BEATS_PER_ROW; b++) {
       for (let sub = 1; sub < 4; sub++) {
-        const x = b * PX_PER_BEAT + (sub * PX_PER_BEAT) / 4;
+        const x = Math.round(b * PX_PER_BEAT + (sub * PX_PER_BEAT) / 4) + 0.5;
         ctx.beginPath();
-        ctx.moveTo(x, ROW_HEIGHT * 0.25);
-        ctx.lineTo(x, ROW_HEIGHT * 0.75);
+        ctx.moveTo(x, tickTop);
+        ctx.lineTo(x, tickBot);
         ctx.stroke();
       }
     }
@@ -243,9 +283,8 @@ export class Timeline {
     // lands centred on column 0/1/2/3 and never spills past the row edge.
     const clamped = Math.max(0, Math.min(BEATS_PER_ROW * beatDur, into));
     const x = (clamped / beatDur) * PX_PER_BEAT;
-    const norm = Math.max(0, Math.min(1, (midi - MIDI_MIN) / (MIDI_MAX - MIDI_MIN)));
-    const pad = Math.min(4, ROW_HEIGHT / 4);
-    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 2 * pad) - pad;
+    // Quantise pitch to one of 12 fixed, non-overlapping pitch-class lanes.
+    const y = laneY(midi);
     const ctx = row.ctx;
     ctx.fillStyle = "#00f0ff";
 
@@ -254,10 +293,11 @@ export class Timeline {
     // (a fresh pluck / hammer-on / keyboard note) starts a new bar.
     const bar = this.bars.feed(onsetId, x, y);
     if (!bar) return;
+    // Integer pixel rect: hard-edged crisp block, no antialiased halo.
     ctx.fillRect(
-      bar.x0,
-      bar.y - BAND_HEIGHT / 2,
-      Math.max(1, bar.x1 - bar.x0),
+      Math.round(bar.x0),
+      Math.round(bar.y - BAND_HEIGHT / 2),
+      Math.max(1, Math.round(bar.x1 - bar.x0)),
       BAND_HEIGHT,
     );
   }

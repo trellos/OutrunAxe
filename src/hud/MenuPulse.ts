@@ -23,11 +23,29 @@ const KEY_TO_MIDI: Record<string, number> = {
 const BEATS = 4;
 // One looping 4-beat measure spanning a compact strip at the very top.
 const PX_PER_BEAT = 120;
-const ROW_HEIGHT = 24;
-const MIDI_MIN = 40;
-const MIDI_MAX = 76;
-// Thin horizontal segment, not a tall block that covers the title/character.
-const BAND_HEIGHT = 3;
+// 12 discrete pitch-class lanes (one per semitone). Identical lane geometry
+// to hud/Timeline.ts so the menu signal-chain reads the same as in-game.
+//   lane 0  = C  (bottom)
+//   lane 11 = B  (top)
+// BAND_HEIGHT < LANE_PITCH and centres are LANE_PITCH apart, so adjacent
+// pitch classes keep a ≥1px gap and never vertically overlap/smear.
+const LANES = 12;
+const LANE_PITCH = 7;
+const BAND_HEIGHT = 5;
+const LANE_PAD = 4;
+// Single row: 4 + 12*7 + 4 = 92px, well inside the top 25vh band.
+const ROW_HEIGHT = LANES * LANE_PITCH + 2 * LANE_PAD;
+
+/**
+ * Quantise a MIDI note to its pitch-class lane and return the INTEGER y of
+ * that lane's centre. lane 0 (C) bottom, lane 11 (B) top.
+ */
+function laneY(midi: number): number {
+  const lane = ((Math.round(midi) % 12) + 12) % 12;
+  return Math.round(
+    ROW_HEIGHT - LANE_PAD - lane * LANE_PITCH - LANE_PITCH / 2,
+  );
+}
 // Brief bright pulse fades over this window after its beat fires.
 const PULSE_FADE_MS = 150;
 
@@ -63,22 +81,29 @@ export class MenuPulse {
     this.container.appendChild(label);
 
     this.canvas = document.createElement("canvas");
+    // Backing store == displayed CSS box (1:1); CSS must not stretch it.
     this.canvas.width = BEATS * PX_PER_BEAT;
     this.canvas.height = ROW_HEIGHT;
+    this.canvas.style.width = `${BEATS * PX_PER_BEAT}px`;
+    this.canvas.style.height = `${ROW_HEIGHT}px`;
     this.canvas.className = "timeline-row";
     this.container.appendChild(this.canvas);
     this.ctx = this.canvas.getContext("2d")!;
+    this.ctx.imageSmoothingEnabled = false;
 
     // Transparent, non-interactive beat-pulse overlay layered over the row.
     this.overlay = document.createElement("canvas");
     this.overlay.width = BEATS * PX_PER_BEAT;
     this.overlay.height = ROW_HEIGHT;
+    this.overlay.style.width = `${BEATS * PX_PER_BEAT}px`;
+    this.overlay.style.height = `${ROW_HEIGHT}px`;
     this.overlay.style.position = "absolute";
     this.overlay.style.left = "0";
     this.overlay.style.bottom = "0";
     this.overlay.style.pointerEvents = "none";
     this.container.appendChild(this.overlay);
     this.overlayCtx = this.overlay.getContext("2d")!;
+    this.overlayCtx.imageSmoothingEnabled = false;
 
     parent.appendChild(this.container);
 
@@ -201,7 +226,7 @@ export class MenuPulse {
     const alpha = Math.max(0, 1 - sinceBeatMs / PULSE_FADE_MS);
     if (alpha <= 0) return;
 
-    const x = beatIdx * PX_PER_BEAT;
+    const x = Math.round(beatIdx * PX_PER_BEAT) + 0.5;
     ctx.strokeStyle = `rgba(0, 240, 255, ${alpha})`;
     ctx.lineWidth = 3;
     ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
@@ -219,7 +244,7 @@ export class MenuPulse {
     ctx.fillStyle = "rgba(26, 15, 46, 0.55)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     for (let b = 0; b <= BEATS; b++) {
-      const x = b * PX_PER_BEAT;
+      const x = Math.round(b * PX_PER_BEAT) + 0.5;
       const isMeasure = b % BEATS === 0;
       ctx.strokeStyle = isMeasure ? "rgba(255,43,214,0.7)" : "rgba(74,42,122,0.5)";
       ctx.lineWidth = isMeasure ? 2 : 1;
@@ -229,13 +254,15 @@ export class MenuPulse {
       ctx.stroke();
     }
     ctx.strokeStyle = "rgba(74,42,122,0.25)";
-    ctx.lineWidth = 0.5;
+    ctx.lineWidth = 1;
+    const tickTop = Math.round(ROW_HEIGHT * 0.25);
+    const tickBot = Math.round(ROW_HEIGHT * 0.75);
     for (let b = 0; b < BEATS; b++) {
       for (let sub = 1; sub < 4; sub++) {
-        const x = b * PX_PER_BEAT + (sub * PX_PER_BEAT) / 4;
+        const x = Math.round(b * PX_PER_BEAT + (sub * PX_PER_BEAT) / 4) + 0.5;
         ctx.beginPath();
-        ctx.moveTo(x, ROW_HEIGHT * 0.25);
-        ctx.lineTo(x, ROW_HEIGHT * 0.75);
+        ctx.moveTo(x, tickTop);
+        ctx.lineTo(x, tickBot);
         ctx.stroke();
       }
     }
@@ -249,9 +276,8 @@ export class MenuPulse {
     if (into < 0 || into > span) return;
     const clamped = Math.max(0, Math.min(span, into));
     const x = (clamped / beatDur) * PX_PER_BEAT;
-    const norm = Math.max(0, Math.min(1, (midi - MIDI_MIN) / (MIDI_MAX - MIDI_MIN)));
-    const pad = Math.min(4, ROW_HEIGHT / 4);
-    const y = ROW_HEIGHT - norm * (ROW_HEIGHT - 2 * pad) - pad;
+    // Quantise pitch to one of 12 fixed, non-overlapping pitch-class lanes.
+    const y = laneY(midi);
     const ctx = this.ctx;
     ctx.fillStyle = "#00f0ff";
 
@@ -259,10 +285,11 @@ export class MenuPulse {
     // one solid bar even when mic pitch wobbles ≥2 semitones between reads.
     const bar = this.bars.feed(onsetId, x, y);
     if (!bar) return;
+    // Integer pixel rect: hard-edged crisp block, no antialiased halo.
     ctx.fillRect(
-      bar.x0,
-      bar.y - BAND_HEIGHT / 2,
-      Math.max(1, bar.x1 - bar.x0),
+      Math.round(bar.x0),
+      Math.round(bar.y - BAND_HEIGHT / 2),
+      Math.max(1, Math.round(bar.x1 - bar.x0)),
       BAND_HEIGHT,
     );
   }

@@ -193,13 +193,23 @@ html, body {
 
 /* Pinned to the very top, confined to the top 25% of the viewport so the
    3-row stack never overlaps the menu card / character / gameplay centre. */
+/* Centred via auto margins (not transform): a transform:translateX(-50%) can
+   land the element on a fractional pixel and force the browser to resample
+   the child canvases, which is one source of the cyan-bar blur. Auto margins
+   keep it integer-snapped. 3 rows of 92px + 2*3px gaps + 6px top ≈ 290px,
+   inside the top 25vh band. */
 .outrun-timeline {
   position: absolute;
   top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-left: auto;
+  margin-right: auto;
+  width: -moz-fit-content;
+  width: fit-content;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 3px;
   max-height: 25vh;
   overflow: hidden;
@@ -207,23 +217,25 @@ html, body {
   opacity: 0.92;
 }
 
+/* The canvas backing store is sized 1:1 with its CSS box in JS; never let CSS
+   stretch it. Pixelated + crisp-edges keeps the 1:1 blit hard-edged. */
 .timeline-row {
   display: block;
+  flex: none;
   border: 1px solid rgba(74, 42, 122, 0.6);
   background: rgba(10, 6, 18, 0.45);
   image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
-/* MenuPulse: a compact strip anchored at the very top, well clear of the
-   title/character which sit centred lower on the screen. */
+/* MenuPulse: a compact single-row strip anchored at the very top. No scale /
+   transform-origin so the canvas is never resampled. */
 .outrun-menupulse {
   top: 6px;
   bottom: auto;
   gap: 2px;
   max-height: 25vh;
   opacity: 0.85;
-  transform: translateX(-50%);
-  transform-origin: top center;
 }
 
 .menupulse-label {
