@@ -250,7 +250,11 @@ export class Timeline {
     const rowStartTime = this.rowStartTime(row.measureStart);
     const rowSpan = BEATS_PER_ROW * beatDur;
     const into = audioTime - rowStartTime;
-    if (into < 0 || into > rowSpan) return;
+    // Allow a 50 ms grace window before the row start: rowStartTime comes from
+    // a lookahead-scheduled beat timestamp while u.time is backdated by the
+    // latency bias — the gap is up to ~150 ms, so notes near beat-start would
+    // otherwise be silently dropped. Mirror the same floor used in drawPulse.
+    if (into < -0.05 || into > rowSpan) return;
     // Clamp the placed time into [0, 4*beatDur] so a note on beat 1/2/3/4
     // lands centred on column 0/1/2/3 and never spills past the row edge.
     const clamped = Math.max(0, Math.min(BEATS_PER_ROW * beatDur, into));
