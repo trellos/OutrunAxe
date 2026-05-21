@@ -62,10 +62,10 @@ export class LevelState implements GameState {
   private charLights: THREE.Light[] = [];
   private comboScorer!: ComboScorer;
   private offPhase?: () => unknown;
-  private offBeat?: () => unknown;
   private offPitchFired?: () => unknown;
   private offKeysNarrowed?: () => unknown;
   private offCombo?: () => unknown;
+  private autoFireIntervals: number[] = [];
   private hudParent: HTMLElement;
   private startedPlayPhase = false;
   private finishedAt = 0;
@@ -238,8 +238,6 @@ export class LevelState implements GameState {
       }
     });
 
-    this.offBeat = this.conductor.onBeat(() => {});
-
     window.addEventListener("keydown", this.handleKeyboardNote);
 
     // Debug auto-fire: ?auto=1 makes the resolver fire the correct pitch
@@ -254,8 +252,9 @@ export class LevelState implements GameState {
 
   exit() {
     window.removeEventListener("keydown", this.handleKeyboardNote);
+    for (const id of this.autoFireIntervals) clearInterval(id);
+    this.autoFireIntervals = [];
     this.offPhase?.();
-    this.offBeat?.();
     this.offPitchFired?.();
     this.offKeysNarrowed?.();
     this.offCombo?.();
@@ -565,11 +564,12 @@ export class LevelState implements GameState {
     for (const spawn of this.level.spawns) {
       // Fire ~1 beat before arrival so the enemy is still alive.
       const fireAtBeatFromPlayStart = spawn.beat - 0.5;
-      const checkInterval = window.setInterval(() => {
+      const id = window.setInterval(() => {
         const playStart = this.conductor.measureStartTime(0);
         if (!isFinite(playStart)) return;
         if (this.conductor.audioTime >= playStart + fireAtBeatFromPlayStart * beatDur) {
-          clearInterval(checkInterval);
+          clearInterval(id);
+          this.autoFireIntervals = this.autoFireIntervals.filter((x) => x !== id);
           this.resolver.bus.emit("pitchFired", {
             pitchClass: spawn.pitchClass,
             midi: 60,
@@ -579,6 +579,7 @@ export class LevelState implements GameState {
           });
         }
       }, 30);
+      this.autoFireIntervals.push(id);
     }
   }
 

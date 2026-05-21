@@ -1,44 +1,14 @@
 import type { Conductor } from "../audio/Conductor";
 import type { PitchTracker } from "../audio/PitchTracker";
 import { BarAccumulator } from "./noteBars";
-
-const ROWS = 3;
-// One row == exactly one 4-beat measure. Widened PX_PER_BEAT keeps the row a
-// similar on-screen width (~576px) to the old 16-beat row.
-const BEATS_PER_ROW = 4;
-const PX_PER_BEAT = 144;
-// 12 discrete pitch-class lanes (one per semitone of the octave). Adjacent
-// scale notes (semitones apart) used to map to y positions <1px apart in a
-// 26px row and smear together; quantising to fixed lanes makes each pitch
-// class occupy its own non-overlapping slot.
-//   lane 0  = C  (bottom)
-//   lane 11 = B  (top)
-// LANE_PITCH is the centre-to-centre spacing; BAR_HEIGHT < LANE_PITCH and the
-// centres are LANE_PITCH apart, so BAR_HEIGHT + 1 ≤ LANE_PITCH guarantees a
-// ≥1px gap between two different pitch classes — they can NEVER overlap.
-const LANES = 12;
-const LANE_PITCH = 7;
-const BAND_HEIGHT = 5;
-// Vertical padding above/below the lane stack inside a row.
-const LANE_PAD = 4;
-// Row is tall enough for 12 lanes plus padding: 4 + 12*7 + 4 = 92. The 3-row
-// stack (3*92 + 2*3px gap + 6px top inset + borders ≈ 290px) stays inside the
-// top 25vh band (≈270–300px on common 1080–1200px viewports).
-const ROW_HEIGHT = LANES * LANE_PITCH + 2 * LANE_PAD;
-
-/**
- * Quantise a MIDI note to its pitch-class lane and return the INTEGER y of
- * that lane's centre. lane 0 (C) sits at the bottom, lane 11 (B) at the top.
- * Two different pitch classes are always ≥ LANE_PITCH (= BAND_HEIGHT + 2) px
- * apart at their centres, so their BAND_HEIGHT-tall bars never overlap.
- */
-function laneY(midi: number): number {
-  const lane = ((Math.round(midi) % 12) + 12) % 12;
-  // lane 0 -> bottom, lane 11 -> top.
-  return Math.round(
-    ROW_HEIGHT - LANE_PAD - lane * LANE_PITCH - LANE_PITCH / 2,
-  );
-}
+import {
+  ROWS,
+  BEATS_PER_ROW,
+  PX_PER_BEAT,
+  BAND_HEIGHT,
+  ROW_HEIGHT,
+  laneY,
+} from "./timelineMath";
 // Brief bright pulse fades over this window after its beat fires.
 const PULSE_FADE_MS = 150;
 
@@ -53,8 +23,6 @@ export class Timeline {
   private rows: RowState[] = [];
   private offTracker?: () => boolean;
   private offConductor?: () => boolean;
-  private activeRow = ROWS - 1;
-  private bpm = 90;
   // count-in plotting needs its own time origin since measureStartTime() only
   // covers the play measures; this is the audio time of count-in beat 0.
   private countInStart = -1;
@@ -106,7 +74,6 @@ export class Timeline {
     this.overlayCtx = this.overlay.getContext("2d")!;
     this.overlayCtx.imageSmoothingEnabled = false;
 
-    this.bpm = conductor.currentBpm;
   }
 
   attach(tracker: PitchTracker) {
@@ -119,7 +86,7 @@ export class Timeline {
       // home before play measure 0 exists. Allocate that row on count-in
       // downbeat and capture its audio-time origin.
       if (info.phase === "countIn") {
-        if (info.beatInPhase === 0 && this.rows[ROWS - 1].measureStart !== -1) {
+        if (info.beatInPhase === 0 && this.countInStart < 0) {
           this.countInStart = info.time;
           this.shiftRowsUp(-1);
         }
@@ -176,7 +143,8 @@ export class Timeline {
     const phase = this.conductor.currentPhase;
     if (phase !== "countIn" && phase !== "playing") return;
 
-    const row = this.rows[this.activeRow];
+    // Bug 3 fix: activeRow was a dead field always equal to ROWS - 1; removed.
+    const row = this.rows[ROWS - 1];
     if (row.measureStart < -1) return;
     if (row.measureStart === -1 && this.countInStart < 0) return;
 
@@ -184,11 +152,14 @@ export class Timeline {
     // beat N of the recorded measure maps to the Nth vertical grid line at
     // x = N*PX_PER_BEAT. Track the ACTUAL conductor clock vs the active row
     // origin so the pulse moves left→right in lockstep with the metronome.
-    const beatDur = 60 / this.bpm;
+    // Bug 2 fix: read bpm live from conductor, not a stale cached field.
+    const beatDur = 60 / this.conductor.currentBpm;
     const rowStartTime = this.rowStartTime(row.measureStart);
     const totalBeats = BEATS_PER_ROW;
     const into = this.conductor.audioTime - rowStartTime;
-    if (into < 0 || into > totalBeats * beatDur) return;
+    // Bug 4 fix: allow a 50ms grace window before the row start so the pulse
+    // isn't suppressed when countInStart is captured from a lookahead timestamp.
+    if (into < -0.05 || into > totalBeats * beatDur) return;
 
     const beatIdx = Math.floor(into / beatDur);
     if (beatIdx < 0 || beatIdx >= totalBeats) return;
@@ -220,7 +191,6 @@ export class Timeline {
     bottom.measureStart = newBottomMeasureStart;
     bottom.ctx.clearRect(0, 0, bottom.canvas.width, ROW_HEIGHT);
     this.drawGrid(bottom);
-    this.activeRow = ROWS - 1;
     // A row boundary breaks bar continuity — the next pitch starts a new bar.
     // This fires both when a play phrase advances and when the count-in row
     // is allocated (shiftRowsUp(-1)).
@@ -270,15 +240,21 @@ export class Timeline {
   }
 
   private plotPitch(audioTime: number, midi: number, onsetId: number) {
-    const row = this.rows[this.activeRow];
+    // Bug 3 fix: activeRow was a dead field always equal to ROWS - 1; removed.
+    const row = this.rows[ROWS - 1];
     if (row.measureStart < -1) return;
     if (row.measureStart === -1 && this.countInStart < 0) return;
     // Row is always exactly 4 beats (count-in measure or play measure).
-    const beatDur = 60 / this.bpm;
+    // Bug 2 fix: read bpm live from conductor, not a stale cached field.
+    const beatDur = 60 / this.conductor.currentBpm;
     const rowStartTime = this.rowStartTime(row.measureStart);
     const rowSpan = BEATS_PER_ROW * beatDur;
     const into = audioTime - rowStartTime;
-    if (into < 0 || into > rowSpan) return;
+    // Allow a 50 ms grace window before the row start: rowStartTime comes from
+    // a lookahead-scheduled beat timestamp while u.time is backdated by the
+    // latency bias — the gap is up to ~150 ms, so notes near beat-start would
+    // otherwise be silently dropped. Mirror the same floor used in drawPulse.
+    if (into < -0.05 || into > rowSpan) return;
     // Clamp the placed time into [0, 4*beatDur] so a note on beat 1/2/3/4
     // lands centred on column 0/1/2/3 and never spills past the row edge.
     const clamped = Math.max(0, Math.min(BEATS_PER_ROW * beatDur, into));

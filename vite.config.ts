@@ -6,4 +6,8 @@ export default defineConfig({
     host: "127.0.0.1",
     port: process.env.PORT ? Number(process.env.PORT) : 5173,
   },
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts"],
+  },
 });

@@ -119,10 +119,11 @@ export class MenuPulse {
     const ctx = getAudioContext();
     if (ctx.state === "suspended") await ctx.resume();
 
-    // Parked in 'preroll' the conductor never advances phase (no triggerPlay),
-    // so it emits a drum beat every beat forever — a free looping metronome.
-    this.conductor.startPreroll();
-
+    // Register ALL listeners before startPreroll() so beat 0 — which fires
+    // synchronously inside startPreroll() — is caught and sets measureStart.
+    // If startPreroll() were called first, beat 0 would fire with no listener
+    // registered and measureStart would stay -1 for the entire first measure
+    // window (~2.5 s at 96 BPM), silently dropping every note the player plays.
     this.offBeat = this.conductor.onBeat((info) => {
       if (this.stopped) return;
       // Each measure downbeat opens a fresh single-measure window.
@@ -157,6 +158,11 @@ export class MenuPulse {
       this.tracker.emitSyntheticNote(midi, t);
     };
     window.addEventListener("keydown", this.keyHandler);
+
+    // Parked in 'preroll' the conductor never advances phase (no triggerPlay),
+    // so it emits a drum beat every beat forever — a free looping metronome.
+    // Called AFTER listeners are wired so beat 0 fires into the handler above.
+    this.conductor.startPreroll();
 
     try {
       await this.tracker.start();
@@ -273,7 +279,12 @@ export class MenuPulse {
     const beatDur = 60 / this.bpm;
     const span = BEATS * beatDur;
     const into = audioTime - this.measureStart;
-    if (into < 0 || into > span) return;
+    // Allow a 50 ms grace window before the measure start: measureStart comes
+    // from a lookahead-scheduled beat timestamp (~0–100 ms in the future at
+    // callback time) while u.time is backdated by the latency bias (~50 ms).
+    // Without the grace window every note within ~150 ms of the beat start has
+    // into < 0 and is silently dropped.
+    if (into < -0.05 || into > span) return;
     const clamped = Math.max(0, Math.min(span, into));
     const x = (clamped / beatDur) * PX_PER_BEAT;
     // Quantise pitch to one of 12 fixed, non-overlapping pitch-class lanes.
