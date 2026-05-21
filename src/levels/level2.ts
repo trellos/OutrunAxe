@@ -23,27 +23,28 @@ export const level2: LevelConfig = {
   fogNear: 25,
   fogFar: 150,
   spawns: (() => {
-    // Moderate: 12 enemies in G major (G A B C D E F#). F# lets the key
-    // resolver narrow off C major. Spread beats 2..15 with 2-3 enemy clusters
-    // on downbeats 5/9/13; ~3 hp=2 enemies. travelBeats stays 4 at 110 BPM.
+    // Moderate: 8 enemies across THREE root keys (G, B, D). G + B share only D
+    // and F#; D + G share many; B + D share F# — the player has to commit to
+    // one key per enemy. travelBeats = 12 (≈ 2.6 s at 110 BPM, three measures
+    // of read time). HP 2.5 normal / 4 boss matches the root-multiplier
+    // damage table (BulletSystem.ts).
     const schedule: Array<{ beat: number; pc: PitchClass; lane: number; hp: number }> = [
-      { beat: 2, pc: "G", lane: -2, hp: 1 },
-      { beat: 3, pc: "A", lane: 1.5, hp: 1 },
-      { beat: 5, pc: "B", lane: -1, hp: 1 },
-      { beat: 5, pc: "D", lane: 2, hp: 1 },
-      { beat: 5.5, pc: "F#", lane: 0, hp: 2 },
-      { beat: 7, pc: "E", lane: -1.5, hp: 1 },
-      { beat: 8.5, pc: "G", lane: 1, hp: 1 },
-      { beat: 9, pc: "C", lane: -2, hp: 1 },
-      { beat: 9.5, pc: "F#", lane: 2, hp: 2 },
-      { beat: 11, pc: "A", lane: -1, hp: 1 },
-      { beat: 13, pc: "B", lane: 1.5, hp: 1 },
-      { beat: 13.5, pc: "D", lane: -0.5, hp: 2 },
+      { beat: 8,    pc: "G", lane: -1.5, hp: 2.5 },
+      { beat: 10,   pc: "B", lane:  1.5, hp: 2.5 },
+      { beat: 12.5, pc: "D", lane: -1,   hp: 2.5 },
+      { beat: 15,   pc: "G", lane:  1,   hp: 2.5 },
+      { beat: 17,   pc: "B", lane: -2,   hp: 2.5 },
+      { beat: 19.5, pc: "D", lane:  2,   hp: 2.5 },
+      { beat: 22,   pc: "G", lane: -0.5, hp: 2.5 },
+      { beat: 24,   pc: "B", lane:  1,   hp: 4   },
+      { beat: 26.5, pc: "D", lane: -1.5, hp: 4   },
+      { beat: 28,   pc: "G", lane:  0.5, hp: 4   },
+      { beat: 30,   pc: "B", lane:  0,   hp: 4   },
     ];
     const spawns: EnemySpawn[] = schedule.map((s) => ({
       beat: s.beat,
       pitchClass: s.pc,
-      travelBeats: 4,
+      travelBeats: 12,
       hp: s.hp,
       lane: s.lane,
     }));

@@ -45,8 +45,16 @@ const SEG = 8; // hard cap on radial/cylinder/sphere segments
 
 // Exponent for the spawn→player approach curve. >1 means the enemy covers
 // little distance early (stays distant during count-in / early measures) and
-// accelerates toward the player near its scheduled arrival.
-const APPROACH_EASE_POWER = 2.6;
+// accelerates toward the player near its scheduled arrival. Kept close to 1
+// (near-linear) so the player can read which lane/key is incoming a measure
+// or two before arrival — anything much higher hides the threat until the
+// final beat and the wave feels unsurvivable.
+const APPROACH_EASE_POWER = 1.3;
+
+// Damage flash and scale-punch durations (seconds). Both run on the audio
+// clock so they stay in sync with note onsets.
+const HIT_FLASH_DURATION = 0.2;
+const HIT_PUNCH_DURATION = 0.18;
 
 const geoCache = new Map<string, THREE.BufferGeometry>();
 function geo<T extends THREE.BufferGeometry>(key: string, make: () => T): T {
@@ -111,6 +119,7 @@ export class Enemy {
 
   private label: THREE.Sprite;
   private flashUntil = 0;
+  private punchUntil = 0;
   private fadeStart = -1;
   private toonMats: ToonMat[];
   private baseColors: THREE.Color[];
@@ -181,12 +190,24 @@ export class Enemy {
     this.design.group.position.y = Math.sin(t * 2.4) * 0.08;
     this.design.group.rotation.y += dt * 0.9;
 
+    // Hit scale-punch: parabolic bump peaking at ~1.35 mid-window, returning
+    // to 1.0 by the end. Re-applied each frame so the death-pop branch (below)
+    // can overwrite it cleanly. Skipped when the death-pop is running.
+    if (audioTime < this.punchUntil && this.fadeStart < 0) {
+      const remaining = this.punchUntil - audioTime;
+      const k = 1 - remaining / HIT_PUNCH_DURATION; // 0 -> 1 over window
+      const bump = 4 * k * (1 - k); // parabola peaking at 1.0 at k=0.5
+      this.design.group.scale.setScalar(1 + 0.35 * bump);
+    } else if (this.fadeStart < 0) {
+      this.design.group.scale.setScalar(1);
+    }
+
     if (this.design.animate) this.design.animate(t, dt);
 
-    // Menace lean: over the last 30% of the (eased) approach, tilt the whole
-    // rig forward toward the player so it reads as lunging in only once it's
-    // actually closing the distance.
-    const leanU = Math.max(0, (approach - 0.7) / 0.3);
+    // Menace lean: over the last 15% of the (now near-linear) approach, tilt
+    // the rig forward toward the player so it still reads as a final lunge
+    // even though overall travel is more uniform.
+    const leanU = Math.max(0, (approach - 0.85) / 0.15);
     this.object.rotation.x = -0.55 * leanU * leanU;
 
     // Damage flash: all toon mats go bright white briefly.
@@ -233,7 +254,8 @@ export class Enemy {
     if (!this.alive) return 0;
     const applied = Math.min(this.hp, dmg);
     this.hp -= applied;
-    this.flashUntil = audioTime + 0.12;
+    this.flashUntil = audioTime + HIT_FLASH_DURATION;
+    this.punchUntil = audioTime + HIT_PUNCH_DURATION;
     if (this.hp <= 0) {
       this.alive = false;
       this.fadeStart = audioTime;

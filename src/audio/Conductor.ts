@@ -23,7 +23,13 @@ export interface BeatInfo {
 const SCHEDULE_INTERVAL_MS = 25;
 const LOOKAHEAD_SEC = 0.1;
 const COUNT_IN_BEATS = 4;
-const PLAY_BEATS = 16; // 4 measures × 4 beats
+// 8 measures × 4 beats. Doubled from the original 16 (4 measures) so each
+// level has room for a longer, more spread-out enemy schedule. The four-chord
+// progression in BackingTrack cycles twice across the play window — still
+// musically coherent. travelBeats up to 12 means enemies can start arriving
+// at beat 8 (one measure into play) and arrivals can spread all the way to
+// beat ~30 instead of being packed into the last measure.
+const PLAY_BEATS = 32;
 
 /** ±window in seconds around an expected attack position. Shared with the
  *  offline test bench so both callers use identical beat-proximity logic. */

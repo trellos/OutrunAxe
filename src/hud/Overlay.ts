@@ -61,3 +61,17 @@ export function flashCombo(el: OverlayElements, text: string, color = "#ff2bd6")
   void el.comboFlash.offsetWidth;
   el.comboFlash.classList.add("flash-on");
 }
+
+/** Spawn a small floating "+N" popup near the combo flash. Self-removes after
+ *  the CSS animation completes. Cheap — just a transient DOM node. */
+export function spawnDamagePopup(el: OverlayElements, text: string, color = "#ffffff") {
+  const node = document.createElement("div");
+  node.className = "hud-dmg-popup";
+  node.textContent = text;
+  node.style.color = color;
+  el.root.appendChild(node);
+  // Remove on animation end (fallback: timer matches CSS duration).
+  const cleanup = () => node.remove();
+  node.addEventListener("animationend", cleanup, { once: true });
+  setTimeout(cleanup, 700);
+}

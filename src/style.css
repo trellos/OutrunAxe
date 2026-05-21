@@ -191,6 +191,27 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -20px) scale(1); }
 }
 
+/* Floating "+N" damage popup. Stacks just under the combo flash so the two
+   don't fight for the same pixels. */
+.hud-dmg-popup {
+  position: absolute;
+  top: 168px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  pointer-events: none;
+  text-shadow: 0 0 10px currentColor, 0 1px 2px rgba(0, 0, 0, 0.7);
+  animation: dmgPopup 0.55s ease-out forwards;
+}
+
+@keyframes dmgPopup {
+  0% { opacity: 0; transform: translate(-50%, 8px) scale(0.9); }
+  15% { opacity: 1; transform: translate(-50%, 0) scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, -32px) scale(1); }
+}
+
 /* Pinned to the very top, confined to the top 25% of the viewport so the
    3-row stack never overlaps the menu card / character / gameplay centre. */
 /* Centred via auto margins (not transform): a transform:translateX(-50%) can

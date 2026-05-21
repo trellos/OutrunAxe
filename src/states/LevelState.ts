@@ -11,7 +11,7 @@ import { buildEnvironment } from "../world/Environment";
 import { EnemyDirector } from "../combat/EnemyDirector";
 import { BulletSystem } from "../combat/BulletSystem";
 import { PlayerStats } from "../combat/PlayerStats";
-import { createOverlay, flashCombo, setHp, type OverlayElements } from "../hud/Overlay";
+import { createOverlay, flashCombo, setHp, spawnDamagePopup, type OverlayElements } from "../hud/Overlay";
 import { Timeline } from "../hud/Timeline";
 import { level1, type LevelConfig } from "../levels/level1";
 import { ResultsState } from "./ResultsState";
@@ -75,6 +75,9 @@ export class LevelState implements GameState {
   // feedback can blend in the player's current scoring streak. Tweak the
   // normalization in `playNoteFeedback`.
   private lastComboMultiplier = 1;
+  /** Cached white-noise buffer for the hit thud. Filled once on first hit so
+   *  we don't allocate a fresh AudioBuffer per note. */
+  private noiseBuffer: AudioBuffer | null = null;
 
   constructor(hudParent: HTMLElement, level: LevelConfig = level1) {
     this.hudParent = hudParent;
@@ -171,23 +174,37 @@ export class LevelState implements GameState {
       // candidate key is), so chip damage early, full damage once locked.
       const targets = this.director.enemiesVulnerableTo(ev.pitchClass);
       const startingAlive = targets.length;
-      const applied = this.bullets.fire(targets, ev.confidence, ev.audioTime);
+      const { applied, rootHit } = this.bullets.fire(
+        targets,
+        ev.pitchClass,
+        ev.confidence,
+        ev.audioTime,
+      );
       this.stats.totalDamage += applied;
       // Bucket damage by measure for retroactive combo burst.
       const m = ev.measureIdx;
       this.measureDamageBuckets.set(m, (this.measureDamageBuckets.get(m) ?? 0) + applied);
       const killed = targets.filter((t) => !t.alive).length;
       this.stats.kills += killed;
+      const enemyColor = targets[0]
+        ? `#${(targets[0].mesh.material as THREE.MeshToonMaterial).color.getHexString()}`
+        : "#ff2bd6";
       if (startingAlive > 0) {
         flashCombo(
           this.overlay,
           `${ev.pitchClass}  x${startingAlive}  ${Math.round(ev.confidence * 100)}%`,
-          targets[0]
-            ? `#${(targets[0].mesh.material as THREE.MeshToonMaterial).color.getHexString()}`
-            : "#ff2bd6",
+          enemyColor,
         );
       } else {
         flashCombo(this.overlay, `${ev.pitchClass}  miss`, "#888");
+      }
+      if (applied > 0) {
+        spawnDamagePopup(
+          this.overlay,
+          `+${applied.toFixed(1)}${rootHit ? " ROOT" : ""}`,
+          rootHit ? "#ffe45a" : enemyColor,
+        );
+        this.playHitThud(ev.audioTime, rootHit);
       }
       this.avatar?.triggerStrum(ev.audioTime);
 
@@ -470,6 +487,43 @@ export class LevelState implements GameState {
     sawOsc.start(t0);
     sineOsc.stop(end);
     sawOsc.stop(end);
+  }
+
+  /**
+   * Short percussive thud that plays when a note connects. Filtered white
+   * noise → lowpass → percussive envelope. Root-note hits get a brighter
+   * filter and a bigger peak so the bonus damage reads in the audio too.
+   */
+  private playHitThud(audioTime: number, isRoot: boolean) {
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+    const t0 = Number.isFinite(audioTime) && audioTime > now ? audioTime : now;
+    const dur = 0.09;
+    const end = t0 + dur;
+
+    if (!this.noiseBuffer) {
+      const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * 0.12), ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      this.noiseBuffer = buf;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = isRoot ? 900 : 600;
+    lp.Q.value = 1.2;
+
+    const env = ctx.createGain();
+    const peak = isRoot ? 0.28 : 0.18;
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.linearRampToValueAtTime(peak, t0 + 0.002);
+    env.gain.exponentialRampToValueAtTime(0.0001, end);
+
+    src.connect(lp).connect(env).connect(ctx.destination);
+    src.start(t0);
+    src.stop(end);
   }
 
   private restart = () => {
