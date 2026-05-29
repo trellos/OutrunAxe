@@ -242,3 +242,204 @@
 .eddie-debug-hud b {
   color: var(--eddie-cyan);
 }
+
+/* ----------------------------------------------------------------------- */
+/* Settings screen (EddieSettingsState, owned by Gameplay — Art styles it)  */
+/* ----------------------------------------------------------------------- */
+/* Markup (from Gameplay):                                                  */
+/*   .outrun-levelselect.eddie-settings > .levelselect-inner                */
+/*     .levelselect-title "INFINITE EDDIE"                                   */
+/*     .eddie-settings-row [ .eddie-settings-label .eddie-settings-btn      */
+/*                           .eddie-settings-value .eddie-settings-btn ]    */
+/*     .eddie-settings-timeline   (live 4-measure input timeline mount)     */
+/*     .eddie-settings-play       (PLAY button mount — Art button goes here) */
+/* The .eddie-settings class is added ALONGSIDE .outrun-levelselect, so we   */
+/* upgrade the shared card into a juicy 80s settings bar without touching    */
+/* the .outrun-* rules.                                                      */
+
+.eddie-settings .levelselect-inner {
+  background: linear-gradient(135deg, rgba(26, 15, 46, 0.95), rgba(10, 6, 18, 0.96));
+  border: 3px solid var(--eddie-magenta);
+  border-radius: 8px;
+  padding: 28px 38px 34px;
+  box-shadow: 0 0 60px rgba(255, 43, 214, 0.45),
+    inset 0 0 40px rgba(0, 240, 255, 0.08);
+  /* Scanline veneer over the whole panel for the VHS feel. */
+  position: relative;
+  overflow: hidden;
+}
+
+.eddie-settings .levelselect-inner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.16) 0px,
+    rgba(0, 0, 0, 0.16) 1px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  mix-blend-mode: multiply;
+  opacity: 0.5;
+}
+
+.eddie-settings .levelselect-title {
+  /* Sunset-band gradient text, the headline of the bar. */
+  background: linear-gradient(90deg, var(--eddie-cyan), var(--eddie-magenta), var(--eddie-amber));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 0 14px rgba(255, 43, 214, 0.55));
+  margin-bottom: 22px;
+}
+
+/* A settings row: label on the left, controls following. */
+.eddie-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 0 0 14px 0;
+  position: relative;
+  z-index: 1;
+}
+
+.eddie-settings-label {
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 4px;
+  color: var(--eddie-cyan);
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+  min-width: 64px;
+  text-align: right;
+}
+
+.eddie-settings-value {
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(255, 43, 214, 0.7);
+  min-width: 110px;
+  text-align: center;
+  padding: 4px 10px;
+  background: rgba(10, 6, 18, 0.6);
+  border: 1px solid rgba(74, 42, 122, 0.8);
+  border-radius: 3px;
+}
+
+/* Chunky neon control buttons (tempo +/-, key ◀ ▶, maj/min). */
+.eddie-settings-btn {
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--eddie-purple);
+  background: linear-gradient(180deg, var(--eddie-cyan), #00bcd4);
+  border: 2px solid #fff;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.6);
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out,
+    background 0.1s ease-out;
+}
+
+.eddie-settings-btn:hover {
+  transform: translateY(-1px) scale(1.05);
+  background: linear-gradient(180deg, var(--eddie-magenta), #c4189f);
+  box-shadow: 0 0 22px rgba(255, 43, 214, 0.9);
+}
+
+.eddie-settings-btn:active {
+  transform: scale(0.96);
+}
+
+/* Live 4-measure input timeline mount — frame it like a tape window. */
+.eddie-settings-timeline {
+  position: relative;
+  z-index: 1;
+  margin: 18px auto 8px;
+  padding: 8px;
+  min-height: 40px;
+  width: -moz-fit-content;
+  width: fit-content;
+  border: 2px solid rgba(0, 240, 255, 0.55);
+  border-radius: 4px;
+  background: rgba(10, 6, 18, 0.5);
+  box-shadow: inset 0 0 18px rgba(0, 240, 255, 0.12);
+}
+
+/* The Timeline component anchors itself with position:absolute (the shared
+   .outrun-timeline rule). Inside the settings panel we want it to flow in the
+   normal column instead, so neutralise that here. */
+.eddie-settings-timeline .outrun-timeline {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  margin: 0 auto;
+}
+
+/* PLAY button mount: just a centred flex row; the Art play-button mounts here
+   and brings its own styling/animation. */
+.eddie-settings-play {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  margin-top: 22px;
+  pointer-events: auto;
+}
+
+/* ----------------------------------------------------------------------- */
+/* LevelSelect "INFINITE EDDIE" entry (4th option, owned by Gameplay)       */
+/* ----------------------------------------------------------------------- */
+/* Markup: <button class="levelselect-eddie" data-eddie="1">INFINITE EDDIE</button> */
+/* A wide neon banner button that stands apart from the 3 level cards — the  */
+/* sunset-gradient marquee that screams "the jam mode". */
+
+.levelselect-eddie {
+  display: block;
+  margin: 20px auto 0;
+  width: min(80vw, 640px);
+  font-family: monospace;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 8px;
+  color: var(--eddie-purple);
+  background: linear-gradient(90deg, var(--eddie-cyan), var(--eddie-magenta), var(--eddie-amber));
+  background-size: 200% 100%;
+  border: 3px solid #fff;
+  border-radius: 6px;
+  padding: 16px 28px;
+  cursor: pointer;
+  pointer-events: auto;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 30px rgba(255, 43, 214, 0.7),
+    inset 0 0 18px rgba(255, 255, 255, 0.25);
+  animation: eddie-banner-pan 6s linear infinite;
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+
+.levelselect-eddie:hover {
+  transform: scale(1.03);
+  box-shadow: 0 0 46px rgba(255, 43, 214, 1),
+    inset 0 0 24px rgba(255, 255, 255, 0.4);
+}
+
+.levelselect-eddie:active {
+  transform: scale(0.99);
+}
+
+@keyframes eddie-banner-pan {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
