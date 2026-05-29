@@ -243,10 +243,10 @@ export class EddieSettingsState implements GameState {
     overlay.className = "outrun-levelselect eddie-settings";
     // 80s theme selection for review: ?eddie=1&theme=N (N=1..4) applies one of
     // the settings-themes.css designs. No param = current baseline styling.
-    const themeN = parseInt(
-      new URLSearchParams(location.search).get("theme") ?? "0",
-      10,
-    );
+    // theme-6 "Dithered Pastel" is the production default; ?eddie=1&theme=N (1..6)
+    // overrides it for review.
+    const themeParam = new URLSearchParams(location.search).get("theme");
+    const themeN = themeParam ? parseInt(themeParam, 10) : 6;
     if (themeN >= 1 && themeN <= 6) overlay.classList.add(`eddie-theme-${themeN}`);
 
     overlay.innerHTML = `

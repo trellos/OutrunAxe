@@ -36,6 +36,12 @@ import {
 const ART_VARIANT = "option-1" as const;
 const AUDIO_VARIANT = "option-1" as const;
 
+// Production-default art variants chosen from the registries (review via the
+// ?eddieart=1 gallery): bg-1 "Chroma Crash" = index 0; fx-5 "Phosphor Comets" =
+// index 4. Fire default is option-3 (set in the EddieFire source).
+const BG_INDEX = 0;
+const FX_INDEX = 4;
+
 // Conductor sizing for Eddie (GDD §3): 4-measure intro + 16 scored measures.
 const COUNT_IN_BEATS = 16;
 const PLAY_MEASURES = 16;
@@ -135,6 +141,8 @@ export class InfiniteEddieState implements GameState {
       config: this.config,
       juice: this.juice,
       camera: worldCamera,
+      bgIndex: BG_INDEX,
+      fxIndex: FX_INDEX,
     });
 
     // Sound rig: drums in BOTH count-in and playing phases (the intro IS the
