@@ -5,6 +5,7 @@ import { CharacterDebugState } from "./states/CharacterDebugState";
 import { EddieSettingsState } from "./states/EddieSettingsState";
 import { EddieArtDebugState } from "./states/EddieArtDebugState";
 import { EddieSoundDebugState } from "./states/EddieSoundDebugState";
+import { EddieBgMenuState } from "./states/EddieBgMenuState";
 
 const root = document.getElementById("game");
 if (!root) throw new Error("missing #game");
@@ -24,6 +25,9 @@ if (params.has("chars")) {
 } else if (params.has("eddiesound")) {
   // Sound's debug bench: cycle/loop every beat + bass variant.
   game.setState(new EddieSoundDebugState(hud));
+} else if (params.has("eddiebg")) {
+  // Background picker: launch the play screen (demo mode) with any background.
+  game.setState(new EddieBgMenuState(hud));
 } else if (params.has("eddie")) {
   // Jump straight to the Infinite Eddie settings screen.
   game.setState(new EddieSettingsState(hud));

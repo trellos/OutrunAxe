@@ -1,38 +1,49 @@
-// bg05 — "VHS Skyline / Tracking Tear" — the pixel neon-skyline motif rendered
-// like a worn VHS dub. ONE low-res CanvasTexture (160x100) with NearestFilter so
-// it reads as chunky pixels; the skyline sits behind a constant warm grain and a
-// rolling tracking band, in a limited washed-out palette.
+// bg05 — "Geometric Bloom → Fractal Overload" — slow-rotating neon wireframe
+// polyhedra drifting calmly that multiply, subdivide, spin faster and explode
+// into a kaleidoscopic fractal as performance intensity rises.
 //
-// Glitch flavor: VHS TRACKING-TEAR + CHROMA BLEED. Between beats the picture is
-// stable apart from a slow rolling tracking bar. On each eddieBeatPulse a short
-// burst (~120-220ms, downbeat stronger) snaps the tape out of sync: the tracking
-// bar jumps and widens, horizontal scanlines tear and smear sideways, and the
-// chroma (cyan/magenta) bleeds heavily off the building edges, then re-locks as
-// the burst decays.
+// Real Three.js (not a canvas quad): a pool of wireframe polyhedra (icosahedron,
+// dodecahedron, octahedron) built ONCE and reused. At morph 0 only a few drift
+// and turn slowly in the foreground. As `morph` rises the pool reveals more
+// shapes arranged in recursive shells around the origin, their spin and emissive
+// glow ramp up, and near morph 1 the whole field strobes and swarms — a fractal
+// overload filling the view. Only emissive neon wireframes (bloom-safe).
 //
-// Visuals only (GDD §8): subscribes to eddieBeatPulse (glitch burst) and
-// eddieShake (camera jolt), sets+restores scene.background/fog, disposes every
-// geometry/material/texture and unsubscribes.
+// MORPH (eddieIntensity, eased toward target each frame; never snaps): drives how
+// many shapes are visible, their spin rate, scale pulse, and glow.
+// Beat (eddieBeatPulse, downbeat stronger, scaled by morph): a bloom pulse —
+// shapes punch outward + brighten for a beat, and a fresh shell pops in.
+// Shake (eddieShake): camera jolt that decays.
+//
+// Visuals only (GDD §8). dispose() restores scene.background/fog, disposes every
+// geometry/material, and unsubscribes every listener.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const TEX_W = 160;
-const TEX_H = 100;
+// Neon palette (emissive-bright so bloom catches only these).
+const NEON = [0xff2bd6, 0x00f0ff, 0xffd02b, 0xc7ff2b, 0xff5a8a, 0x8a5aff];
 
-// Washed VHS palette + neon accents that survive the wash.
-const SKY_TOP = "#120a24";
-const SKY_LOW = "#3a1a52";
-const NEON = ["#ff5ad6", "#3ef0ff", "#ffe05a"];
+const MAX_SHAPES = 90; // pool ceiling — recursive shells fill in as morph rises
+const SHELLS = 5; // concentric recursion shells
 
-interface PxBuilding {
-  x: number;
-  w: number;
-  topY: number;
-  neon: number;
-  winSeed: number;
+interface Shape {
+  mesh: THREE.LineSegments;
+  mat: THREE.LineBasicMaterial; // owned per-mesh for independent glow/opacity
+  shell: number; // 0..SHELLS-1 — outer shells appear at higher morph
+  // Orbit parameters (stable per shape).
+  orbitR: number;
+  orbitAxis: THREE.Vector3;
+  orbitPhase: number;
+  orbitSpeed: number;
+  spinAxis: THREE.Vector3;
+  spinSpeed: number;
+  baseScale: number;
+  hue: number; // index into NEON
+  // Per-shape activation eased toward visible (so shells fade in, not pop).
+  vis: number;
 }
 
 class Bg05 implements EddieBackgroundVariant {
@@ -41,237 +52,203 @@ class Bg05 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private canvas!: HTMLCanvasElement;
-  private c2d!: CanvasRenderingContext2D;
-  private tex!: THREE.CanvasTexture;
-  private quad!: THREE.Mesh;
-  private quadMat!: THREE.MeshBasicMaterial;
-
-  private buildings: PxBuilding[] = [];
+  // Shared wireframe geometries (one per polyhedron type), disposed once.
+  private geos: THREE.BufferGeometry[] = [];
+  private shapes: Shape[] = [];
 
   private camera: THREE.PerspectiveCamera | null = null;
-  private camBaseY = 0;
-  private camBaseZ = 0;
+  private camBaseZ = 90;
 
   private offBeat?: () => void;
   private offShake?: () => void;
+  private offIntensity?: () => void;
 
-  private glitch = 0;
-  private glitchDecay = 6;
+  private morph = 0;
+  private morphTarget = 0;
+  private beat = 0; // one-shot bloom pulse 0..1, decays
+  private beatDecay = 5;
   private shake = 0;
   private t = 0;
-  private trackY = 0.4; // 0..1 rolling tracking-bar position
-  private trackRollSpeed = 0.06;
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x07040f);
-    ctx.scene.fog = null;
+    ctx.scene.background = new THREE.Color(0x05010f);
+    ctx.scene.fog = new THREE.FogExp2(0x05010f, 0.0035);
 
-    this.canvas = document.createElement("canvas");
-    this.canvas.width = TEX_W;
-    this.canvas.height = TEX_H;
-    this.c2d = this.canvas.getContext("2d")!;
-    this.c2d.imageSmoothingEnabled = false;
+    // Build the three wireframe geometries once (edges-only so they're true
+    // wireframes, not triangle soup).
+    const ico = new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1, 0));
+    const dod = new THREE.EdgesGeometry(new THREE.DodecahedronGeometry(1, 0));
+    const oct = new THREE.EdgesGeometry(new THREE.OctahedronGeometry(1, 0));
+    this.geos = [ico, dod, oct];
 
-    let cx = -4;
-    let idx = 0;
-    while (cx < TEX_W) {
-      const w = 10 + Math.floor(Math.random() * 18);
-      const height = 18 + Math.floor(Math.random() * 46);
-      this.buildings.push({
-        x: cx,
-        w,
-        topY: TEX_H - 16 - height,
-        neon: idx % NEON.length,
-        winSeed: Math.floor(Math.random() * 0xffff) || 1,
+    // Populate the pool. Shapes are assigned to recursion shells: inner shells
+    // are small/close, outer shells large radius — revealed as morph rises.
+    for (let i = 0; i < MAX_SHAPES; i++) {
+      const shell = Math.min(SHELLS - 1, Math.floor((i / MAX_SHAPES) * SHELLS));
+      const geo = this.geos[i % this.geos.length];
+      const hue = i % NEON.length;
+      const mat = new THREE.LineBasicMaterial({
+        color: NEON[hue],
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: true,
       });
-      cx += w + 1 + Math.floor(Math.random() * 3);
-      idx++;
+      const mesh = new THREE.LineSegments(geo, mat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+
+      // Stable orbit + spin per shape.
+      const orbitR = 8 + shell * 14 + Math.random() * 8;
+      const orbitAxis = new THREE.Vector3(
+        Math.random() - 0.5,
+        Math.random() - 0.5,
+        Math.random() - 0.5,
+      ).normalize();
+      const spinAxis = new THREE.Vector3(
+        Math.random() - 0.5,
+        Math.random() - 0.5,
+        Math.random() - 0.5,
+      ).normalize();
+      const baseScale = 5 - shell * 0.6 + Math.random() * 2;
+
+      const shape: Shape = {
+        mesh,
+        mat,
+        shell,
+        orbitR,
+        orbitAxis,
+        orbitPhase: Math.random() * Math.PI * 2,
+        orbitSpeed: (0.1 + Math.random() * 0.25) * (Math.random() < 0.5 ? -1 : 1),
+        spinAxis,
+        spinSpeed: 0.3 + Math.random() * 0.6,
+        baseScale: Math.max(1.2, baseScale),
+        hue,
+        vis: 0,
+      };
+      this.shapes.push(shape);
+      this.group.add(mesh);
     }
 
-    this.paint(0);
-    this.tex = new THREE.CanvasTexture(this.canvas);
-    this.tex.colorSpace = THREE.SRGBColorSpace;
-    this.tex.magFilter = THREE.NearestFilter;
-    this.tex.minFilter = THREE.NearestFilter;
-    this.tex.generateMipmaps = false;
-
-    this.quadMat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
-    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(320, 200), this.quadMat);
-    this.quad.position.set(0, 30, -160);
-    this.quad.renderOrder = -20;
-    this.group.add(this.quad);
-
-    ctx.scene.add(this.group);
+    this.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.camBaseY = 30;
-      this.camBaseZ = 70;
-      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -160);
+      this.camera.position.set(0, 0, this.camBaseZ);
+      this.camera.lookAt(0, 0, 0);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.glitch = e.downbeat ? 1 : 0.6;
-      this.glitchDecay = e.downbeat ? 1 / 0.12 : 1 / 0.22;
-      // A beat knocks the tracking bar to a fresh position — tape jumps.
-      this.trackY = Math.random();
+      const base = e.downbeat ? 1 : 0.5;
+      this.beat = Math.max(this.beat, base);
+      this.beatDecay = e.downbeat ? 1 / 0.28 : 1 / 0.18;
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
+    this.offIntensity = ctx.juice.on("eddieIntensity", (e) => {
+      this.morphTarget = Math.min(1, Math.max(0, e.value));
+    });
   }
 
-  private rng(seed: number): () => number {
-    let s = seed | 0 || 1;
-    return () => {
-      s ^= s << 13;
-      s ^= s >>> 17;
-      s ^= s << 5;
-      return ((s >>> 0) % 1000) / 1000;
-    };
-  }
-
-  private paint(g: number): void {
-    const ctx = this.c2d;
-    const horizon = TEX_H - 16;
-
-    // --- Sky: 2-band wash with horizontal grain lines.
-    ctx.fillStyle = SKY_TOP;
-    ctx.fillRect(0, 0, TEX_W, Math.floor(TEX_H * 0.6));
-    ctx.fillStyle = SKY_LOW;
-    ctx.fillRect(0, Math.floor(TEX_H * 0.6), TEX_W, TEX_H);
-
-    // --- Buildings, solid with bled neon edges (chroma bleed grows with g).
-    const bleed = 1 + Math.round(g * 3);
-    for (const b of this.buildings) {
-      const neon = NEON[b.neon];
-      const bodyY = b.topY;
-      const bodyH = horizon - b.topY;
-
-      ctx.fillStyle = "#0e0a1e";
-      ctx.fillRect(b.x, bodyY, b.w, bodyH);
-
-      // Chroma bleed: cyan edge shifted left, magenta edge shifted right.
-      ctx.globalAlpha = 0.5 + g * 0.4;
-      ctx.fillStyle = "#3ef0ff";
-      ctx.fillRect(b.x - bleed, bodyY, 1, bodyH);
-      ctx.fillStyle = "#ff5ad6";
-      ctx.fillRect(b.x + b.w - 1 + bleed, bodyY, 1, bodyH);
-      ctx.globalAlpha = 1;
-
-      // Crisp roofline neon.
-      ctx.fillStyle = neon;
-      ctx.fillRect(b.x, bodyY, b.w, 1);
-
-      // Windows.
-      const r = this.rng(b.winSeed);
-      ctx.fillStyle = NEON[(b.neon + 1) % NEON.length];
-      for (let wy = bodyY + 3; wy < horizon - 2; wy += 3) {
-        for (let wx = b.x + 2; wx < b.x + b.w - 1; wx += 3) {
-          if (r() < 0.5) continue;
-          if ((Math.sin(this.t * 6 + wx + wy * 0.7) + 1) * 0.5 < 0.3) continue;
-          ctx.fillRect(wx, wy, 1, 1);
-        }
-      }
-    }
-
-    // --- Ground line.
-    ctx.fillStyle = "#3ef0ff";
-    ctx.fillRect(0, horizon, TEX_W, 1);
-
-    // --- Constant warm tape grain.
-    const grainCount = 220 + Math.floor(g * 400);
-    for (let i = 0; i < grainCount; i++) {
-      const gx = Math.floor(Math.random() * TEX_W);
-      const gy = Math.floor(Math.random() * TEX_H);
-      const v = 160 + Math.floor(Math.random() * 95);
-      ctx.fillStyle = `rgba(${v},${v},${Math.floor(v * 0.85)},0.18)`;
-      ctx.fillRect(gx, gy, 1, 1);
-    }
-
-    // --- Scanlines.
-    ctx.fillStyle = "rgba(0,0,0,0.2)";
-    for (let y = 0; y < TEX_H; y += 2) ctx.fillRect(0, y, TEX_W, 1);
-
-    // --- Rolling tracking bar: a washed, noisy strip; widens on glitch.
-    const barH = 3 + Math.floor(g * 9);
-    const barTop = Math.floor(this.trackY * TEX_H);
-    for (let y = barTop; y < Math.min(barTop + barH, TEX_H); y++) {
-      // Brighten + desaturate the band.
-      ctx.fillStyle = "rgba(220,220,210,0.35)";
-      ctx.fillRect(0, y, TEX_W, 1);
-      // Sideways smear of the row content.
-      const dx = Math.round((Math.random() - 0.5) * (4 + g * 20));
-      const slice = ctx.getImageData(0, y, TEX_W, 1);
-      ctx.putImageData(slice, dx, y);
-    }
-
-    // --- Beat tear: extra torn scanlines smeared hard sideways while g high.
-    if (g > 0.04) this.applyTear(g);
-  }
-
-  /** Hard horizontal tearing + chroma re-stamp during the beat burst. */
-  private applyTear(g: number): void {
-    const ctx = this.c2d;
-    const tears = 2 + Math.floor(g * 5);
-    for (let i = 0; i < tears; i++) {
-      const ty = Math.floor(Math.random() * TEX_H);
-      const th = Math.min(1 + Math.floor(Math.random() * 4), TEX_H - ty);
-      if (th <= 0) continue;
-      const dx = Math.round((Math.random() - 0.5) * g * 30);
-      const slice = ctx.getImageData(0, ty, TEX_W, th);
-      ctx.putImageData(slice, dx, ty);
-    }
-    // Whole-frame chroma bleed: additive shifted copies.
-    const shift = Math.max(1, Math.round(g * 4));
-    ctx.globalCompositeOperation = "lighter";
-    ctx.globalAlpha = 0.22 * g;
-    ctx.drawImage(this.canvas, shift, 0);
-    ctx.drawImage(this.canvas, -shift, 1);
-    ctx.globalCompositeOperation = "source-over";
-    ctx.globalAlpha = 1;
+  /** How many shells are "active" at the current morph. Shell 0 always on; each
+   *  further shell unlocks across the morph range. */
+  private activeShellLevel(): number {
+    // Beat nudges an extra shell in on the pulse (the "shape burst").
+    return this.morph * SHELLS + this.beat * this.morph * 1.2;
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
-    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * this.glitchDecay);
+    // Ease morph toward target (never snap).
+    this.morph += (this.morphTarget - this.morph) * dt * 1.5;
+    if (this.beat > 0) this.beat = Math.max(0, this.beat - dt * this.beatDecay);
 
-    // Tracking bar rolls slowly upward between jumps.
-    this.trackY = (this.trackY - this.trackRollSpeed * dt + 1) % 1;
+    const m = this.morph;
+    const shellLevel = this.activeShellLevel();
+    // Global spin/scale ramps with morph; beat punches an extra burst.
+    const spinMul = 0.4 + m * 3.5 + this.beat * 2;
+    const glowBase = 0.18 + m * 0.5;
+    const burst = this.beat * (0.3 + m * 0.7);
+    // Beat pushes shapes outward; morph adds a continuous breathing pulse.
+    const outPush = 1 + burst * 0.35 + Math.sin(this.t * 2) * m * 0.08;
+    // Kaleidoscopic strobe near full overload.
+    const strobe = m > 0.7 ? 0.5 + 0.5 * Math.sin(this.t * 28) : 1;
 
-    this.paint(this.glitch);
-    this.tex.needsUpdate = true;
-
-    this.quadMat.color.setScalar(1 + this.glitch * 0.2);
-
-    if (this.shake > 0) {
-      this.shake = Math.max(0, this.shake - dt * 6);
-      if (this.camera) {
-        const m = this.shake;
-        this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.2,
-          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
-          this.camBaseZ + (Math.random() - 0.5) * m,
-        );
-        this.camera.lookAt(0, 30, -160);
+    for (const s of this.shapes) {
+      // Target visibility: this shape is "on" once morph has unlocked its shell.
+      // Shell 0 is on whenever morph > ~0 so something is always present.
+      const target = shellLevel >= s.shell + (s.shell === 0 ? -0.5 : 0) ? 1 : 0;
+      s.vis += (target - s.vis) * dt * 2.2;
+      if (s.vis < 0.01 && target === 0) {
+        if (s.mesh.visible) {
+          s.mesh.visible = false;
+          s.mat.opacity = 0;
+        }
+        continue;
       }
-    } else if (this.camera) {
-      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -160);
+      s.mesh.visible = true;
+
+      // Orbit around the origin on the shape's stable axis (recursive shell look).
+      const ang = s.orbitPhase + this.t * s.orbitSpeed * (1 + m * 2);
+      // Build an orbit position: rotate a base radius vector around orbitAxis.
+      const base = new THREE.Vector3(s.orbitR * outPush, 0, 0);
+      const q = new THREE.Quaternion().setFromAxisAngle(s.orbitAxis, ang);
+      base.applyQuaternion(q);
+      // Outer shells also swing in Z so the field has depth.
+      base.z += Math.sin(ang * 1.3 + s.shell) * s.orbitR * 0.3;
+      s.mesh.position.copy(base);
+
+      // Spin.
+      s.mesh.rotateOnAxis(s.spinAxis, s.spinSpeed * spinMul * dt);
+
+      // Scale: shells subdivide visually by shrinking outer copies; beat pops scale.
+      const sc = s.baseScale * s.vis * (1 + burst * 0.25);
+      s.mesh.scale.setScalar(Math.max(0.001, sc));
+
+      // Emissive glow (opacity stands in for brightness on additive lines).
+      const glow = (glowBase + burst) * s.vis * strobe;
+      s.mat.opacity = Math.min(1, glow);
+      // Hue cycles faster at high morph for the kaleidoscope shimmer.
+      if (m > 0.5) {
+        const hi = (s.hue + Math.floor(this.t * (1 + m * 4))) % NEON.length;
+        s.mat.color.setHex(NEON[hi]);
+      } else {
+        s.mat.color.setHex(NEON[s.hue]);
+      }
+    }
+
+    // Group slow auto-rotate; faster with morph for the swirling-overload feel.
+    this.group.rotation.y += dt * (0.05 + m * 0.4);
+    this.group.rotation.x += dt * (0.02 + m * 0.15);
+
+    // Camera: parked, pulled slightly inward as morph rises so the swarm engulfs
+    // the view; shake + morph-driven idle jitter jolt it.
+    if (this.camera) {
+      const baseZ = this.camBaseZ - m * 25;
+      if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 6);
+      const j = this.shake + m * 0.8 + this.beat * m * 1.5;
+      this.camera.position.set(
+        (Math.random() - 0.5) * j * 1.6,
+        (Math.random() - 0.5) * j * 1.4,
+        baseZ + (Math.random() - 0.5) * j,
+      );
+      this.camera.lookAt(0, 0, 0);
     }
   }
 
   dispose(): void {
     this.offBeat?.();
     this.offShake?.();
+    this.offIntensity?.();
     this.offBeat = undefined;
     this.offShake = undefined;
+    this.offIntensity = undefined;
 
     if (this.scene) {
       this.scene.remove(this.group);
@@ -280,18 +257,21 @@ class Bg05 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.quad.geometry.dispose();
-    this.quadMat.dispose();
-    this.tex.dispose();
-    this.buildings = [];
+    for (const s of this.shapes) {
+      this.group.remove(s.mesh);
+      s.mat.dispose();
+    }
+    this.shapes = [];
+    for (const g of this.geos) g.dispose();
+    this.geos = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg05",
-  label: "VHS Skyline / Tracking",
-  blurb: "Washed-out pixel neon skyline on worn tape — rolling tracking bar plus hard scanline tear and chroma bleed snap out of sync on every beat.",
+  label: "Geometric Bloom → Fractal Overload",
+  blurb: "Calm neon wireframe polyhedra that multiply into recursive shells, spin up and strobe into a kaleidoscopic fractal explosion as intensity peaks.",
   create: () => new Bg05(),
 };
 

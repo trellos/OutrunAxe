@@ -1,26 +1,34 @@
-// bg03 — "CRT Rolldown". A pixely Apple-IIgs / retro-computer neon city skyline
-// rendered to a LOW-RES CanvasTexture (chunky NearestFilter pixels, limited
-// palette) under a constant scanline grille. It GLITCHES ON THE BEAT with a CRT
-// vertical-hold ROLL + signal dropout: on each eddieBeatPulse the picture jumps
-// vertically and rolls, a bright sync-bar sweeps down, and dropout rows go black
-// — decaying back to a clean (still scanlined) image in ~150-220ms. Downbeats
-// roll harder.
+// bg03 — "Starfield → Hyperspace → Singularity" — a morphing space dive.
 //
-// Visuals only (GDD §8): subscribes eddieBeatPulse (glitch burst) + eddieShake
-// (camera jolt). Sets+restores scene.background/fog, disposes every
-// geometry/material/texture, unsubscribes.
+// At morph 0: a slow, calm drifting starfield (tiny additive point-streaks) in
+// deep space. As the performance-driven `morph` (0..1) rises the camera
+// accelerates forward and the stars STRETCH into long warp streaks rushing past
+// (hyperspace). Past mid-morph a swirling vortex / black hole forms at the
+// vanishing point: stars are dragged into a tightening spiral, a dark event
+// horizon grows, and a lensing ring + chromatic chaos intensifies. At morph 1
+// it's a full singularity — everything spirals inward into the black core, the
+// ring blazes, the field tints chromatic-aberrant red/blue.
+//
+// Juice contract (all three events handled):
+//  - eddieBeatPulse  -> warp-speed surge (downbeat stronger) + a vortex pulse.
+//  - eddieShake      -> camera jolt that decays.
+//  - eddieIntensity  -> target morph; eased each frame (never snapped).
+//
+// Visuals only (GDD §8). dispose() restores scene.background/fog, disposes every
+// geometry/material/texture, and unsubscribes all listeners.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const TEX_W = 192;
-const TEX_H = 120;
-const PLANE_W = 640;
-const PLANE_H = 400;
-
-const NEON = ["#ffd02b", "#00f0ff", "#ff2bd6", "#ff5a3c", "#7a3cff"];
+const STAR_COUNT = 1100;
+const FAR_Z = -900; // spawn plane
+const NEAR_Z = 60; // recycle once a star passes here (behind camera)
+const SPREAD = 260; // initial x/y spawn radius
+const BASE_SPEED = 18; // drift speed at morph 0
+const TOP_SPEED = 520; // warp speed at morph 1
+const STAR_TINT = [0x9fd8ff, 0xffffff, 0xffd0f5, 0xc9b8ff];
 
 class Bg03 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -28,235 +36,277 @@ class Bg03 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private baseCv!: HTMLCanvasElement;
-  private base2d!: CanvasRenderingContext2D;
-  private dispCv!: HTMLCanvasElement;
-  private disp2d!: CanvasRenderingContext2D;
-  private tex!: THREE.CanvasTexture;
-  private mat!: THREE.MeshBasicMaterial;
-  private mesh!: THREE.Mesh;
+  // Stars as a LineSegments streak field: 2 verts/star, length grows w/ speed.
+  private stars!: THREE.LineSegments;
+  private starGeo!: THREE.BufferGeometry;
+  private starMat!: THREE.LineBasicMaterial;
+  private pos!: Float32Array; // 6 floats/star
+  private col!: Float32Array;
+  private z!: Float32Array; // head z
+  private ang!: Float32Array; // current swirl angle
+  private rad!: Float32Array; // current radius from axis
+  private rad0!: Float32Array; // spawn radius (for respawn)
+  private tint!: Uint8Array;
+
+  // Vortex: a dark core disc + a glowing lensing ring at the vanishing point.
+  private core!: THREE.Mesh;
+  private coreMat!: THREE.MeshBasicMaterial;
+  private ring!: THREE.Mesh;
+  private ringMat!: THREE.MeshBasicMaterial;
+  private ringTex!: THREE.CanvasTexture;
+  private ringGeo!: THREE.RingGeometry;
 
   private camera: THREE.PerspectiveCamera | null = null;
-  private camBaseY = 0;
-  private camBaseZ = 60;
+  private camBaseZ = 0;
 
   private offBeat?: () => void;
   private offShake?: () => void;
+  private offIntensity?: () => void;
 
-  private glitch = 0;
+  private morph = 0;
+  private morphTarget = 0;
+  private pulse = 0; // warp surge, decays
   private shake = 0;
   private t = 0;
-  private rollPhase = 0; // accumulated vertical roll offset during a burst
-  private starSeeds: { x: number; y: number; tw: number }[] = [];
+
+  private tmpColor = new THREE.Color();
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x080414);
-    ctx.scene.fog = null;
+    ctx.scene.background = new THREE.Color(0x02010a);
+    ctx.scene.fog = new THREE.Fog(0x02010a, 300, 980);
 
-    this.baseCv = this.makeCanvas();
-    this.base2d = this.baseCv.getContext("2d")!;
-    this.dispCv = this.makeCanvas();
-    this.disp2d = this.dispCv.getContext("2d")!;
+    this.pos = new Float32Array(STAR_COUNT * 6);
+    this.col = new Float32Array(STAR_COUNT * 6);
+    this.z = new Float32Array(STAR_COUNT);
+    this.ang = new Float32Array(STAR_COUNT);
+    this.rad = new Float32Array(STAR_COUNT);
+    this.rad0 = new Float32Array(STAR_COUNT);
+    this.tint = new Uint8Array(STAR_COUNT);
+    for (let i = 0; i < STAR_COUNT; i++) this.spawn(i, true);
 
-    for (let i = 0; i < 64; i++) {
-      this.starSeeds.push({
-        x: Math.floor(Math.random() * TEX_W),
-        y: Math.floor(Math.random() * (TEX_H * 0.5)),
-        tw: Math.random() * Math.PI * 2,
-      });
-    }
+    this.starGeo = new THREE.BufferGeometry();
+    this.starGeo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3));
+    this.starGeo.setAttribute("color", new THREE.BufferAttribute(this.col, 3));
+    this.starMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: true,
+    });
+    this.stars = new THREE.LineSegments(this.starGeo, this.starMat);
+    this.stars.frustumCulled = false;
+    this.stars.renderOrder = -8;
+    this.group.add(this.stars);
 
-    this.drawBaseSkyline();
-    this.disp2d.drawImage(this.baseCv, 0, 0);
+    // --- Vortex core: a dark disc that grows as the singularity forms.
+    this.coreMat = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: false,
+    });
+    this.core = new THREE.Mesh(new THREE.CircleGeometry(40, 48), this.coreMat);
+    this.core.position.set(0, 0, FAR_Z + 120);
+    this.core.frustumCulled = false;
+    this.core.renderOrder = -9;
+    this.group.add(this.core);
 
-    this.tex = new THREE.CanvasTexture(this.dispCv);
-    this.tex.colorSpace = THREE.SRGBColorSpace;
-    this.tex.magFilter = THREE.NearestFilter;
-    this.tex.minFilter = THREE.NearestFilter;
-    this.tex.generateMipmaps = false;
-    this.mat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, PLANE_H), this.mat);
-    this.mesh.position.set(0, 30, -180);
-    this.mesh.renderOrder = -20;
-    this.group.add(this.mesh);
+    // --- Lensing ring: an additive glowing accretion ring around the core.
+    this.ringTex = new THREE.CanvasTexture(this.buildRingGlow());
+    this.ringTex.colorSpace = THREE.SRGBColorSpace;
+    this.ringGeo = new THREE.RingGeometry(40, 78, 64);
+    this.ringMat = new THREE.MeshBasicMaterial({
+      map: this.ringTex,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      fog: false,
+    });
+    this.ring = new THREE.Mesh(this.ringGeo, this.ringMat);
+    this.ring.position.copy(this.core.position);
+    this.ring.frustumCulled = false;
+    this.ring.renderOrder = -7;
+    this.group.add(this.ring);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -180);
+      this.camBaseZ = 80;
+      this.camera.position.set(0, 0, this.camBaseZ);
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(0, 0, FAR_Z);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.glitch = Math.max(this.glitch, e.downbeat ? 1 : 0.6);
+      this.pulse = e.downbeat ? 1 : 0.55;
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
+    this.offIntensity = ctx.juice.on("eddieIntensity", (e) => {
+      this.morphTarget = Math.min(1, Math.max(0, e.value));
+    });
   }
 
-  private makeCanvas(): HTMLCanvasElement {
+  /** Place star `i` (seed=true scatters along z on first build). */
+  private spawn(i: number, seed: boolean): void {
+    const a = Math.random() * Math.PI * 2;
+    const r = 6 + Math.random() * SPREAD;
+    this.ang[i] = a;
+    this.rad[i] = r;
+    this.rad0[i] = r;
+    this.z[i] = seed ? FAR_Z + Math.random() * (NEAR_Z - FAR_Z) : FAR_Z - Math.random() * 80;
+    this.tint[i] = Math.floor(Math.random() * STAR_TINT.length);
+    const o = i * 6;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    this.pos[o] = x;
+    this.pos[o + 1] = y;
+    this.pos[o + 2] = this.z[i];
+    this.pos[o + 3] = x;
+    this.pos[o + 4] = y;
+    this.pos[o + 5] = this.z[i] - 1;
+    this.tmpColor.set(STAR_TINT[this.tint[i]]);
+    for (let k = 0; k < 2; k++) {
+      const c = o + k * 3;
+      this.col[c] = this.tmpColor.r;
+      this.col[c + 1] = this.tmpColor.g;
+      this.col[c + 2] = this.tmpColor.b;
+    }
+  }
+
+  /** Soft additive accretion-ring sprite (white-hot inner, cyan/magenta outer). */
+  private buildRingGlow(): HTMLCanvasElement {
     const cv = document.createElement("canvas");
-    cv.width = TEX_W;
-    cv.height = TEX_H;
+    cv.width = 128;
+    cv.height = 128;
+    const g = cv.getContext("2d")!;
+    const rg = g.createRadialGradient(64, 64, 30, 64, 64, 64);
+    rg.addColorStop(0, "rgba(255,255,255,0)");
+    rg.addColorStop(0.45, "rgba(255,255,255,0.95)");
+    rg.addColorStop(0.6, "rgba(0,240,255,0.7)");
+    rg.addColorStop(0.8, "rgba(255,43,214,0.5)");
+    rg.addColorStop(1, "rgba(255,43,214,0)");
+    g.fillStyle = rg;
+    g.fillRect(0, 0, 128, 128);
     return cv;
-  }
-
-  private drawBaseSkyline(): void {
-    const g = this.base2d;
-    g.globalCompositeOperation = "source-over";
-    g.globalAlpha = 1;
-    const grad = g.createLinearGradient(0, 0, 0, TEX_H);
-    grad.addColorStop(0.0, "#04020e");
-    grad.addColorStop(0.5, "#160a30");
-    grad.addColorStop(0.82, "#341058");
-    grad.addColorStop(1.0, "#54116c");
-    g.fillStyle = grad;
-    g.fillRect(0, 0, TEX_W, TEX_H);
-
-    for (const s of this.starSeeds) {
-      const a = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.t * 2.8 + s.tw));
-      g.fillStyle = `rgba(255,250,220,${a.toFixed(3)})`;
-      g.fillRect(s.x, s.y, 1, 1);
-    }
-
-    this.drawSkylineLayer(g, "#22103e", 7, 11, 0.5, 5151);
-    this.drawSkylineLayer(g, null, 13, 20, 1.0, 66393);
-
-    const refl = g.createLinearGradient(0, TEX_H - 14, 0, TEX_H);
-    refl.addColorStop(0, "rgba(255,208,43,0.0)");
-    refl.addColorStop(1, "rgba(255,208,43,0.2)");
-    g.fillStyle = refl;
-    g.fillRect(0, TEX_H - 14, TEX_W, 14);
-  }
-
-  private drawSkylineLayer(
-    g: CanvasRenderingContext2D,
-    backFill: string | null,
-    minH: number,
-    maxH: number,
-    bright: number,
-    seed0: number,
-  ): void {
-    const baseY = Math.floor(TEX_H * (backFill ? 0.62 : 0.78));
-    let x = -2;
-    let i = 0;
-    let seed = seed0;
-    const rnd = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
-    while (x < TEX_W) {
-      const w = 8 + Math.floor(rnd() * 12);
-      const h = minH + Math.floor(rnd() * (maxH - minH));
-      const topY = baseY - h;
-      const color = NEON[i % NEON.length];
-      if (backFill) {
-        g.fillStyle = backFill;
-        g.fillRect(x, topY, w, TEX_H - topY);
-      } else {
-        g.fillStyle = "#0b0720";
-        g.fillRect(x, topY, w, TEX_H - topY);
-        g.fillStyle = color;
-        g.globalAlpha = bright;
-        g.fillRect(x, topY, w, 1);
-        for (let wy = topY + 3; wy < TEX_H - 3; wy += 3) {
-          for (let wx = x + 1; wx < x + w - 1; wx += 2) {
-            if ((wx + wy + i) % 3 === 0 && rnd() < 0.6) g.fillRect(wx, wy, 1, 1);
-          }
-        }
-        g.globalAlpha = 1;
-      }
-      x += w + 1 + Math.floor(rnd() * 3);
-      i++;
-    }
-  }
-
-  // Constant CRT grille: dim every other scanline a touch.
-  private drawScanlines(d: CanvasRenderingContext2D): void {
-    d.globalCompositeOperation = "source-over";
-    d.fillStyle = "rgba(0,0,0,0.28)";
-    for (let y = 0; y < TEX_H; y += 2) d.fillRect(0, y, TEX_W, 1);
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
-    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * 5.0);
 
-    this.drawBaseSkyline();
+    // EASE morph toward target (never snap).
+    this.morph += (this.morphTarget - this.morph) * dt * 1.5;
+    const m = this.morph;
 
-    const d = this.disp2d;
-    d.globalCompositeOperation = "source-over";
-    d.globalAlpha = 1;
-    d.clearRect(0, 0, TEX_W, TEX_H);
-    const gl = this.glitch;
+    // Forward speed ramps calm->warp; beat adds a surge.
+    const speed = this.lerp(BASE_SPEED, TOP_SPEED, m) * (1 + this.pulse * (1.5 + m * 2.5));
+    // Streak length grows with speed (calm = near-points; warp = long lines).
+    const streak = this.lerp(0.6, 5.5, m) + this.pulse * (1 + m * 5);
+    // Swirl: how hard stars are dragged tangentially + pulled inward (vortex).
+    const swirl = Math.max(0, (m - 0.45) / 0.55); // 0 until mid-morph, ->1 at end
+    const tangential = swirl * (1.2 + this.pulse);
+    const pullIn = swirl * (0.5 + this.pulse * 0.6);
 
-    if (gl <= 0.001) {
-      this.rollPhase = 0;
-      d.drawImage(this.baseCv, 0, 0);
-    } else {
-      // Vertical-hold roll: the picture scrolls downward and wraps. Roll speed
-      // scales with the burst so it lurches on the hit then settles.
-      this.rollPhase = (this.rollPhase + gl * gl * 220 * dt) % TEX_H;
-      const roll = Math.round(this.rollPhase);
-      d.drawImage(this.baseCv, 0, roll);
-      if (roll > 0) d.drawImage(this.baseCv, 0, roll - TEX_H); // wrap top
+    const pos = this.pos;
+    for (let i = 0; i < STAR_COUNT; i++) {
+      this.z[i] += speed * dt;
 
-      // Bright horizontal sync-bar sweeping with the roll.
-      const barY = roll % TEX_H;
-      d.globalCompositeOperation = "lighter";
-      d.fillStyle = `rgba(255,255,255,${(gl * 0.35).toFixed(3)})`;
-      d.fillRect(0, barY, TEX_W, 2 + Math.floor(gl * 3));
-      d.globalCompositeOperation = "source-over";
+      // Vortex drag: rotate around the axis + spiral inward as morph rises.
+      this.ang[i] += tangential * dt * (0.5 + (1 - this.rad[i] / (SPREAD + 6)));
+      this.rad[i] = Math.max(2, this.rad[i] - pullIn * dt * 60 * (1 - this.rad[i] / (SPREAD + 6) + 0.2));
 
-      // Signal dropout: a few full-width black rows.
-      const drops = Math.floor(gl * 6);
-      d.fillStyle = "#000000";
-      for (let k = 0; k < drops; k++) {
-        if (Math.random() < gl) d.fillRect(0, (Math.random() * TEX_H) | 0, TEX_W, 1 + ((Math.random() * 2) | 0));
+      // Recycle when the star passes the camera OR gets swallowed by the core.
+      if (this.z[i] > NEAR_Z || (swirl > 0.6 && this.rad[i] <= 3 && this.z[i] > FAR_Z + 60)) {
+        this.spawn(i, false);
+        continue;
       }
-      // Horizontal jitter of the whole frame on strong hits.
-      if (gl > 0.5 && Math.random() < gl) {
-        const jx = Math.round((Math.random() - 0.5) * gl * 6);
-        if (jx !== 0) {
-          const snap = d.getImageData(0, 0, TEX_W, TEX_H);
-          d.clearRect(0, 0, TEX_W, TEX_H);
-          d.putImageData(snap, jx, 0);
+
+      const x = Math.cos(this.ang[i]) * this.rad[i];
+      const y = Math.sin(this.ang[i]) * this.rad[i];
+      const o = i * 6;
+      // Head (nearer) point.
+      pos[o] = x;
+      pos[o + 1] = y;
+      pos[o + 2] = this.z[i];
+      // Tail trails behind toward -z; in the vortex it also trails along the
+      // spiral so streaks curve into the swirl.
+      const tailAng = this.ang[i] - tangential * dt * 4;
+      const tailRad = this.rad[i] + pullIn * dt * 30;
+      pos[o + 3] = Math.cos(tailAng) * tailRad;
+      pos[o + 4] = Math.sin(tailAng) * tailRad;
+      pos[o + 5] = this.z[i] - speed * streak * 0.02 - 1;
+
+      // Chromatic chaos at high morph: push tint toward red or blue per-star.
+      if (m > 0.5) {
+        const base = STAR_TINT[this.tint[i]];
+        this.tmpColor.set(base);
+        const ab = (m - 0.5) * 2; // 0..1
+        if (this.tint[i] % 2 === 0) this.tmpColor.r = Math.min(1, this.tmpColor.r + ab * 0.6);
+        else this.tmpColor.b = Math.min(1, this.tmpColor.b + ab * 0.6);
+        for (let k = 0; k < 2; k++) {
+          const c = o + k * 3;
+          this.col[c] = this.tmpColor.r;
+          this.col[c + 1] = this.tmpColor.g;
+          this.col[c + 2] = this.tmpColor.b;
         }
       }
     }
+    this.starGeo.attributes.position.needsUpdate = true;
+    if (m > 0.5) this.starGeo.attributes.color.needsUpdate = true;
 
-    // Constant scanline grille over everything.
-    this.drawScanlines(d);
-    this.tex.needsUpdate = true;
-    this.mat.color.setScalar(1 + gl * 0.18);
+    // Beat surge decays.
+    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 2.6);
+    this.starMat.opacity = 0.8 + this.pulse * 0.2;
 
-    if (this.shake > 0) {
-      this.shake = Math.max(0, this.shake - dt * 6);
-      if (this.camera) {
-        const m = this.shake;
-        this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.2,
-          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
-          this.camBaseZ + (Math.random() - 0.5) * m,
-        );
-        this.camera.lookAt(0, 30, -180);
+    // Vortex core + ring fade in past mid-morph; ring pulses on the beat.
+    const vortex = Math.max(0, (m - 0.45) / 0.55);
+    this.coreMat.opacity = vortex * 0.95;
+    this.core.scale.setScalar(0.4 + vortex * (1.1 + this.pulse * 0.3));
+    this.ringMat.opacity = vortex * (0.85 + this.pulse * 0.15);
+    this.ringMat.color.setScalar(1 + this.pulse * 0.6);
+    this.ring.scale.setScalar(0.5 + vortex * (1.0 + this.pulse * 0.25) + Math.sin(this.t * 2) * 0.03 * vortex);
+    this.ring.rotation.z += dt * (0.4 + vortex * 1.6 + this.pulse);
+
+    // Camera: drifts forward; in the vortex it pulls toward the core and rolls.
+    if (this.camera) {
+      const roll = vortex * Math.sin(this.t * 0.6) * 0.5 + this.t * vortex * 0.4;
+      let px = 0;
+      let py = 0;
+      let pz = this.camBaseZ - m * 30; // edges slightly closer to the action
+      if (this.shake > 0) {
+        this.shake = Math.max(0, this.shake - dt * 6);
+        const sMag = this.shake;
+        px += (Math.random() - 0.5) * sMag * 2.2;
+        py += (Math.random() - 0.5) * sMag * 1.8;
+        pz += (Math.random() - 0.5) * sMag;
       }
-    } else if (this.camera) {
-      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -180);
+      this.camera.position.set(px, py, pz);
+      this.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
+      this.camera.lookAt(0, 0, FAR_Z);
     }
+  }
+
+  private lerp(a: number, b: number, t: number): number {
+    return a + (b - a) * t;
   }
 
   dispose(): void {
     this.offBeat?.();
     this.offShake?.();
+    this.offIntensity?.();
     this.offBeat = undefined;
     this.offShake = undefined;
+    this.offIntensity = undefined;
 
     if (this.scene) {
       this.scene.remove(this.group);
@@ -265,18 +315,23 @@ class Bg03 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.mesh.geometry.dispose();
-    this.tex.dispose();
-    this.mat.dispose();
-    this.starSeeds = [];
+    if (this.camera) this.camera.up.set(0, 1, 0);
+
+    this.starGeo.dispose();
+    this.starMat.dispose();
+    this.core.geometry.dispose();
+    this.coreMat.dispose();
+    this.ringGeo.dispose();
+    this.ringMat.dispose();
+    this.ringTex.dispose();
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg03",
-  label: "CRT Rolldown",
-  blurb: "Pixely IIgs neon skyline under a scanline grille that vertical-hold rolls + drops signal on every beat.",
+  label: "Starfield → Singularity",
+  blurb: "A calm drifting starfield that accelerates into screaming hyperspace warp streaks, then collapses into a swirling black-hole singularity with a blazing lensing ring and chromatic chaos as you peak.",
   create: () => new Bg03(),
 };
 

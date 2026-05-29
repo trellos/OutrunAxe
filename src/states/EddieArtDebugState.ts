@@ -60,6 +60,8 @@ export class EddieArtDebugState implements GameState {
   private bgIndex = 0;
   private fxIndex = 0;
   private glitchHold = false;
+  /** Fixed eddieIntensity for review (?intensity=0..1); -1 = not set. */
+  private fixedIntensity = -1;
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -76,6 +78,9 @@ export class EddieArtDebugState implements GameState {
     // ?glitch=1 holds the beat-glitch saturated (continuous downbeat pulses) so a
     // still screenshot reliably captures the on-beat glitch for review.
     this.glitchHold = params.get("glitch") === "1";
+    // ?intensity=0..1 holds the background morph at a fixed level for review.
+    const intp = params.get("intensity");
+    this.fixedIntensity = intp !== null ? Math.max(0, Math.min(1, parseFloat(intp))) : -1;
 
     this.rig = createEddieArt("option-1");
     this.rig.mount({
@@ -131,6 +136,9 @@ export class EddieArtDebugState implements GameState {
       return;
     }
     this.t += dt;
+    if (this.fixedIntensity >= 0) {
+      this.juice.emit("eddieIntensity", { value: this.fixedIntensity, audioTime: this.t });
+    }
     if (this.glitchHold) {
       // Saturate the beat-glitch every frame so a still captures it (review only).
       this.juice.emit("eddieBeatPulse", { beatInMeasure: 0, downbeat: true, audioTime: this.t });

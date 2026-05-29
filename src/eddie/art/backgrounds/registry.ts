@@ -10,8 +10,9 @@ import bg03 from "./bg03";
 import bg04 from "./bg04";
 import bg05 from "./bg05";
 import bg06 from "./bg06";
+import bg07 from "./bg07";
 
-export const BACKGROUNDS: EddieBackgroundDef[] = [bg01, bg02, bg03, bg04, bg05, bg06];
+export const BACKGROUNDS: EddieBackgroundDef[] = [bg01, bg02, bg03, bg04, bg05, bg06, bg07];
 
 /** Clamp/wrap a 0-based index into the registry. */
 export function backgroundByIndex(i: number): EddieBackgroundDef {

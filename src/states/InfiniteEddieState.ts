@@ -28,6 +28,7 @@ import type {
   EddieScoreEvent,
 } from "../music/eddie/eddieTypes";
 import { createEddieArt, type EddieArtRig } from "../eddie/art/eddieArtFactory";
+import { BACKGROUNDS } from "../eddie/art/backgrounds/registry";
 import {
   createEddieAudio,
   type EddieAudioRig,
@@ -101,10 +102,30 @@ export class InfiniteEddieState implements GameState {
   private finishedAt = 0;
   private exited = false;
 
-  constructor(hudParent: HTMLElement, config: EddieConfig, onExit: () => void) {
+  /** Which background variant to mount (registry index). Menu can override. */
+  private bgIndex = BG_INDEX;
+  /** Demo mode (launched from the background menu): auto-ramps intensity so the
+   *  full morph is visible, shows a HUD, and Esc returns to the menu. */
+  private demo = false;
+  /** Performance meter 0..1 → eddieIntensity in normal play. */
+  private perf = 0.25;
+  /** Demo auto-ramp phase. */
+  private demoT = 0;
+  /** Manual intensity override (>=0 active; -1 = off). Set by [ ] keys. */
+  private manualIntensity = -1;
+  private demoHud: HTMLDivElement | null = null;
+
+  constructor(
+    hudParent: HTMLElement,
+    config: EddieConfig,
+    onExit: () => void,
+    opts?: { bgIndex?: number; demo?: boolean },
+  ) {
     this.hudParent = hudParent;
     this.config = config;
     this.onExit = onExit;
+    if (opts?.bgIndex !== undefined) this.bgIndex = opts.bgIndex;
+    this.demo = opts?.demo ?? false;
   }
 
   enter(game: Game) {
@@ -141,7 +162,7 @@ export class InfiniteEddieState implements GameState {
       config: this.config,
       juice: this.juice,
       camera: worldCamera,
-      bgIndex: BG_INDEX,
+      bgIndex: this.bgIndex,
       fxIndex: FX_INDEX,
     });
 
@@ -210,6 +231,7 @@ export class InfiniteEddieState implements GameState {
 
     this.keyHandler = (e: KeyboardEvent) => {
       if (e.repeat) return;
+      if (this.demo && this.handleDemoKey(e)) return;
       const midi = KEY_TO_MIDI[e.code];
       if (midi === undefined) return;
       const t = this.conductor.audioTime;
@@ -220,7 +242,31 @@ export class InfiniteEddieState implements GameState {
     };
     window.addEventListener("keydown", this.keyHandler);
 
+    if (this.demo) this.buildDemoHud();
+
     void this.startEngine();
+  }
+
+  private handleDemoKey(e: KeyboardEvent): boolean {
+    if (e.key === "Escape" || e.key === "Backspace") {
+      e.preventDefault();
+      this.onExit();
+      return true;
+    }
+    const cur = this.manualIntensity >= 0 ? this.manualIntensity : this.perf;
+    if (e.key === "[") { this.manualIntensity = Math.max(0, cur - 0.1); return true; }
+    if (e.key === "]") { this.manualIntensity = Math.min(1, cur + 0.1); return true; }
+    if (e.key === "\\") { this.manualIntensity = -1; return true; }
+    return false;
+  }
+
+  private buildDemoHud() {
+    const el = document.createElement("div");
+    el.className = "eddie-debug-hud";
+    el.style.cssText = "position:absolute;left:14px;top:14px;z-index:50;";
+    this.hudParent.appendChild(el);
+    this.demoHud = el;
+    this.updateDemoHud(this.perf);
   }
 
   exit() {
@@ -244,6 +290,9 @@ export class InfiniteEddieState implements GameState {
     this.art?.dispose();
     this.art = null;
 
+    this.demoHud?.remove();
+    this.demoHud = null;
+
     // Release every juice subscriber so the Art rig (already disposed) and any
     // late listeners can't fire after teardown.
     this.juice.clear();
@@ -251,12 +300,38 @@ export class InfiniteEddieState implements GameState {
 
   update(dt: number, audioTime: number) {
     if (this.exited) return;
+
+    // Drive eddieIntensity every frame. Demo mode auto-ramps so the full morph is
+    // visible; a manual override ([ ]) wins in either mode; otherwise it tracks
+    // the performance meter (which decays toward a calm baseline).
+    if (this.demo) {
+      this.demoT += dt;
+      this.perf = 0.5 - 0.5 * Math.cos(this.demoT * 0.4); // 0 -> 1 -> 0 over ~16s
+    } else {
+      this.perf += (0.25 - this.perf) * dt * 0.2;
+    }
+    const intensity = this.manualIntensity >= 0 ? this.manualIntensity : this.perf;
+    this.juice.emit("eddieIntensity", { value: intensity, audioTime });
+    if (this.demoHud) this.updateDemoHud(intensity);
+
     this.art?.update(dt, audioTime);
 
     if (this.finishedAt > 0 && audioTime >= this.finishedAt) {
       this.finishedAt = 0;
       this.onExit();
     }
+  }
+
+  private updateDemoHud(intensity: number) {
+    if (!this.demoHud) return;
+    const name = BACKGROUNDS[this.bgIndex % BACKGROUNDS.length]?.label ?? `bg${this.bgIndex + 1}`;
+    const pct = Math.round(intensity * 100);
+    const mode = this.manualIntensity >= 0 ? "MANUAL" : "AUTO";
+    const bars = "█".repeat(Math.round(intensity * 20)).padEnd(20, "·");
+    this.demoHud.innerHTML =
+      `BG ${this.bgIndex + 1}/${BACKGROUNDS.length}: <b>${name}</b><br>` +
+      `INTENSITY ${mode} ${pct}%<br><span style="letter-spacing:1px">${bars}</span><br>` +
+      `<b>[</b>/<b>]</b> intensity &middot; <b>\\</b> auto &middot; <b>Esc</b> back to menu`;
   }
 
   /** Translate a scored quarter (or tagged-clear) into juice events. */
@@ -267,6 +342,14 @@ export class InfiniteEddieState implements GameState {
       this.juice.emit("eddieFire", { measure: ev.measure, tier: 2, audioTime: ev.audioTime });
     } else if (ev.kinds.includes("eighthTagClear")) {
       this.juice.emit("eddieFire", { measure: ev.measure, tier: 1, audioTime: ev.audioTime });
+    }
+
+    // Performance meter feeds eddieIntensity: fat, multi-bonus quarters drive it
+    // up; out-of-key/silent quarters nudge it down (skipped in demo mode, which
+    // auto-ramps intensity itself).
+    if (!this.demo) {
+      if (ev.points > 0) this.perf = Math.min(1, this.perf + Math.min(ev.multiplier, 4) * 0.05);
+      else this.perf = Math.max(0, this.perf - 0.05);
     }
 
     // No points (out-of-key / silent) earns no shake or particles.

@@ -1,25 +1,54 @@
-// bg02 — "Datamosh City". A pixely Apple-IIgs / retro-computer neon city skyline
-// rendered to a LOW-RES CanvasTexture (chunky NearestFilter pixels, limited
-// palette) that DATAMOSHES ON THE BEAT: on each eddieBeatPulse the image tears
-// into horizontal blocks that shear sideways, smear pixel rows, and drop
-// corrupted color blocks — decaying back to a clean pixel image in ~150-220ms.
-// Downbeats tear harder.
+// bg02 — "Neon Sea → Storm" — a morphing synthwave ocean.
 //
-// Visuals only (GDD §8): subscribes eddieBeatPulse (glitch burst) + eddieShake
-// (camera jolt). Sets+restores scene.background/fog, disposes every
-// geometry/material/texture, unsubscribes.
+// At morph 0: a calm neon ocean of gentle parallax waves under a big banded moon
+// in a deep-purple sky, stars overhead. As the performance-driven `morph` (0..1)
+// rises the sea turns violent — swell height and chop grow, the sky darkens and
+// reddens, whitecaps/spray appear, lightning cracks ON THE BEAT (frequency +
+// brightness scale with morph), and the camera begins to pitch and roll like a
+// boat in a tempest. At morph 1 it is a raging storm: towering chaotic waves,
+// near-constant lightning, blood-red sky, waterspouts.
+//
+// Juice contract (all three events handled):
+//  - eddieBeatPulse  -> wave surge + a lightning strike (more likely w/ morph).
+//  - eddieShake      -> camera jolt that decays.
+//  - eddieIntensity  -> target morph; eased each frame (never snapped).
+//
+// Visuals only (GDD §8). dispose() restores scene.background/fog, disposes every
+// geometry/material/texture, and unsubscribes all listeners. The sea+sky is one
+// low-res CanvasTexture (NearestFilter => chunky pixels) redrawn each frame.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const TEX_W = 192;
-const TEX_H = 120;
-const PLANE_W = 640;
-const PLANE_H = 400;
+const SEA_W = 200; // sea/sky canvas px (low-res, NearestFilter => chunky)
+const SEA_H = 140;
 
-const NEON = ["#00f0ff", "#ff2bd6", "#ffd02b", "#36e07a", "#ff5a8a"];
+// Calm and storm palettes; we lerp between them by morph.
+const CALM = {
+  skyTop: [10, 6, 24] as const,
+  skyHorizon: [90, 24, 120] as const,
+  seaFar: [40, 16, 90] as const,
+  seaNear: [10, 8, 36] as const,
+  neon: [0, 240, 255] as const, // cyan crests
+  moon: [255, 224, 150] as const,
+};
+const STORM = {
+  skyTop: [12, 2, 8] as const,
+  skyHorizon: [120, 10, 26] as const,
+  seaFar: [70, 8, 20] as const,
+  seaNear: [18, 2, 8] as const,
+  neon: [255, 70, 60] as const, // angry red-orange crests
+  moon: [200, 120, 110] as const,
+};
+
+interface Lightning {
+  life: number; // seconds remaining
+  x: number; // strike column (0..SEA_W)
+  segs: number[]; // jagged x offsets down the bolt
+  branchAt: number; // row index where a branch forks
+}
 
 class Bg02 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -27,229 +56,298 @@ class Bg02 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private baseCv!: HTMLCanvasElement;
-  private base2d!: CanvasRenderingContext2D;
-  private dispCv!: HTMLCanvasElement;
-  private disp2d!: CanvasRenderingContext2D;
+  private canvas!: HTMLCanvasElement;
+  private c2d!: CanvasRenderingContext2D;
   private tex!: THREE.CanvasTexture;
-  private mat!: THREE.MeshBasicMaterial;
-  private mesh!: THREE.Mesh;
+  private quad!: THREE.Mesh;
+  private quadMat!: THREE.MeshBasicMaterial;
 
   private camera: THREE.PerspectiveCamera | null = null;
   private camBaseY = 0;
-  private camBaseZ = 60;
+  private camBaseZ = 0;
 
   private offBeat?: () => void;
   private offShake?: () => void;
+  private offIntensity?: () => void;
 
-  private glitch = 0;
+  private morph = 0; // eased calm->chaos
+  private morphTarget = 0;
+  private pulse = 0; // beat surge, decays
   private shake = 0;
   private t = 0;
-  private starSeeds: { x: number; y: number; tw: number }[] = [];
+  private bolts: Lightning[] = [];
+  private flash = 0; // full-screen lightning flash, decays
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x070310);
+    ctx.scene.background = new THREE.Color(0x0a0618);
     ctx.scene.fog = null;
 
-    this.baseCv = this.makeCanvas();
-    this.base2d = this.baseCv.getContext("2d")!;
-    this.dispCv = this.makeCanvas();
-    this.disp2d = this.dispCv.getContext("2d")!;
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = SEA_W;
+    this.canvas.height = SEA_H;
+    this.c2d = this.canvas.getContext("2d")!;
+    this.c2d.imageSmoothingEnabled = false;
 
-    for (let i = 0; i < 60; i++) {
-      this.starSeeds.push({
-        x: Math.floor(Math.random() * TEX_W),
-        y: Math.floor(Math.random() * (TEX_H * 0.5)),
-        tw: Math.random() * Math.PI * 2,
-      });
-    }
-
-    this.drawBaseSkyline();
-    this.disp2d.drawImage(this.baseCv, 0, 0);
-
-    this.tex = new THREE.CanvasTexture(this.dispCv);
+    this.paint();
+    this.tex = new THREE.CanvasTexture(this.canvas);
     this.tex.colorSpace = THREE.SRGBColorSpace;
     this.tex.magFilter = THREE.NearestFilter;
     this.tex.minFilter = THREE.NearestFilter;
     this.tex.generateMipmaps = false;
-    this.mat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, PLANE_H), this.mat);
-    this.mesh.position.set(0, 30, -180);
-    this.mesh.renderOrder = -20;
-    this.group.add(this.mesh);
+
+    this.quadMat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(360, 240), this.quadMat);
+    this.quad.position.set(0, 30, -160);
+    this.quad.renderOrder = -20;
+    this.quad.frustumCulled = false;
+    this.group.add(this.quad);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
+      this.camBaseY = 30;
+      this.camBaseZ = 70;
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -180);
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(0, 30, -160);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.glitch = Math.max(this.glitch, e.downbeat ? 1 : 0.6);
+      this.pulse = e.downbeat ? 1 : 0.55;
+      // Lightning chance scales with morph; downbeats strike reliably past mid morph.
+      const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
+      if (Math.random() < chance) this.strike(e.downbeat);
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
+    this.offIntensity = ctx.juice.on("eddieIntensity", (e) => {
+      this.morphTarget = Math.min(1, Math.max(0, e.value));
+    });
   }
 
-  private makeCanvas(): HTMLCanvasElement {
-    const cv = document.createElement("canvas");
-    cv.width = TEX_W;
-    cv.height = TEX_H;
-    return cv;
+  private strike(downbeat: boolean): void {
+    const segs: number[] = [];
+    let x = 0;
+    const rows = 14;
+    for (let i = 0; i < rows; i++) {
+      x += (Math.random() - 0.5) * 10;
+      segs.push(x);
+    }
+    this.bolts.push({
+      life: 0.16 + Math.random() * 0.12,
+      x: 20 + Math.random() * (SEA_W - 40),
+      segs,
+      branchAt: 4 + Math.floor(Math.random() * 6),
+    });
+    this.flash = Math.max(this.flash, downbeat ? 1 : 0.7);
+    if (this.bolts.length > 6) this.bolts.shift();
   }
 
-  private drawBaseSkyline(): void {
-    const g = this.base2d;
-    g.globalCompositeOperation = "source-over";
-    g.globalAlpha = 1;
-    const grad = g.createLinearGradient(0, 0, 0, TEX_H);
-    grad.addColorStop(0.0, "#03020c");
-    grad.addColorStop(0.5, "#12082c");
-    grad.addColorStop(0.82, "#2c0b4e");
-    grad.addColorStop(1.0, "#4a0d62");
-    g.fillStyle = grad;
-    g.fillRect(0, 0, TEX_W, TEX_H);
+  private lerp(a: number, b: number, t: number): number {
+    return a + (b - a) * t;
+  }
 
-    for (const s of this.starSeeds) {
-      const a = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.t * 2.6 + s.tw));
-      g.fillStyle = `rgba(200,255,255,${a.toFixed(3)})`;
-      g.fillRect(s.x, s.y, 1, 1);
+  /** Lerp two RGB triples by t and return a css rgb() string. */
+  private mix(a: readonly number[], b: readonly number[], t: number): string {
+    const r = Math.round(this.lerp(a[0], b[0], t));
+    const g = Math.round(this.lerp(a[1], b[1], t));
+    const bl = Math.round(this.lerp(a[2], b[2], t));
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  /** Per-channel double-lerp helper: between (calmA->stormA) and (calmB->stormB)
+   *  by morph m, then between the two by f. Returns a css rgb() string. */
+  private bandColor(
+    calmA: readonly number[],
+    stormA: readonly number[],
+    calmB: readonly number[],
+    stormB: readonly number[],
+    m: number,
+    f: number,
+  ): string {
+    const ch = (i: number) =>
+      Math.round(this.lerp(this.lerp(calmA[i], stormA[i], m), this.lerp(calmB[i], stormB[i], m), f));
+    return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
+  }
+
+  /** Redraw the whole sea+sky for this frame. */
+  private paint(): void {
+    const ctx = this.c2d;
+    const m = this.morph;
+    const horizon = Math.floor(SEA_H * 0.42);
+
+    // --- Sky gradient (top->horizon, calm->storm), banded for the pixely look.
+    for (let y = 0; y < horizon; y++) {
+      const f = y / horizon;
+      ctx.fillStyle = this.bandColor(CALM.skyTop, STORM.skyTop, CALM.skyHorizon, STORM.skyHorizon, m, f);
+      ctx.fillRect(0, y, SEA_W, 1);
+    }
+    const skyHor = this.mix(CALM.skyHorizon, STORM.skyHorizon, m);
+
+    // --- Stars (fade out as the storm clouds roll in).
+    if (m < 0.85) {
+      ctx.globalAlpha = (1 - m / 0.85) * 0.9;
+      ctx.fillStyle = "#dfe6ff";
+      for (let i = 0; i < 40; i++) {
+        const sx = (i * 53 + 7) % SEA_W;
+        const sy = (i * 29) % horizon;
+        if ((Math.sin(this.t * 2 + i) + 1) * 0.5 > 0.4) ctx.fillRect(sx, sy, 1, 1);
+      }
+      ctx.globalAlpha = 1;
     }
 
-    this.drawSkylineLayer(g, "#1c0a3a", 8, 12, 0.5, 4242);
-    this.drawSkylineLayer(g, null, 14, 22, 1.0, 71755);
+    // --- Moon: big banded disc on the horizon, dimming + reddening with storm.
+    const moonX = SEA_W * 0.5;
+    const moonY = horizon - 14;
+    const moonR = 16;
+    ctx.fillStyle = this.mix(CALM.moon, STORM.moon, m);
+    ctx.beginPath();
+    ctx.arc(moonX, moonY, moonR, 0, Math.PI * 2);
+    ctx.fill();
+    // Venetian bands cut from the lower moon (filled with the horizon sky color).
+    ctx.fillStyle = skyHor;
+    for (let i = 0; i < 5; i++) ctx.fillRect(moonX - moonR, moonY + 2 + i * 3, moonR * 2, 1 + Math.floor(i / 2));
 
-    const refl = g.createLinearGradient(0, TEX_H - 16, 0, TEX_H);
-    refl.addColorStop(0, "rgba(255,43,214,0.0)");
-    refl.addColorStop(1, "rgba(255,43,214,0.22)");
-    g.fillStyle = refl;
-    g.fillRect(0, TEX_H - 16, TEX_W, 16);
-  }
+    // --- Sea: rows from horizon down. Swell amplitude + chop grow with morph.
+    const neon = this.mix(CALM.neon, STORM.neon, m);
+    const amp = this.lerp(2.5, 16, m) * (1 + this.pulse * 0.6);
+    const chop = this.lerp(0.6, 2.4, m);
+    const seaRows = SEA_H - horizon;
+    for (let row = 0; row < seaRows; row++) {
+      const y = horizon + row;
+      const depth = row / seaRows; // 0 far .. 1 near
+      ctx.fillStyle = this.bandColor(CALM.seaFar, STORM.seaFar, CALM.seaNear, STORM.seaNear, m, depth);
+      ctx.fillRect(0, y, SEA_W, 1);
 
-  private drawSkylineLayer(
-    g: CanvasRenderingContext2D,
-    backFill: string | null,
-    minH: number,
-    maxH: number,
-    bright: number,
-    seed0: number,
-  ): void {
-    const baseY = Math.floor(TEX_H * (backFill ? 0.6 : 0.78));
-    let x = -2;
-    let i = 0;
-    let seed = seed0;
-    const rnd = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
-    while (x < TEX_W) {
-      const w = 9 + Math.floor(rnd() * 13);
-      const h = minH + Math.floor(rnd() * (maxH - minH));
-      const topY = baseY - h;
-      const color = NEON[i % NEON.length];
-      if (backFill) {
-        g.fillStyle = backFill;
-        g.fillRect(x, topY, w, TEX_H - topY);
-      } else {
-        g.fillStyle = "#0a0618";
-        g.fillRect(x, topY, w, TEX_H - topY);
-        g.fillStyle = color;
-        g.globalAlpha = bright;
-        g.fillRect(x, topY, w, 1);
-        // A neon vertical edge stripe (antenna) on some buildings.
-        if (rnd() < 0.4) g.fillRect(x + (w >> 1), topY - 3, 1, 4);
-        for (let wy = topY + 3; wy < TEX_H - 3; wy += 3) {
-          for (let wx = x + 2; wx < x + w - 1; wx += 2) {
-            if ((wx + wy * 2 + i) % 4 < 2 && rnd() < 0.55) g.fillRect(wx, wy, 1, 1);
+      // Neon crest every few rows so the sea reads as horizontal swells.
+      if (row % 3 === 0) {
+        const phase = this.t * (1.2 + depth * 2) + row * 0.5;
+        ctx.fillStyle = neon;
+        for (let x = 0; x < SEA_W; x += 1) {
+          const w =
+            Math.sin(x * 0.06 * chop + phase) * amp * (0.4 + depth) +
+            Math.sin(x * 0.17 * chop + phase * 1.7) * amp * 0.4 * depth;
+          const cy = Math.round(y + w * 0.15);
+          if (cy >= horizon && cy < SEA_H) {
+            ctx.globalAlpha = 0.5 + depth * 0.5;
+            ctx.fillRect(x, cy, 1, 1);
           }
         }
-        g.globalAlpha = 1;
+        ctx.globalAlpha = 1;
       }
-      x += w + 1 + Math.floor(rnd() * 3);
-      i++;
+    }
+
+    // --- Whitecaps / spray: bright pixels, count grows with morph + pulse.
+    const sprayCount = Math.floor((m * 80 + this.pulse * 40) * (0.5 + m));
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < sprayCount; i++) {
+      const sx = Math.floor(Math.random() * SEA_W);
+      const sy = horizon + Math.floor(Math.random() * seaRows);
+      ctx.globalAlpha = 0.4 + Math.random() * 0.5;
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+
+    // --- Waterspouts at high morph: faint vertical funnels.
+    if (m > 0.6) {
+      const spouts = 1 + Math.floor((m - 0.6) * 5);
+      ctx.fillStyle = "rgba(200,200,210,0.5)";
+      for (let s = 0; s < spouts; s++) {
+        const sx = ((s * 71 + Math.floor(this.t * 8)) % (SEA_W - 20)) + 10;
+        ctx.globalAlpha = (m - 0.6) * 0.8;
+        for (let y = horizon; y < SEA_H; y += 1) {
+          const wob = Math.sin(y * 0.3 + this.t * 6 + s) * 3;
+          ctx.fillRect(Math.round(sx + wob), y, 1 + Math.floor((y - horizon) / 30), 1);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // --- Lightning bolts (drawn over the sky).
+    for (const bolt of this.bolts) {
+      const a = Math.min(1, bolt.life * 6);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "#eaf2ff";
+      const rowH = Math.ceil((horizon + 6) / bolt.segs.length) + 1;
+      let bx = bolt.x;
+      for (let i = 0; i < bolt.segs.length; i++) {
+        const y = (i / bolt.segs.length) * (horizon + 6);
+        bx = bolt.x + bolt.segs[i];
+        ctx.fillRect(Math.round(bx), Math.round(y), 2, rowH);
+        if (i === bolt.branchAt) {
+          let fx = bx;
+          for (let j = 0; j < 5; j++) {
+            fx += (Math.random() - 0.3) * 8;
+            ctx.fillRect(Math.round(fx), Math.round(y + j * 3), 1, 3);
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // --- Full-frame lightning flash.
+    if (this.flash > 0.01) {
+      ctx.globalAlpha = this.flash * 0.5;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, SEA_W, SEA_H);
+      ctx.globalAlpha = 1;
     }
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
-    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * 5.0);
 
-    this.drawBaseSkyline();
+    // EASE morph toward target (never snap).
+    this.morph += (this.morphTarget - this.morph) * dt * 1.5;
 
-    const d = this.disp2d;
-    d.globalCompositeOperation = "source-over";
-    d.globalAlpha = 1;
-    const gl = this.glitch;
-
-    if (gl <= 0.001) {
-      d.clearRect(0, 0, TEX_W, TEX_H);
-      d.drawImage(this.baseCv, 0, 0);
-    } else {
-      // Datamosh: slice into horizontal bands and shear each sideways. Some
-      // bands get vertically smeared (stretched) for the "frozen p-frame" look.
-      d.clearRect(0, 0, TEX_W, TEX_H);
-      const bands = 6 + Math.floor(gl * 8);
-      const bandH = Math.ceil(TEX_H / bands);
-      let seed = (this.t * 1000) | 0;
-      const rnd = () => {
-        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-        return seed / 0x7fffffff;
-      };
-      for (let b = 0; b < bands; b++) {
-        const sy = b * bandH;
-        const h = Math.min(bandH, TEX_H - sy);
-        if (h <= 0) break;
-        const shift = Math.round((rnd() - 0.5) * gl * 28);
-        const smear = rnd() < gl * 0.4 ? 1 + Math.floor(rnd() * 3) : 1; // vertical stretch
-        d.drawImage(this.baseCv, 0, sy, TEX_W, h, shift, sy, TEX_W, h * smear);
-        // Wrap the sheared band so the tear edge fills (no black gap).
-        if (shift > 0) d.drawImage(this.baseCv, TEX_W - shift, sy, shift, h, 0, sy, shift, h);
-        else if (shift < 0) d.drawImage(this.baseCv, 0, sy, -shift, h, TEX_W + shift, sy, -shift, h);
-      }
-      // Corrupted color blocks dropped over the tear.
-      const blocks = Math.floor(gl * 6);
-      d.globalCompositeOperation = "lighter";
-      for (let k = 0; k < blocks; k++) {
-        d.globalAlpha = 0.3 + rnd() * 0.4;
-        d.fillStyle = NEON[(rnd() * NEON.length) | 0];
-        const bw = 8 + ((rnd() * 30) | 0);
-        const bh = 2 + ((rnd() * 5) | 0);
-        d.fillRect((rnd() * TEX_W) | 0, (rnd() * TEX_H) | 0, bw, bh);
-      }
-      d.globalCompositeOperation = "source-over";
-      d.globalAlpha = 1;
+    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 3.0);
+    if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 5.0);
+    if (this.bolts.length > 0) {
+      for (const b of this.bolts) b.life -= dt;
+      this.bolts = this.bolts.filter((b) => b.life > 0);
     }
-    this.tex.needsUpdate = true;
-    this.mat.color.setScalar(1 + gl * 0.18);
 
-    if (this.shake > 0) {
-      this.shake = Math.max(0, this.shake - dt * 6);
-      if (this.camera) {
-        const m = this.shake;
-        this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.2,
-          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
-          this.camBaseZ + (Math.random() - 0.5) * m,
-        );
-        this.camera.lookAt(0, 30, -180);
+    this.paint();
+    this.tex.needsUpdate = true;
+
+    // Material brightens on lightning flash so it blooms.
+    this.quadMat.color.setScalar(1 + this.flash * 0.4 + this.pulse * 0.1);
+
+    // Camera: parked when calm; pitches/rolls like a boat as the storm builds,
+    // jolts on shake. Pitch/roll amplitude scales with morph.
+    if (this.camera) {
+      const sp = this.morph;
+      const roll = Math.sin(this.t * (0.8 + this.morph * 1.5)) * 0.04 * sp;
+      const bobY = Math.sin(this.t * (1.1 + this.morph * 2)) * (1 + sp * 6);
+      let px = 0;
+      let py = this.camBaseY + bobY;
+      let pz = this.camBaseZ;
+      if (this.shake > 0) {
+        this.shake = Math.max(0, this.shake - dt * 6);
+        const sMag = this.shake;
+        px += (Math.random() - 0.5) * sMag * 2.2;
+        py += (Math.random() - 0.5) * sMag * 1.8;
+        pz += (Math.random() - 0.5) * sMag;
       }
-    } else if (this.camera) {
-      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -180);
+      this.camera.position.set(px, py, pz);
+      this.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
+      // The look target dips with the swell so the horizon tilts in the storm.
+      this.camera.lookAt(0, 30 - sp * 8 + Math.sin(this.t * 1.3) * sp * 5, -160);
     }
   }
 
   dispose(): void {
     this.offBeat?.();
     this.offShake?.();
+    this.offIntensity?.();
     this.offBeat = undefined;
     this.offShake = undefined;
+    this.offIntensity = undefined;
 
     if (this.scene) {
       this.scene.remove(this.group);
@@ -258,18 +356,20 @@ class Bg02 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.mesh.geometry.dispose();
+    if (this.camera) this.camera.up.set(0, 1, 0);
+
+    this.quad.geometry.dispose();
+    this.quadMat.dispose();
     this.tex.dispose();
-    this.mat.dispose();
-    this.starSeeds = [];
+    this.bolts = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg02",
-  label: "Datamosh City",
-  blurb: "Pixely IIgs neon skyline that tears into datamosh block-shear + corrupted color blocks on every beat.",
+  label: "Neon Sea → Storm",
+  blurb: "A calm neon synthwave ocean under a banded moon that morphs into a raging tempest as you heat up — swelling waves, whitecaps, waterspouts and beat-timed lightning, with the camera pitching like a boat.",
   create: () => new Bg02(),
 };
 

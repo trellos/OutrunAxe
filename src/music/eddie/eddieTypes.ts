@@ -120,6 +120,12 @@ export type EddieJuiceEvents = {
   eddieBeatPulse: { beatInMeasure: number; downbeat: boolean; audioTime: number };
   /** The score number should visually increment to `total`. */
   eddieScorePop: { total: number; delta: number; audioTime: number };
+  /** Performance-driven intensity, 0..1. Rises as the player does well (fat,
+   *  multi-bonus quarters), falls toward a calm baseline when they miss or go
+   *  quiet. Backgrounds use it to MORPH between a calm state (0) and a chaotic,
+   *  maxed-out state (1) — e.g. city → all-fire. Emitted continuously by the play
+   *  state; backgrounds should ease toward it, not snap. */
+  eddieIntensity: { value: number; audioTime: number };
   /** A played note, for the grid to PLOT inside the measure cell it lands in.
    *  The grid cells are note timelines (AGENTS.md Infinite Eddie rule #1): the
    *  notes the player plays render here, never text labels.

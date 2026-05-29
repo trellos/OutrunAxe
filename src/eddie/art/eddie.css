@@ -443,3 +443,81 @@
   0% { background-position: 0% 0; }
   100% { background-position: 200% 0; }
 }
+
+/* -------------------------------------------------------------------------
+   Background picker menu (EddieBgMenuState, ?eddiebg=1) — 80s neon grid.
+   ------------------------------------------------------------------------- */
+.eddie-bgmenu {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 4vh 4vw;
+  background: radial-gradient(120% 90% at 50% 0%, #2a0b46 0%, #0a0612 70%);
+  font-family: "Eurostile", "Bank Gothic", "Arial Black", sans-serif;
+  overflow: auto;
+}
+.eddie-bgmenu-title {
+  margin: 4px 0 0;
+  font-size: clamp(22px, 4vw, 40px);
+  letter-spacing: 6px;
+  color: #fff;
+  text-shadow: 0 0 10px #ff2bd6, 0 0 26px #ff2bd6;
+}
+.eddie-bgmenu-sub {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: #9fd9ff;
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+.eddie-bgmenu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  width: min(1000px, 96vw);
+}
+.eddie-bgmenu-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  padding: 14px 16px 16px;
+  cursor: pointer;
+  color: #f3e9ff;
+  background: linear-gradient(135deg, rgba(58, 17, 112, 0.55), rgba(10, 6, 18, 0.85));
+  border: 2px solid #00f0ff;
+  box-shadow: inset 0 0 18px rgba(0, 240, 255, 0.12), 0 0 14px rgba(0, 240, 255, 0.18);
+  transition: transform 0.1s ease, box-shadow 0.1s ease, border-color 0.1s ease;
+  font: inherit;
+}
+.eddie-bgmenu-card:hover {
+  transform: translateY(-3px) scale(1.02);
+  border-color: #ff2bd6;
+  box-shadow: inset 0 0 22px rgba(255, 43, 214, 0.2), 0 0 26px rgba(255, 43, 214, 0.55);
+}
+.eddie-bgmenu-num {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #ffd02b;
+  text-shadow: 0 0 8px rgba(255, 208, 43, 0.7);
+}
+.eddie-bgmenu-name {
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #fff;
+  text-shadow: 0 0 8px #ff2bd6;
+}
+.eddie-bgmenu-blurb {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #b9a9d6;
+}
