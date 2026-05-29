@@ -14,8 +14,10 @@ textured night city).
 
 Tech: **Three.js** (rendering, scene graph, post-FX), **Web Audio API**
 (timing, synthesis, mic capture), **pitchfinder/Macleod** (monophonic pitch
-detection), **Vite + TypeScript** (build). The character model is the CC0
-`RobotExpressive` GLB loaded via `GLTFLoader`.
+detection), **Vite + TypeScript** (build). Characters are built procedurally
+via `src/world/characters/Killer7Style.ts` (hard 2-tone cel ramp, thick ink
+outlines, `HumanoidRig` with idle/play/walk/taunt/hit/die animations) rather
+than using pre-baked GLBs.
 
 > History: this project began as a 2D Phaser pitch-visualiser. It was
 > rebuilt into the current 3D game in commit `a2c57d2`. The **audio /
@@ -97,16 +99,20 @@ src/
     AssetLoader.ts     GLTFLoader + SkeletonUtils.clone + promise cache
   states/
     BootState.ts       title, best scores, PLAY
-    LoadoutState.ts    pick 1 of 3 outfits x 3 guitars (live avatar preview)
+    LoadoutState.ts    pick character, variant, guitar (live avatar preview)
     LevelSelectState.ts 3 level cards + spinning icosahedra
     LevelState.ts      *** the game *** — wires every subsystem, chase cam
     ResultsState.ts    ENCORE/WIPEOUT, stats, NEW BEST, persistence
   world/
     RailRunner.ts      advances t along a CatmullRomCurve3; pos + forward
-    Avatar.ts          GLB rig + procedural guitar; cel-shaded; strum anim
+    Avatar.ts          procedural character from registry; cel-shaded; strum anim
     PlayerAnchor.ts    transform the avatar/bullets hang off
     Environment.ts     per-theme procedural canvas-textured city
     Props.ts           cars, lamps, hydrants, dumpsters, signs, benches…
+    characters/
+      Killer7Style.ts    shared cel-shading (2-tone ramp, ink outline), HumanoidRig
+      [character defs]   Dirty Velvet, Prayer, Winter (mains); MBA, Man Hater,
+                         Latte Sipper, Prude (enemy variants)
   combat/
     Enemy.ts           12 designs (boombox/cassette/…/robots), faces, pop
     EnemyDirector.ts   spawn schedule, approach easing, contact damage
@@ -156,6 +162,21 @@ plans/
   is enabled in `Renderer.ts`.
 - If `gl.drawingBufferWidth` reads 1, the headless window collapsed — force
   `renderer.setSize(w,h)` + `composer.setSize(w,h)` via eval.
+
+## Character system
+
+The procedural character system (`src/world/characters/Killer7Style.ts`) builds
+all player and enemy characters from scratch — no GLBs. `HumanoidRig` defines
+seven base character archetypes (Dirty Velvet, Prayer, Winter for player;
+MBA, Man Hater, Latte Sipper, Prude for enemies) with three variants each,
+all sharing the same cel-shading (hard 2-tone ramp, thick ink outline). Each
+archetype defines physique (shoulder/waist width, arm/leg thickness, sleeveless),
+and six animations (idle, play, walk, taunt, hit, die) are procedurally
+generated as morphed skeletal shapes.
+
+**Current limitation:** Enemy.ts still assigns enemies to the old music-object
+designs (boombox/cassette/etc.). Mapping those 12 pitch classes onto the 4
+Killer7 enemy archetypes (preserving HP/flash/death/label tinting) is pending.
 
 ## Critical gotchas (do not regress these)
 

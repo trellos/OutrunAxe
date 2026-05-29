@@ -232,4 +232,16 @@ asked, what was done, resulting commit(s) if any.
   cone, L2 (subway) 22u / 42u — street is open. `npx tsc --noEmit`
   clean; no console errors.
 
+- **2026-05-29** — Difficulty / juice tuning pass (commit `6b0bfbb`, merged as `e566dd5`).
+  **Approach curve:** `APPROACH_EASE_POWER` scaled from 2.6 → 1.3 so enemies advance steadily instead of rushing on the final lunge; menace lean threshold tightened to the final 15% of approach.
+  **Root-note bonus:** `fire()` now takes `pitchClass` and returns `{ applied, rootHit }`; `ROOT_DAMAGE_MULTIPLIER = 2.5` when the played note matches the enemy's key. Root tracers doubled with warm yellow color and longer lifetime (0.26 s).
+  **Hit juice:** scale-punch on damage (1.0 → 1.35 → 1.0 over 0.18 s), damage popups (`+N.N` / `+N.N ROOT`) float up over 0.55 s, impact thud (filtered noise, 600/900 Hz) on hit.
+  **Play window doubled:** `PLAY_BEATS` 16 → 32 (8 measures play instead of 4). All three levels respread to use the new space; enemy arrival beats now 8 → 30.
+  **Levels rebalanced:** L1 (C+E, 8 enemies, HP 2.5/4), L2 (G+B+D, 11 enemies, HP 2.5/4), L3 (E+A+F#+C#, 13 enemies, HP 2.5/4/5). Each enemy gets full 3 measures approach.
+  **Verification:** TypeScript clean, all 64 tests pass, L1 auto-fire smoke test verified (6 enemies, 6 kills, 0 passes, 100/100 HP). Single-keypress damage test confirmed root multiplier fires through full chain.
+  **Known issue (likely HMR artifact):** After `PLAY_BEATS` bump, auto-fire showed 0 kills/0 damage on L2/L3 despite notes firing. Hypothesis: Vite HMR held stale module state; clean restart recommended before shipping.
+  **Tuning knobs** (highest impact first): `ROOT_DAMAGE_MULTIPLIER`, per-level `hp`, `APPROACH_EASE_POWER`, `travelBeats` per spawn, `PLAY_BEATS`.
+  **Open questions:** L1's two-key choice (C+E vs C+F# for sharper distinction), boss HP ramp, damage popup world-projection vs HUD-centered.
+  `npx tsc --noEmit` clean.
+
 <!-- Append new actions here -->
