@@ -1,0 +1,244 @@
+/* Infinite Eddie — 80s Memphis / synthwave / VHS styling.
+ *
+ * ALL classes are prefixed `eddie-` (GDD §9). This file never touches the
+ * existing `.outrun-*` / `.hud-*` / `.timeline-*` classes. It is imported by
+ * the Art modules (factory + play button + debug state); production pulls it in
+ * through the play state via the same import.
+ *
+ * Palette anchor (GDD §8): magenta #ff2bd6, cyan #00f0ff, amber #ffd02b,
+ * deep purple #0a0612. Extensions used here:
+ *   sunset orange #ff7a2b, hot pink #ff5ec8, lime #c7ff2b, violet #b14bff.
+ */
+
+/* CSS custom properties so variants can recolour without forking the rules. */
+.eddie-root {
+  --eddie-magenta: #ff2bd6;
+  --eddie-cyan: #00f0ff;
+  --eddie-amber: #ffd02b;
+  --eddie-purple: #0a0612;
+  --eddie-violet: #b14bff;
+  --eddie-orange: #ff7a2b;
+  --eddie-lime: #c7ff2b;
+  --eddie-ink: #f0e6ff;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: monospace;
+  overflow: hidden;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Grid — 5 rows x 4 measures                                              */
+/* ----------------------------------------------------------------------- */
+
+.eddie-grid {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 10px;
+  width: min(72vw, 760px);
+  height: min(56vh, 460px);
+}
+
+.eddie-cell {
+  position: relative;
+  border: 3px solid rgba(74, 42, 122, 0.85);
+  background: linear-gradient(135deg, rgba(26, 15, 46, 0.78), rgba(10, 6, 18, 0.86));
+  box-shadow: inset 0 0 18px rgba(0, 240, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out,
+    transform 0.12s ease-out;
+}
+
+/* Row 0 = intro/warm-up: visually deprioritized (muted, dashed, lower alpha). */
+.eddie-cell.eddie-cell-intro {
+  border-style: dashed;
+  border-color: rgba(74, 42, 122, 0.45);
+  background: linear-gradient(135deg, rgba(18, 10, 32, 0.45), rgba(10, 6, 18, 0.55));
+  opacity: 0.5;
+}
+
+/* The currently-recording cell: unmistakable magenta neon + lift + glow. */
+.eddie-cell.eddie-cell-active {
+  border-color: var(--eddie-magenta);
+  box-shadow: 0 0 28px rgba(255, 43, 214, 0.85),
+    inset 0 0 26px rgba(255, 43, 214, 0.28);
+  transform: scale(1.045);
+  z-index: 2;
+}
+
+.eddie-cell-num {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: rgba(240, 230, 255, 0.55);
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+}
+
+.eddie-cell-active .eddie-cell-num {
+  color: #fff;
+  text-shadow: 0 0 12px var(--eddie-magenta);
+}
+
+/* Bass-note label pinned above a measure where a chord starts. */
+.eddie-cell-bass {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: var(--eddie-amber);
+  text-shadow: 0 0 8px rgba(255, 208, 43, 0.7);
+}
+
+/* Tag badges. 8th = obvious; 16th = an obvious UPGRADE (bigger, hotter). */
+.eddie-tag {
+  position: absolute;
+  bottom: 5px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  color: var(--eddie-purple);
+}
+
+.eddie-tag-eighth {
+  background: var(--eddie-cyan);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+}
+
+.eddie-tag-sixteenth {
+  font-size: 12px;
+  padding: 3px 8px;
+  background: linear-gradient(90deg, var(--eddie-amber), var(--eddie-orange));
+  box-shadow: 0 0 20px rgba(255, 122, 43, 0.95), 0 0 8px rgba(255, 208, 43, 0.8);
+  animation: eddie-tag-throb 0.9s ease-in-out infinite;
+}
+
+@keyframes eddie-tag-throb {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Score readout                                                           */
+/* ----------------------------------------------------------------------- */
+
+.eddie-score {
+  position: absolute;
+  top: 18px;
+  right: 24px;
+  text-align: right;
+  text-shadow: 0 0 16px rgba(255, 43, 214, 0.7);
+}
+
+.eddie-score-label {
+  font-size: 11px;
+  letter-spacing: 5px;
+  color: var(--eddie-cyan);
+}
+
+.eddie-score-value {
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--eddie-magenta);
+  transition: transform 0.08s ease-out;
+}
+
+.eddie-score-value.eddie-score-pop {
+  animation: eddie-score-pop 0.32s ease-out;
+}
+
+@keyframes eddie-score-pop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.28); color: var(--eddie-amber); }
+  100% { transform: scale(1); }
+}
+
+/* Particle layer + a single particle (canvas-free DOM particles). */
+.eddie-particle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: left, top, opacity, transform;
+  box-shadow: 0 0 10px currentColor;
+}
+
+/* ----------------------------------------------------------------------- */
+/* PLAY button (settings screen)                                           */
+/* ----------------------------------------------------------------------- */
+
+.eddie-playbtn {
+  position: relative;
+  display: inline-block;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 18px 56px;
+  font-family: monospace;
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: 8px;
+  color: var(--eddie-purple);
+  background: linear-gradient(180deg, var(--eddie-amber), var(--eddie-orange));
+  border: 3px solid var(--eddie-cyan);
+  border-radius: 4px;
+  box-shadow: 0 0 30px rgba(255, 122, 43, 0.85),
+    inset 0 0 18px rgba(255, 255, 255, 0.25);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+  overflow: visible;
+}
+
+.eddie-playbtn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 48px rgba(255, 122, 43, 1),
+    inset 0 0 22px rgba(255, 255, 255, 0.4);
+}
+
+.eddie-playbtn:active {
+  transform: scale(0.98);
+}
+
+/* The flame canvas that licks up behind/around the button. */
+.eddie-playbtn-flame {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Debug gallery HUD                                                       */
+/* ----------------------------------------------------------------------- */
+
+.eddie-debug-hud {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  color: var(--eddie-ink);
+  font: 13px/1.6 monospace;
+  background: rgba(8, 8, 14, 0.78);
+  padding: 12px 16px;
+  border: 1px solid var(--eddie-magenta);
+  box-shadow: 0 0 22px rgba(255, 43, 214, 0.4);
+  pointer-events: none;
+  max-width: 360px;
+}
+
+.eddie-debug-hud b {
+  color: var(--eddie-cyan);
+}
