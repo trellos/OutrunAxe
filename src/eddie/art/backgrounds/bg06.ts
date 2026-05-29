@@ -1,24 +1,52 @@
-// bg06 — "Op-Art Horizon" — Memphis-design checkerboard floor + ring sky.
+// bg06 — "Palette Skyline / Index Corruption" — the pixel neon-skyline motif
+// drawn through a true indexed-color pipeline. The image is composed as a buffer
+// of palette INDICES (0..N-1), and a small palette maps each index to an RGB
+// color. ONE low-res CanvasTexture (160x100) with NearestFilter renders the
+// chunky pixels — classic palette-animation, the way 80s home computers faked
+// motion by cycling the color table instead of redrawing pixels.
 //
-// A high-contrast perspective checkerboard floor recedes to a hard horizon line
-// under a bold magenta->cyan gradient sky, with floating neon geometric rings
-// hovering over the vanishing point. The checker phase scrolls toward the
-// camera; on the beat the checker contrast snaps to full black/white, the
-// horizon glow flares, and the rings expand — pure 1980s op-art set design.
+// Glitch flavor: PALETTE-CYCLE / COLOR-INDEX CORRUPTION STROBE. Between beats the
+// palette cycles smoothly (neon ramp rotates), animating the skyline with zero
+// geometry change. On each eddieBeatPulse a short burst (~120-220ms, downbeat
+// stronger) CORRUPTS the color table — entries get scrambled/inverted and whole
+// index bands are remapped — strobing the picture into wrong-color chaos, then
+// the table heals as the burst decays.
 //
-// Visuals only: subscribes to eddieBeatPulse (contrast/flare pump) and
+// Visuals only (GDD §8): subscribes to eddieBeatPulse (palette corruption) and
 // eddieShake (camera jolt), sets+restores scene.background/fog, disposes every
-// geometry/material/texture on teardown.
+// geometry/material/texture and unsubscribes.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const FLOOR_W = 600;
-const FLOOR_D = 800;
-const CHECK_TEX = 512;
-const RING_NEON = [0xff2bd6, 0x00f0ff, 0xffd02b];
+const TEX_W = 160;
+const TEX_H = 100;
+
+// Base palette (RGB triples). Indices:
+// 0-1 sky, 2 ground, 3 building body, 4-7 neon ramp (cycled), 8 window, 9 star.
+const BASE_PALETTE: [number, number, number][] = [
+  [10, 6, 18], // 0 sky top
+  [58, 17, 112], // 1 sky low
+  [12, 8, 32], // 2 building body
+  [0, 240, 255], // 3 ground neon
+  [255, 43, 214], // 4 neon ramp a
+  [0, 240, 255], // 5 neon ramp b
+  [255, 208, 43], // 6 neon ramp c
+  [255, 90, 138], // 7 neon ramp d
+  [199, 255, 43], // 8 window
+  [223, 230, 255], // 9 star
+];
+const NEON_RAMP = [4, 5, 6, 7]; // palette entries that rotate during cycle
+
+interface PxBuilding {
+  x: number;
+  w: number;
+  topY: number;
+  rampOffset: number; // which neon-ramp slot this building uses
+  winSeed: number;
+}
 
 class Bg06 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -26,23 +54,17 @@ class Bg06 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private sky!: THREE.Mesh;
-  private skyMat!: THREE.MeshBasicMaterial;
-  private skyTex!: THREE.CanvasTexture;
+  private canvas!: HTMLCanvasElement;
+  private c2d!: CanvasRenderingContext2D;
+  private image!: ImageData;
+  private tex!: THREE.CanvasTexture;
+  private quad!: THREE.Mesh;
+  private quadMat!: THREE.MeshBasicMaterial;
 
-  private floor!: THREE.Mesh;
-  private floorMat!: THREE.MeshBasicMaterial;
-  private checkCanvas!: HTMLCanvasElement;
-  private checkCtx!: CanvasRenderingContext2D;
-  private checkTex!: THREE.CanvasTexture;
+  private indices!: Uint8Array; // TEX_W*TEX_H palette indices (the static art)
+  private palette: [number, number, number][] = BASE_PALETTE.map((c) => [...c] as [number, number, number]);
 
-  private horizon!: THREE.Mesh;
-  private horizonMat!: THREE.MeshBasicMaterial;
-  private horizonTex!: THREE.CanvasTexture;
-
-  private rings: THREE.Mesh[] = [];
-  private ringMats: THREE.MeshBasicMaterial[] = [];
-  private ringGeos: THREE.RingGeometry[] = [];
+  private buildings: PxBuilding[] = [];
 
   private camera: THREE.PerspectiveCamera | null = null;
   private camBaseY = 0;
@@ -51,203 +73,233 @@ class Bg06 implements EddieBackgroundVariant {
   private offBeat?: () => void;
   private offShake?: () => void;
 
-  private pulse = 0; // 0..1 decaying contrast/flare pump
+  private glitch = 0;
+  private glitchDecay = 6;
   private shake = 0;
   private t = 0;
-  private lastContrast = -1; // avoid redrawing the checker texture every frame
+  private cyclePhase = 0; // smooth neon-ramp rotation between beats
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
     ctx.scene.background = new THREE.Color(0x0a0612);
-    ctx.scene.fog = new THREE.Fog(0x12002a, 280, FLOOR_D * 0.9);
+    ctx.scene.fog = null;
 
-    // --- Sky: bold magenta->cyan gradient with a deep-purple top.
-    const skyCv = document.createElement("canvas");
-    skyCv.width = 16;
-    skyCv.height = 256;
-    const s2d = skyCv.getContext("2d")!;
-    const sg = s2d.createLinearGradient(0, 0, 0, 256);
-    sg.addColorStop(0.0, "#0a0612");
-    sg.addColorStop(0.4, "#3a0a5a");
-    sg.addColorStop(0.7, "#ff2bd6");
-    sg.addColorStop(0.88, "#ff7ad0");
-    sg.addColorStop(1.0, "#00f0ff");
-    s2d.fillStyle = sg;
-    s2d.fillRect(0, 0, 16, 256);
-    this.skyTex = new THREE.CanvasTexture(skyCv);
-    this.skyTex.colorSpace = THREE.SRGBColorSpace;
-    this.skyMat = new THREE.MeshBasicMaterial({ map: this.skyTex, depthWrite: false, depthTest: false, fog: false });
-    this.sky = new THREE.Mesh(new THREE.PlaneGeometry(1400, 600), this.skyMat);
-    this.sky.position.set(0, 120, -FLOOR_D * 0.85);
-    this.sky.renderOrder = -12;
-    this.group.add(this.sky);
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = TEX_W;
+    this.canvas.height = TEX_H;
+    this.c2d = this.canvas.getContext("2d")!;
+    this.c2d.imageSmoothingEnabled = false;
+    this.image = this.c2d.createImageData(TEX_W, TEX_H);
 
-    // --- Checkerboard floor texture (redrawn only when contrast changes).
-    this.checkCanvas = document.createElement("canvas");
-    this.checkCanvas.width = CHECK_TEX;
-    this.checkCanvas.height = CHECK_TEX;
-    this.checkCtx = this.checkCanvas.getContext("2d")!;
-    this.paintChecker(0);
-    this.checkTex = new THREE.CanvasTexture(this.checkCanvas);
-    this.checkTex.colorSpace = THREE.SRGBColorSpace;
-    this.checkTex.wrapS = THREE.RepeatWrapping;
-    this.checkTex.wrapT = THREE.RepeatWrapping;
-    this.checkTex.repeat.set(16, 22);
-    this.checkTex.anisotropy = 4;
-    this.floorMat = new THREE.MeshBasicMaterial({ map: this.checkTex, fog: true, depthWrite: true });
-    this.floor = new THREE.Mesh(new THREE.PlaneGeometry(FLOOR_W, FLOOR_D), this.floorMat);
-    this.floor.rotation.x = -Math.PI / 2;
-    this.floor.position.set(0, -16, -FLOOR_D / 2 + 60);
-    this.floor.renderOrder = -10;
-    this.group.add(this.floor);
+    // Build the static index buffer once.
+    this.indices = new Uint8Array(TEX_W * TEX_H);
+    this.buildIndexArt();
 
-    // --- Horizon glow strip sitting on the floor's far edge.
-    this.horizonTex = new THREE.CanvasTexture(this.buildHorizonGlow());
-    this.horizonTex.colorSpace = THREE.SRGBColorSpace;
-    this.horizonMat = new THREE.MeshBasicMaterial({
-      map: this.horizonTex,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false,
-    });
-    this.horizon = new THREE.Mesh(new THREE.PlaneGeometry(1400, 130), this.horizonMat);
-    this.horizon.position.set(0, 2, -FLOOR_D * 0.84);
-    this.horizon.renderOrder = -9;
-    this.group.add(this.horizon);
+    this.resolvePalette(0); // initial paint into ImageData
+    this.tex = new THREE.CanvasTexture(this.canvas);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.tex.magFilter = THREE.NearestFilter;
+    this.tex.minFilter = THREE.NearestFilter;
+    this.tex.generateMipmaps = false;
 
-    // --- Floating neon rings over the vanishing point.
-    for (let r = 0; r < 3; r++) {
-      const inner = 26 + r * 16;
-      const geo = new THREE.RingGeometry(inner, inner + 4, 48);
-      const mat = new THREE.MeshBasicMaterial({
-        color: RING_NEON[r % RING_NEON.length],
-        transparent: true,
-        opacity: 0.9,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        fog: false,
-      });
-      const ring = new THREE.Mesh(geo, mat);
-      ring.position.set(0, 70 + r * 4, -FLOOR_D * 0.8);
-      ring.renderOrder = -8;
-      this.ringGeos.push(geo);
-      this.ringMats.push(mat);
-      this.rings.push(ring);
-      this.group.add(ring);
-    }
+    this.quadMat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(320, 200), this.quadMat);
+    this.quad.position.set(0, 30, -160);
+    this.quad.renderOrder = -20;
+    this.group.add(this.quad);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.camBaseY = 10;
+      this.camBaseY = 30;
       this.camBaseZ = 70;
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 30, -FLOOR_D);
+      this.camera.lookAt(0, 30, -160);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.pulse = e.downbeat ? 1 : 0.6;
+      this.glitch = e.downbeat ? 1 : 0.6;
+      this.glitchDecay = e.downbeat ? 1 / 0.12 : 1 / 0.22;
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
   }
 
-  /** Draw a 2x2 checker. `contrast` 0..1 pushes the dark cell from charcoal to
-   *  pure black and the light cell from off-white to pure white. */
-  private paintChecker(contrast: number): void {
-    const dark = Math.round(26 * (1 - contrast)); // 26 -> 0
-    const light = Math.round(210 + 45 * contrast); // 210 -> 255
-    const dHex = `rgb(${dark},${dark},${Math.round(dark + 8 * (1 - contrast))})`;
-    const lHex = `rgb(${light},${light},${light})`;
-    const ctx = this.checkCtx;
-    const half = CHECK_TEX / 2;
-    ctx.fillStyle = dHex;
-    ctx.fillRect(0, 0, CHECK_TEX, CHECK_TEX);
-    ctx.fillStyle = lHex;
-    ctx.fillRect(0, 0, half, half);
-    ctx.fillRect(half, half, half, half);
-    this.lastContrast = contrast;
+  private rng(seed: number): () => number {
+    let s = seed | 0 || 1;
+    return () => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return ((s >>> 0) % 1000) / 1000;
+    };
   }
 
-  /** Bright additive horizon line, hottest at center. */
-  private buildHorizonGlow(): HTMLCanvasElement {
-    const cv = document.createElement("canvas");
-    cv.width = 512;
-    cv.height = 64;
-    const g2d = cv.getContext("2d")!;
-    const grad = g2d.createLinearGradient(0, 0, 0, 64);
-    grad.addColorStop(0, "rgba(0,240,255,0)");
-    grad.addColorStop(0.5, "rgba(255,255,255,0.95)");
-    grad.addColorStop(0.55, "rgba(255,43,214,0.9)");
-    grad.addColorStop(1, "rgba(255,43,214,0)");
-    g2d.fillStyle = grad;
-    g2d.fillRect(0, 0, 512, 64);
-    // Fade the horizontal ends so the strip doesn't show hard edges.
-    const h = g2d.createLinearGradient(0, 0, 512, 0);
-    h.addColorStop(0, "rgba(0,0,0,1)");
-    h.addColorStop(0.15, "rgba(0,0,0,0)");
-    h.addColorStop(0.85, "rgba(0,0,0,0)");
-    h.addColorStop(1, "rgba(0,0,0,1)");
-    g2d.globalCompositeOperation = "destination-out";
-    g2d.fillStyle = h;
-    g2d.fillRect(0, 0, 512, 64);
-    g2d.globalCompositeOperation = "source-over";
-    return cv;
+  /** Stamp a palette index into the static buffer. */
+  private put(x: number, y: number, idx: number): void {
+    if (x < 0 || x >= TEX_W || y < 0 || y >= TEX_H) return;
+    this.indices[y * TEX_W + x] = idx;
+  }
+
+  /** Paint the skyline ONCE as palette indices (never redrawn after this). */
+  private buildIndexArt(): void {
+    // Sky bands.
+    for (let y = 0; y < TEX_H; y++) {
+      const idx = y < Math.floor(TEX_H * 0.6) ? 0 : 1;
+      for (let x = 0; x < TEX_W; x++) this.indices[y * TEX_W + x] = idx;
+    }
+    // Stars.
+    for (let i = 0; i < 50; i++) {
+      this.put(Math.floor(Math.random() * TEX_W), Math.floor(Math.random() * (TEX_H - 30)), 9);
+    }
+    // Buildings.
+    const horizon = TEX_H - 16;
+    let cx = -4;
+    let idx = 0;
+    while (cx < TEX_W) {
+      const w = 9 + Math.floor(Math.random() * 17);
+      const height = 20 + Math.floor(Math.random() * 48);
+      const b: PxBuilding = {
+        x: cx,
+        w,
+        topY: horizon - height,
+        rampOffset: idx % NEON_RAMP.length,
+        winSeed: Math.floor(Math.random() * 0xffff) || 1,
+      };
+      this.buildings.push(b);
+
+      const rampIdx = NEON_RAMP[b.rampOffset];
+      // Body.
+      for (let y = b.topY; y < horizon; y++) {
+        for (let x = b.x; x < b.x + w; x++) this.put(x, y, 2);
+      }
+      // Roofline + side edges in this building's neon-ramp color.
+      for (let x = b.x; x < b.x + w; x++) this.put(x, b.topY, rampIdx);
+      for (let y = b.topY; y < horizon; y++) {
+        this.put(b.x, y, rampIdx);
+        this.put(b.x + w - 1, y, rampIdx);
+      }
+      // Windows (color index 8).
+      const r = this.rng(b.winSeed);
+      for (let wy = b.topY + 3; wy < horizon - 2; wy += 3) {
+        for (let wx = b.x + 2; wx < b.x + w - 1; wx += 3) {
+          if (r() < 0.5) this.put(wx, wy, 8);
+        }
+      }
+      cx += w + 1 + Math.floor(Math.random() * 3);
+      idx++;
+    }
+    // Ground neon line (index 3).
+    for (let x = 0; x < TEX_W; x++) this.put(x, horizon, 3);
+  }
+
+  /** Compute the live palette (cycle + corruption), then blit indices->RGBA. */
+  private resolvePalette(g: number): void {
+    // Start from base.
+    const pal = this.palette;
+    for (let i = 0; i < BASE_PALETTE.length; i++) {
+      pal[i][0] = BASE_PALETTE[i][0];
+      pal[i][1] = BASE_PALETTE[i][1];
+      pal[i][2] = BASE_PALETTE[i][2];
+    }
+
+    // Smooth cycle: rotate the neon ramp entries by the cycle phase.
+    const rot = Math.floor(this.cyclePhase) % NEON_RAMP.length;
+    const rotated = NEON_RAMP.map((_, k) => BASE_PALETTE[NEON_RAMP[(k + rot) % NEON_RAMP.length]]);
+    for (let k = 0; k < NEON_RAMP.length; k++) {
+      const slot = NEON_RAMP[k];
+      pal[slot][0] = rotated[k][0];
+      pal[slot][1] = rotated[k][1];
+      pal[slot][2] = rotated[k][2];
+    }
+
+    // Corruption strobe: scramble + invert palette entries proportional to g.
+    if (g > 0.04) {
+      for (let i = 0; i < pal.length; i++) {
+        if (Math.random() < g * 0.7) {
+          // Invert this entry, or remap it to a random other entry's color.
+          if (Math.random() < 0.5) {
+            pal[i][0] = 255 - pal[i][0];
+            pal[i][1] = 255 - pal[i][1];
+            pal[i][2] = 255 - pal[i][2];
+          } else {
+            const src = BASE_PALETTE[Math.floor(Math.random() * BASE_PALETTE.length)];
+            pal[i][0] = src[0];
+            pal[i][1] = src[1];
+            pal[i][2] = src[2];
+          }
+        }
+      }
+    }
+
+    // Blit index buffer through the palette into the ImageData.
+    const data = this.image.data;
+    const idxBuf = this.indices;
+    for (let p = 0; p < idxBuf.length; p++) {
+      const c = pal[idxBuf[p]];
+      const o = p * 4;
+      data[o] = c[0];
+      data[o + 1] = c[1];
+      data[o + 2] = c[2];
+      data[o + 3] = 255;
+    }
+
+    // Index-band remap on a hard strobe: shove a horizontal band's indices to a
+    // wrong color by overwriting RGBA rows directly (cheap "color-index tear").
+    if (g > 0.3) {
+      const bands = 1 + Math.floor(g * 3);
+      for (let i = 0; i < bands; i++) {
+        const by = Math.floor(Math.random() * TEX_H);
+        const bh = Math.min(2 + Math.floor(Math.random() * 6), TEX_H - by);
+        const wrong = pal[NEON_RAMP[Math.floor(Math.random() * NEON_RAMP.length)]];
+        for (let y = by; y < by + bh; y++) {
+          for (let x = 0; x < TEX_W; x++) {
+            const o = (y * TEX_W + x) * 4;
+            // Only recolor non-sky pixels so the skyline silhouette strobes.
+            if (idxBuf[y * TEX_W + x] >= 2) {
+              data[o] = wrong[0];
+              data[o + 1] = wrong[1];
+              data[o + 2] = wrong[2];
+            }
+          }
+        }
+      }
+    }
+
+    this.c2d.putImageData(this.image, 0, 0);
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
-    // Scroll the checker toward the camera.
-    this.checkTex.offset.y = (this.checkTex.offset.y - dt * 0.35 + 1) % 1;
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * this.glitchDecay);
 
-    // Beat-pulse: snap checker contrast up, flare the horizon, expand rings.
-    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 2.8);
+    // Smooth palette cycle drives the between-beat animation.
+    this.cyclePhase += dt * 2.2;
 
-    // Only repaint the checker texture when contrast moves meaningfully.
-    const targetContrast = this.pulse;
-    if (Math.abs(targetContrast - this.lastContrast) > 0.04) {
-      this.paintChecker(targetContrast);
-      this.checkTex.needsUpdate = true;
-    }
+    this.resolvePalette(this.glitch);
+    this.tex.needsUpdate = true;
 
-    this.skyMat.color.setScalar(1 + this.pulse * 0.2);
-    this.horizonMat.color.setScalar(1 + this.pulse * 1.1);
-    this.horizon.scale.setY(1 + this.pulse * 0.4);
+    this.quadMat.color.setScalar(1 + this.glitch * 0.3);
 
-    for (let r = 0; r < this.rings.length; r++) {
-      const ring = this.rings[r];
-      ring.rotation.z += dt * (0.3 + r * 0.12);
-      const breathe = 1 + Math.sin(this.t * 1.5 + r) * 0.04;
-      ring.scale.setScalar(breathe + this.pulse * (0.25 + r * 0.1));
-      this.ringMats[r].opacity = 0.7 + this.pulse * 0.3;
-    }
-
-    // Shake decay + camera jolt; otherwise a slow bob for life.
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 6);
       if (this.camera) {
         const m = this.shake;
         this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.4,
-          this.camBaseY + (Math.random() - 0.5) * m * 2.0,
+          (Math.random() - 0.5) * m * 2.2,
+          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
           this.camBaseZ + (Math.random() - 0.5) * m,
         );
-        this.camera.lookAt(0, 30, -FLOOR_D);
+        this.camera.lookAt(0, 30, -160);
       }
     } else if (this.camera) {
-      this.camera.position.set(
-        Math.sin(this.t * 0.5) * 1.5,
-        this.camBaseY + Math.sin(this.t * 0.8) * 0.6,
-        this.camBaseZ,
-      );
-      this.camera.lookAt(0, 30, -FLOOR_D);
+      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
+      this.camera.lookAt(0, 30, -160);
     }
   }
 
@@ -264,28 +316,18 @@ class Bg06 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.sky.geometry.dispose();
-    this.skyMat.dispose();
-    this.skyTex.dispose();
-    this.floor.geometry.dispose();
-    this.floorMat.dispose();
-    this.checkTex.dispose();
-    this.horizon.geometry.dispose();
-    this.horizonMat.dispose();
-    this.horizonTex.dispose();
-    for (const g of this.ringGeos) g.dispose();
-    for (const m of this.ringMats) m.dispose();
-    this.ringGeos = [];
-    this.ringMats = [];
-    this.rings = [];
+    this.quad.geometry.dispose();
+    this.quadMat.dispose();
+    this.tex.dispose();
+    this.buildings = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg06",
-  label: "Op-Art Horizon",
-  blurb: "High-contrast perspective checkerboard floor receding to a flaring neon horizon under a bold gradient sky — the checker snaps to full contrast on the beat.",
+  label: "Palette Skyline / Corrupt",
+  blurb: "Indexed-color pixel skyline animated by palette cycling — the color table strobes into scrambled, inverted wrong-color chaos on every beat.",
   create: () => new Bg06(),
 };
 

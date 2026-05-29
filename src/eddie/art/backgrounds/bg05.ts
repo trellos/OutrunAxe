@@ -1,27 +1,39 @@
-// bg05 — "Laserwave Warp" — hyperspace starfield through a neon ring tunnel.
+// bg05 — "VHS Skyline / Tracking Tear" — the pixel neon-skyline motif rendered
+// like a worn VHS dub. ONE low-res CanvasTexture (160x100) with NearestFilter so
+// it reads as chunky pixels; the skyline sits behind a constant warm grain and a
+// rolling tracking band, in a limited washed-out palette.
 //
-// A field of star points + radial streaks warps toward the camera down a series
-// of concentric neon rings (Tron-meets-hyperspace). Stars recycle to the far
-// plane when they pass the camera; their trails stretch with warp speed. The
-// rings pulse-brighten and the warp speed surges on the beat, so the whole
-// field lunges forward to the kick.
+// Glitch flavor: VHS TRACKING-TEAR + CHROMA BLEED. Between beats the picture is
+// stable apart from a slow rolling tracking bar. On each eddieBeatPulse a short
+// burst (~120-220ms, downbeat stronger) snaps the tape out of sync: the tracking
+// bar jumps and widens, horizontal scanlines tear and smear sideways, and the
+// chroma (cyan/magenta) bleeds heavily off the building edges, then re-locks as
+// the burst decays.
 //
-// Visuals only: subscribes to eddieBeatPulse (speed + brightness surge) and
+// Visuals only (GDD §8): subscribes to eddieBeatPulse (glitch burst) and
 // eddieShake (camera jolt), sets+restores scene.background/fog, disposes every
-// geometry/material/texture on teardown.
+// geometry/material/texture and unsubscribes.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const STAR_COUNT = 900;
-const FAR_Z = -700; // spawn plane
-const NEAR_Z = 50; // recycle once a star passes this (behind camera)
-const SPREAD = 220; // x/y spawn radius
-const RING_COUNT = 14;
-const BASE_SPEED = 120; // world units/sec at rest
-const NEON = [0x00f0ff, 0xff2bd6, 0xffd02b];
+const TEX_W = 160;
+const TEX_H = 100;
+
+// Washed VHS palette + neon accents that survive the wash.
+const SKY_TOP = "#120a24";
+const SKY_LOW = "#3a1a52";
+const NEON = ["#ff5ad6", "#3ef0ff", "#ffe05a"];
+
+interface PxBuilding {
+  x: number;
+  w: number;
+  topY: number;
+  neon: number;
+  winSeed: number;
+}
 
 class Bg05 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -29,236 +41,229 @@ class Bg05 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  // Stars rendered as a LineSegments field: each star is a short streak whose
-  // length grows with warp speed. Two vertices per star.
-  private stars!: THREE.LineSegments;
-  private starGeo!: THREE.BufferGeometry;
-  private starMat!: THREE.LineBasicMaterial;
-  private starPos!: Float32Array; // 2 verts * 3 = 6 floats per star
-  private starCol!: Float32Array;
-  private z!: Float32Array; // head z per star
-  private vx!: Float32Array; // tiny lateral drift
-  private vy!: Float32Array;
-  private hue!: Float32Array; // 0..2 index into NEON for color
+  private canvas!: HTMLCanvasElement;
+  private c2d!: CanvasRenderingContext2D;
+  private tex!: THREE.CanvasTexture;
+  private quad!: THREE.Mesh;
+  private quadMat!: THREE.MeshBasicMaterial;
 
-  private rings: THREE.LineLoop[] = [];
-  private ringMats: THREE.LineBasicMaterial[] = [];
-  private ringGeo!: THREE.BufferGeometry;
-
-  private core!: THREE.Mesh;
-  private coreMat!: THREE.MeshBasicMaterial;
-  private coreTex!: THREE.CanvasTexture;
+  private buildings: PxBuilding[] = [];
 
   private camera: THREE.PerspectiveCamera | null = null;
+  private camBaseY = 0;
   private camBaseZ = 0;
 
   private offBeat?: () => void;
   private offShake?: () => void;
 
-  private pulse = 0; // 0..1 decaying speed/brightness surge
+  private glitch = 0;
+  private glitchDecay = 6;
   private shake = 0;
   private t = 0;
-
-  private tmpColor = new THREE.Color();
+  private trackY = 0.4; // 0..1 rolling tracking-bar position
+  private trackRollSpeed = 0.06;
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x03020a);
-    ctx.scene.fog = new THREE.Fog(0x03020a, 200, 720);
+    ctx.scene.background = new THREE.Color(0x07040f);
+    ctx.scene.fog = null;
 
-    // --- Stars.
-    this.starPos = new Float32Array(STAR_COUNT * 6);
-    this.starCol = new Float32Array(STAR_COUNT * 6);
-    this.z = new Float32Array(STAR_COUNT);
-    this.vx = new Float32Array(STAR_COUNT);
-    this.vy = new Float32Array(STAR_COUNT);
-    this.hue = new Float32Array(STAR_COUNT);
-    for (let i = 0; i < STAR_COUNT; i++) {
-      this.respawnStar(i, true);
-    }
-    this.starGeo = new THREE.BufferGeometry();
-    this.starGeo.setAttribute("position", new THREE.BufferAttribute(this.starPos, 3));
-    this.starGeo.setAttribute("color", new THREE.BufferAttribute(this.starCol, 3));
-    this.starMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: true,
-    });
-    this.stars = new THREE.LineSegments(this.starGeo, this.starMat);
-    this.stars.renderOrder = -8;
-    this.group.add(this.stars);
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = TEX_W;
+    this.canvas.height = TEX_H;
+    this.c2d = this.canvas.getContext("2d")!;
+    this.c2d.imageSmoothingEnabled = false;
 
-    // --- Neon rings receding down the tunnel (shared circle geometry, scaled).
-    const segs = 64;
-    const ringPts: number[] = [];
-    for (let s = 0; s < segs; s++) {
-      const a = (s / segs) * Math.PI * 2;
-      ringPts.push(Math.cos(a), Math.sin(a), 0);
-    }
-    this.ringGeo = new THREE.BufferGeometry();
-    this.ringGeo.setAttribute("position", new THREE.Float32BufferAttribute(ringPts, 3));
-    for (let r = 0; r < RING_COUNT; r++) {
-      const mat = new THREE.LineBasicMaterial({
-        color: NEON[r % NEON.length],
-        transparent: true,
-        opacity: 0.8,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        fog: true,
+    let cx = -4;
+    let idx = 0;
+    while (cx < TEX_W) {
+      const w = 10 + Math.floor(Math.random() * 18);
+      const height = 18 + Math.floor(Math.random() * 46);
+      this.buildings.push({
+        x: cx,
+        w,
+        topY: TEX_H - 16 - height,
+        neon: idx % NEON.length,
+        winSeed: Math.floor(Math.random() * 0xffff) || 1,
       });
-      const loop = new THREE.LineLoop(this.ringGeo, mat);
-      const radius = 70 + Math.sin(r * 1.3) * 10;
-      loop.scale.set(radius, radius, 1);
-      loop.position.z = -(r / RING_COUNT) * 700;
-      loop.renderOrder = -9;
-      this.ringMats.push(mat);
-      this.rings.push(loop);
-      this.group.add(loop);
+      cx += w + 1 + Math.floor(Math.random() * 3);
+      idx++;
     }
 
-    // --- Glowing core at the vanishing point.
-    this.coreTex = new THREE.CanvasTexture(this.buildGlow());
-    this.coreTex.colorSpace = THREE.SRGBColorSpace;
-    this.coreMat = new THREE.MeshBasicMaterial({
-      map: this.coreTex,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false,
-    });
-    this.core = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), this.coreMat);
-    this.core.position.set(0, 0, FAR_Z + 20);
-    this.core.renderOrder = -10;
-    this.group.add(this.core);
+    this.paint(0);
+    this.tex = new THREE.CanvasTexture(this.canvas);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.tex.magFilter = THREE.NearestFilter;
+    this.tex.minFilter = THREE.NearestFilter;
+    this.tex.generateMipmaps = false;
+
+    this.quadMat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(320, 200), this.quadMat);
+    this.quad.position.set(0, 30, -160);
+    this.quad.renderOrder = -20;
+    this.group.add(this.quad);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.camBaseZ = 60;
-      this.camera.position.set(0, 0, this.camBaseZ);
-      this.camera.lookAt(0, 0, FAR_Z);
+      this.camBaseY = 30;
+      this.camBaseZ = 70;
+      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
+      this.camera.lookAt(0, 30, -160);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.pulse = e.downbeat ? 1 : 0.6;
+      this.glitch = e.downbeat ? 1 : 0.6;
+      this.glitchDecay = e.downbeat ? 1 / 0.12 : 1 / 0.22;
+      // A beat knocks the tracking bar to a fresh position — tape jumps.
+      this.trackY = Math.random();
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
   }
 
-  /** Place star `i` at the far plane (or anywhere along z on initial seed). */
-  private respawnStar(i: number, seed: boolean): void {
-    const ang = Math.random() * Math.PI * 2;
-    const rad = 8 + Math.random() * SPREAD;
-    const x = Math.cos(ang) * rad;
-    const y = Math.sin(ang) * rad;
-    this.z[i] = seed ? FAR_Z + Math.random() * (NEAR_Z - FAR_Z) : FAR_Z - Math.random() * 60;
-    this.vx[i] = (Math.random() - 0.5) * 2;
-    this.vy[i] = (Math.random() - 0.5) * 2;
-    this.hue[i] = Math.floor(Math.random() * NEON.length);
-    // Head + tail share x/y; tail z is filled in update relative to speed.
-    const o = i * 6;
-    this.starPos[o] = x;
-    this.starPos[o + 1] = y;
-    this.starPos[o + 2] = this.z[i];
-    this.starPos[o + 3] = x;
-    this.starPos[o + 4] = y;
-    this.starPos[o + 5] = this.z[i] - 1;
-    this.tmpColor.set(NEON[this.hue[i]]);
-    for (let k = 0; k < 2; k++) {
-      const c = o + k * 3;
-      this.starCol[c] = this.tmpColor.r;
-      this.starCol[c + 1] = this.tmpColor.g;
-      this.starCol[c + 2] = this.tmpColor.b;
-    }
+  private rng(seed: number): () => number {
+    let s = seed | 0 || 1;
+    return () => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return ((s >>> 0) % 1000) / 1000;
+    };
   }
 
-  /** Soft additive glow sprite for the core. */
-  private buildGlow(): HTMLCanvasElement {
-    const cv = document.createElement("canvas");
-    cv.width = 128;
-    cv.height = 128;
-    const g2d = cv.getContext("2d")!;
-    const rg = g2d.createRadialGradient(64, 64, 0, 64, 64, 64);
-    rg.addColorStop(0, "rgba(255,255,255,0.95)");
-    rg.addColorStop(0.25, "rgba(0,240,255,0.8)");
-    rg.addColorStop(0.6, "rgba(255,43,214,0.35)");
-    rg.addColorStop(1, "rgba(255,43,214,0)");
-    g2d.fillStyle = rg;
-    g2d.fillRect(0, 0, 128, 128);
-    return cv;
+  private paint(g: number): void {
+    const ctx = this.c2d;
+    const horizon = TEX_H - 16;
+
+    // --- Sky: 2-band wash with horizontal grain lines.
+    ctx.fillStyle = SKY_TOP;
+    ctx.fillRect(0, 0, TEX_W, Math.floor(TEX_H * 0.6));
+    ctx.fillStyle = SKY_LOW;
+    ctx.fillRect(0, Math.floor(TEX_H * 0.6), TEX_W, TEX_H);
+
+    // --- Buildings, solid with bled neon edges (chroma bleed grows with g).
+    const bleed = 1 + Math.round(g * 3);
+    for (const b of this.buildings) {
+      const neon = NEON[b.neon];
+      const bodyY = b.topY;
+      const bodyH = horizon - b.topY;
+
+      ctx.fillStyle = "#0e0a1e";
+      ctx.fillRect(b.x, bodyY, b.w, bodyH);
+
+      // Chroma bleed: cyan edge shifted left, magenta edge shifted right.
+      ctx.globalAlpha = 0.5 + g * 0.4;
+      ctx.fillStyle = "#3ef0ff";
+      ctx.fillRect(b.x - bleed, bodyY, 1, bodyH);
+      ctx.fillStyle = "#ff5ad6";
+      ctx.fillRect(b.x + b.w - 1 + bleed, bodyY, 1, bodyH);
+      ctx.globalAlpha = 1;
+
+      // Crisp roofline neon.
+      ctx.fillStyle = neon;
+      ctx.fillRect(b.x, bodyY, b.w, 1);
+
+      // Windows.
+      const r = this.rng(b.winSeed);
+      ctx.fillStyle = NEON[(b.neon + 1) % NEON.length];
+      for (let wy = bodyY + 3; wy < horizon - 2; wy += 3) {
+        for (let wx = b.x + 2; wx < b.x + b.w - 1; wx += 3) {
+          if (r() < 0.5) continue;
+          if ((Math.sin(this.t * 6 + wx + wy * 0.7) + 1) * 0.5 < 0.3) continue;
+          ctx.fillRect(wx, wy, 1, 1);
+        }
+      }
+    }
+
+    // --- Ground line.
+    ctx.fillStyle = "#3ef0ff";
+    ctx.fillRect(0, horizon, TEX_W, 1);
+
+    // --- Constant warm tape grain.
+    const grainCount = 220 + Math.floor(g * 400);
+    for (let i = 0; i < grainCount; i++) {
+      const gx = Math.floor(Math.random() * TEX_W);
+      const gy = Math.floor(Math.random() * TEX_H);
+      const v = 160 + Math.floor(Math.random() * 95);
+      ctx.fillStyle = `rgba(${v},${v},${Math.floor(v * 0.85)},0.18)`;
+      ctx.fillRect(gx, gy, 1, 1);
+    }
+
+    // --- Scanlines.
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    for (let y = 0; y < TEX_H; y += 2) ctx.fillRect(0, y, TEX_W, 1);
+
+    // --- Rolling tracking bar: a washed, noisy strip; widens on glitch.
+    const barH = 3 + Math.floor(g * 9);
+    const barTop = Math.floor(this.trackY * TEX_H);
+    for (let y = barTop; y < Math.min(barTop + barH, TEX_H); y++) {
+      // Brighten + desaturate the band.
+      ctx.fillStyle = "rgba(220,220,210,0.35)";
+      ctx.fillRect(0, y, TEX_W, 1);
+      // Sideways smear of the row content.
+      const dx = Math.round((Math.random() - 0.5) * (4 + g * 20));
+      const slice = ctx.getImageData(0, y, TEX_W, 1);
+      ctx.putImageData(slice, dx, y);
+    }
+
+    // --- Beat tear: extra torn scanlines smeared hard sideways while g high.
+    if (g > 0.04) this.applyTear(g);
+  }
+
+  /** Hard horizontal tearing + chroma re-stamp during the beat burst. */
+  private applyTear(g: number): void {
+    const ctx = this.c2d;
+    const tears = 2 + Math.floor(g * 5);
+    for (let i = 0; i < tears; i++) {
+      const ty = Math.floor(Math.random() * TEX_H);
+      const th = Math.min(1 + Math.floor(Math.random() * 4), TEX_H - ty);
+      if (th <= 0) continue;
+      const dx = Math.round((Math.random() - 0.5) * g * 30);
+      const slice = ctx.getImageData(0, ty, TEX_W, th);
+      ctx.putImageData(slice, dx, ty);
+    }
+    // Whole-frame chroma bleed: additive shifted copies.
+    const shift = Math.max(1, Math.round(g * 4));
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.22 * g;
+    ctx.drawImage(this.canvas, shift, 0);
+    ctx.drawImage(this.canvas, -shift, 1);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
-    const speed = BASE_SPEED * (1 + this.pulse * 2.4);
-    const trail = 0.4 + this.pulse * 6.0; // seconds-worth of streak length
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * this.glitchDecay);
 
-    const pos = this.starPos;
-    for (let i = 0; i < STAR_COUNT; i++) {
-      this.z[i] += speed * dt;
-      if (this.z[i] > NEAR_Z) {
-        this.respawnStar(i, false);
-        continue;
-      }
-      const o = i * 6;
-      // Lateral drift accelerates the closer the star gets (parallax feel).
-      const depth = (this.z[i] - FAR_Z) / (NEAR_Z - FAR_Z); // 0 far .. 1 near
-      pos[o] += this.vx[i] * dt * (1 + depth * 3);
-      pos[o + 1] += this.vy[i] * dt * (1 + depth * 3);
-      pos[o + 3] = pos[o];
-      pos[o + 4] = pos[o + 1];
-      // Head is the leading (nearer) point; tail trails behind in +z->-z.
-      pos[o + 2] = this.z[i];
-      pos[o + 5] = this.z[i] - speed * trail * (0.05 + depth * 0.5) - 1;
-    }
-    this.starGeo.attributes.position.needsUpdate = true;
+    // Tracking bar rolls slowly upward between jumps.
+    this.trackY = (this.trackY - this.trackRollSpeed * dt + 1) % 1;
 
-    // Beat surge decays.
-    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 2.4);
-    this.starMat.opacity = 0.8 + this.pulse * 0.2;
+    this.paint(this.glitch);
+    this.tex.needsUpdate = true;
 
-    // Rings: drift toward camera, recycle to the back, brighten on the beat.
-    const ringSpeed = speed * 0.6;
-    for (let r = 0; r < this.rings.length; r++) {
-      const loop = this.rings[r];
-      loop.position.z += ringSpeed * dt;
-      if (loop.position.z > NEAR_Z) loop.position.z -= 700;
-      loop.rotation.z += dt * (0.2 + (r % 3) * 0.05);
-      const base = 0.55 + 0.25 * Math.sin(this.t * 2 + r);
-      this.ringMats[r].opacity = base + this.pulse * 0.45;
-    }
+    this.quadMat.color.setScalar(1 + this.glitch * 0.2);
 
-    // Core flicker + beat bloom.
-    this.coreMat.color.setScalar(1 + this.pulse * 0.8);
-    this.core.scale.setScalar(1 + this.pulse * 0.5 + Math.sin(this.t * 3) * 0.04);
-
-    // Shake decay + camera jolt; otherwise a gentle roll for motion.
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 6);
       if (this.camera) {
         const m = this.shake;
         this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.4,
-          (Math.random() - 0.5) * m * 2.0,
+          (Math.random() - 0.5) * m * 2.2,
+          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
           this.camBaseZ + (Math.random() - 0.5) * m,
         );
-        this.camera.up.set(0, 1, 0);
-        this.camera.lookAt(0, 0, FAR_Z);
+        this.camera.lookAt(0, 30, -160);
       }
     } else if (this.camera) {
-      const roll = Math.sin(this.t * 0.4) * 0.06;
-      this.camera.position.set(0, 0, this.camBaseZ);
-      this.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
-      this.camera.lookAt(0, 0, FAR_Z);
+      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
+      this.camera.lookAt(0, 30, -160);
     }
   }
 
@@ -275,25 +280,18 @@ class Bg05 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    if (this.camera) this.camera.up.set(0, 1, 0);
-
-    this.starGeo.dispose();
-    this.starMat.dispose();
-    this.ringGeo.dispose();
-    for (const m of this.ringMats) m.dispose();
-    this.ringMats = [];
-    this.rings = [];
-    this.core.geometry.dispose();
-    this.coreMat.dispose();
-    this.coreTex.dispose();
+    this.quad.geometry.dispose();
+    this.quadMat.dispose();
+    this.tex.dispose();
+    this.buildings = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg05",
-  label: "Laserwave Warp",
-  blurb: "Hyperspace neon starfield warping through Tron-style rings toward a glowing core — speed and brightness surge forward on every beat.",
+  label: "VHS Skyline / Tracking",
+  blurb: "Washed-out pixel neon skyline on worn tape — rolling tracking bar plus hard scanline tear and chroma bleed snap out of sync on every beat.",
   create: () => new Bg05(),
 };
 

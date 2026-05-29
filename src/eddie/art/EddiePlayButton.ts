@@ -1,24 +1,17 @@
-// EddiePlayButton — the juicy fire-effect PLAY button on the settings screen
+// EddiePlayButton — the PLAY button on the Infinite Eddie settings screen
 // (GDD §8). Standalone factory the settings state mounts: createEddiePlayButton
-// (variant).mount(parent, onPlay) / update(dt) / dispose(). Visual fire/particle
-// animation runs in update(dt). dispose() removes all DOM (zero Three.js
-// resources).
+// (variant).mount(parent, onPlay) / update(dt) / dispose(). dispose() removes
+// all DOM and the one injected <style> (zero Three.js resources, no canvas).
 //
-// VARIANT option-1: "amber slab with licking flames" — a chunky amber->orange
-// neon button with a canvas flame plume rising behind it (same ember sim flavour
-// as EddieFire), intensifying on hover. Clicking calls onPlay.
+// VARIANT option-1: "Mac System 7 / Apple IIgs DEFAULT button" — a platinum
+// rounded-rect with a chunky pixel bevel (light top-left, dark bottom-right),
+// a bold Chicago-style "PLAY" label, and the classic heavy black rounded
+// DEFAULT-button outline ring. Juice: a subtle RGB-split glitch flicker on
+// hover and a press-invert on :active. It mounts inside the themed
+// `.eddie-settings-play`, so it also inherits the parent's `.eddie-beat` /
+// `.eddie-beat-down` glitch pulse for free. Clicking calls onPlay.
 
 import type { EddieArtVariant } from "./eddieArtFactory";
-
-interface Ember {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-  size: number;
-}
 
 export interface EddiePlayButton {
   mount(parent: HTMLElement, onPlay: () => void): void;
@@ -26,104 +19,141 @@ export interface EddiePlayButton {
   dispose(): void;
 }
 
+// One shared <style> for all instances, ref-counted so the last dispose()
+// removes it. Scoped entirely under `.eddie-sysbtn`.
+const STYLE_ID = "eddie-sysbtn-style";
+let styleRefs = 0;
+
+const STYLE_CSS = `
+.eddie-sysbtn {
+  position: relative;
+  display: inline-block;
+  pointer-events: auto;
+  cursor: pointer;
+  margin: 6px;
+  padding: 12px 46px;
+  font-family: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #111;
+  -webkit-font-smoothing: none;
+  image-rendering: pixelated;
+  /* Platinum fill with a hard pixel bevel: light TL, dark BR. */
+  background:
+    linear-gradient(180deg, #fdfdfd 0%, #e4e4e4 45%, #cfcfcf 100%);
+  border: 2px solid #000;
+  border-radius: 8px;
+  /* The classic DEFAULT-button heavy outline ring + inner pixel bevel. */
+  box-shadow:
+    0 0 0 2px #d9d9d9,
+    0 0 0 5px #000,
+    inset 2px 2px 0 #ffffff,
+    inset -2px -2px 0 #8a8a8a;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+  transition: filter 0.05s steps(2), transform 0.04s steps(1),
+    box-shadow 0.04s steps(1), background 0.04s steps(1);
+}
+
+/* Hover: a subtle RGB-split glitch flicker (cyan/magenta fringe) that the
+   beat pulse from the parent theme can layer onto. */
+.eddie-sysbtn:hover {
+  filter: drop-shadow(-1px 0 0 rgba(255, 0, 200, 0.7))
+    drop-shadow(1px 0 0 rgba(0, 220, 255, 0.7));
+  animation: eddie-sysbtn-glitch 0.5s steps(2) infinite;
+}
+
+@keyframes eddie-sysbtn-glitch {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-0.5px, 0); }
+  40% { transform: translate(0.5px, 0); }
+  60% { transform: translate(0, -0.5px); }
+  80% { transform: translate(0.5px, 0.5px); }
+}
+
+/* Press: invert to the classic "selected"/depressed black fill. */
+.eddie-sysbtn:active,
+.eddie-sysbtn.eddie-sysbtn-down {
+  color: #fff;
+  background: linear-gradient(180deg, #000, #1a1a1a);
+  box-shadow:
+    0 0 0 2px #d9d9d9,
+    0 0 0 5px #000,
+    inset 2px 2px 0 #000,
+    inset -2px -2px 0 #444;
+  text-shadow: none;
+  transform: translateY(1px);
+  filter: none;
+  animation: none;
+}
+
+/* When the parent theme flags a downbeat, give the button a quick 1px RGB
+   tear so it pops in time with the music. */
+.eddie-beat-down .eddie-sysbtn {
+  filter: drop-shadow(-1.5px 0 0 rgba(255, 0, 200, 0.85))
+    drop-shadow(1.5px 0 0 rgba(0, 220, 255, 0.85));
+}
+.eddie-beat .eddie-sysbtn {
+  filter: drop-shadow(-0.5px 0 0 rgba(255, 0, 200, 0.5))
+    drop-shadow(0.5px 0 0 rgba(0, 220, 255, 0.5));
+}
+`;
+
+function acquireStyle(): void {
+  if (styleRefs === 0 && !document.getElementById(STYLE_ID)) {
+    const el = document.createElement("style");
+    el.id = STYLE_ID;
+    el.textContent = STYLE_CSS;
+    document.head.appendChild(el);
+  }
+  styleRefs++;
+}
+
+function releaseStyle(): void {
+  styleRefs = Math.max(0, styleRefs - 1);
+  if (styleRefs === 0) {
+    document.getElementById(STYLE_ID)?.remove();
+  }
+}
+
 class PlayButtonOption1 implements EddiePlayButton {
   private btn: HTMLButtonElement | null = null;
-  private fctx: CanvasRenderingContext2D | null = null;
-  private embers: Ember[] = [];
   private onClick?: () => void;
-  private hovering = false;
-  private fw = 220;
-  private fh = 120;
+  private styled = false;
 
   mount(parent: HTMLElement, onPlay: () => void): void {
-    const btn = document.createElement("button");
-    btn.className = "eddie-root eddie-playbtn";
-    // The .eddie-root rule sets position:absolute/inset:0; the button must be a
-    // normal inline-block, so override the layout bits the shared root sets.
-    btn.style.position = "relative";
-    btn.style.inset = "auto";
-    btn.style.pointerEvents = "auto";
-    btn.textContent = "PLAY";
+    acquireStyle();
+    this.styled = true;
 
-    const flame = document.createElement("canvas");
-    flame.className = "eddie-playbtn-flame";
-    flame.width = this.fw;
-    flame.height = this.fh;
-    btn.appendChild(flame);
+    const btn = document.createElement("button");
+    btn.className = "eddie-sysbtn";
+    btn.type = "button";
+    btn.textContent = "PLAY";
 
     this.onClick = onPlay;
     btn.addEventListener("click", this.handleClick);
-    btn.addEventListener("mouseenter", this.handleEnter);
-    btn.addEventListener("mouseleave", this.handleLeave);
 
     parent.appendChild(btn);
     this.btn = btn;
-    this.fctx = flame.getContext("2d");
-
-    for (let i = 0; i < 40; i++) this.embers.push(this.spawnEmber());
   }
 
   private handleClick = () => this.onClick?.();
-  private handleEnter = () => {
-    this.hovering = true;
-  };
-  private handleLeave = () => {
-    this.hovering = false;
-  };
 
-  private spawnEmber(): Ember {
-    return {
-      x: this.fw * (0.15 + Math.random() * 0.7),
-      y: this.fh - 2,
-      vx: (Math.random() - 0.5) * 26,
-      vy: -(40 + Math.random() * 90),
-      life: 0,
-      maxLife: 0.5 + Math.random() * 0.7,
-      size: 6 * (0.6 + Math.random() * 0.7),
-    };
-  }
-
-  update(dt: number): void {
-    const ctx = this.fctx;
-    if (!ctx) return;
-    ctx.clearRect(0, 0, this.fw, this.fh);
-    ctx.globalCompositeOperation = "lighter";
-    const intensity = this.hovering ? 1.6 : 1;
-    for (const e of this.embers) {
-      e.life += dt;
-      if (e.life >= e.maxLife) {
-        Object.assign(e, this.spawnEmber());
-        continue;
-      }
-      e.vy += 16 * dt;
-      e.x += e.vx * dt;
-      e.y += e.vy * dt * intensity;
-      const k = 1 - e.life / e.maxLife;
-      const r = e.size * (0.4 + k) * intensity;
-      const col =
-        k > 0.66 ? "rgba(255,240,170," : k > 0.33 ? "rgba(255,122,43," : "rgba(255,43,214,";
-      const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, r);
-      grad.addColorStop(0, `${col}${Math.min(1, k * 1.3)})`);
-      grad.addColorStop(1, `${col}0)`);
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalCompositeOperation = "source-over";
-  }
+  // No per-frame animation needed — the glitch/beat juice is pure CSS. Kept to
+  // satisfy the EddiePlayButton interface and the settings/debug update loops.
+  update(_dt: number): void {}
 
   dispose(): void {
     if (this.btn) {
       this.btn.removeEventListener("click", this.handleClick);
-      this.btn.removeEventListener("mouseenter", this.handleEnter);
-      this.btn.removeEventListener("mouseleave", this.handleLeave);
       this.btn.remove();
     }
     this.btn = null;
-    this.fctx = null;
-    this.embers = [];
     this.onClick = undefined;
+    if (this.styled) {
+      releaseStyle();
+      this.styled = false;
+    }
   }
 }
 

@@ -1,655 +1,783 @@
-/* Infinite Eddie — SETTINGS screen themes (4 distinct 1980s design languages).
+/* Infinite Eddie — SETTINGS screen themes (Apple IIgs / Mac System 7 / retro-GUI
+ * family, all PIXELY + GLITCHY, six distinct flavors).
  *
- * The lead adds ONE of `.eddie-theme-1` … `.eddie-theme-4` onto the same
- * element that already carries `.outrun-levelselect.eddie-settings`. Every rule
- * below is scoped under its theme class so the four are fully independent and
- * none touch the shared `.outrun-*` rules.
+ * The lead adds ONE of `.eddie-theme-1` … `.eddie-theme-6` onto the same element
+ * that already carries `.outrun-levelselect.eddie-settings`. Every rule below is
+ * scoped under its theme class so the six are fully independent and none touch
+ * the shared `.outrun-*` rules.
+ *
+ * BEAT GLITCH: the lead's JS toggles `.eddie-beat` on every beat and
+ * `.eddie-beat-down` on the downbeat (added ~110ms then removed). Each theme
+ * reacts on `.eddie-theme-N.eddie-beat` (light) and `.eddie-theme-N.eddie-beat-down`
+ * (heavier): an RGB-split/translate, scanline jump, 1px tear, strip-invert, or
+ * dither-shimmer. CSS transitions snap it on the beat and let it settle (fires
+ * 2-4×/sec, kept tasteful).
  *
  * DOM being styled (confirmed against src/states/EddieSettingsState.ts):
  *   .outrun-levelselect.eddie-settings.eddie-theme-N   (root overlay; flex-centered)
- *     .levelselect-inner                               (the card)
+ *     .levelselect-inner                               (the window/card)
  *       .levelselect-title  "INFINITE EDDIE"
  *       .eddie-settings-row  ×3  [ .eddie-settings-label  .eddie-settings-btn
  *                                  .eddie-settings-value   .eddie-settings-btn … ]
- *       .eddie-settings-timeline   (SIGNAL CHAIN canvas window; .menupulse-label inside)
- *       .eddie-settings-play       (Art PLAY button mounts here — brings own styling)
+ *       .eddie-settings-timeline   (the GUITAR canvas window; .menupulse-label inside
+ *                                   now reads "GUITAR", was "SIGNAL CHAIN")
+ *       .eddie-settings-play       (Mac System 7 PLAY button mounts here)
  *
  * Self-contained: no remote @import, no external font/image URLs. Decoration is
- * gradients, box-shadows and ::before/::after only. Pixel art via layered
- * gradients (checkerboard dither, scanlines, confetti).
+ * gradients, box-shadows and ::before/::after only. Dither via repeating-conic /
+ * repeating-linear gradients; bevels via inset box-shadows (hard, no blur).
  *
- * THE FOUR THEMES
- *   theme-1  OUTRUN CHROME — airbrushed chrome title, magenta↔cyan neon, a
- *            striped Miami-sunset panel and a glowing perspective grid floor.
- *            Refs: synthwave/outrun palette + chrome-text + sunset-stripe convention
- *            (retrowave.com outrun palette guide; aesthetics.fandom Synthwave;
- *            warrendavies.net CSS synthwave sunset; codingdudecom outrun grid gist).
- *   theme-2  MEMPHIS POP — black ground, clashing primaries (pink/yellow/blue/
- *            teal), squiggles + confetti triangles + black/white stripe via
- *            ::before/::after, hard-offset block buttons, no glow.
- *            Refs: Memphis Milano squiggles/confetti/primaries on black
- *            (99designs Memphis history; aesthetics.fandom Memphis; the-rugs guide).
- *   theme-3  APPLE IIgs / CLASSIC MAC — chunky beveled window chrome, pinstriped
- *            title bar, 1-bit checkerboard dither fill, limited B/W + one accent,
- *            Chicago-style bitmap font stack, hard pixel bevels (no blur).
- *            Refs: Chicago typeface + checkerboard dither + faux-3D angled bevels
- *            (Wikipedia Chicago typeface; versionmuseum classic Mac OS history).
- *   theme-4  VHS TAPE LABEL — paper sticker panel, marker-pen handwritten
- *            headings, magnetic-tape spine, scanline + tracking-jitter overlay,
- *            red REC dot. Refs: blank VHS label + VHS tracking/scanline convention
- *            (aesthetics.fandom Synthwave VHS notes; speckyboy synthwave snippets).
+ * THE SIX THEMES
+ *   theme-1  SYSTEM 7 PLATINUM — gray platinum window, pinstriped title bar,
+ *            beveled controls, dither well. Beat = horizontal scanline jump.
+ *   theme-2  1-BIT B/W MAC — pure black/white, 50% checkerboard dither for
+ *            "gray", Chicago chrome. Beat = invert a horizontal strip.
+ *   theme-3  APPLE IIgs COLOR — gray window on a blue desktop, 16-color accents
+ *            (blue/orange/green/magenta), beveled color buttons. Beat = RGB split.
+ *   theme-4  AMBER TERMINAL — black CRT, amber phosphor text + scanlines, no
+ *            bevels (glow instead). Beat = phosphor flicker + 1px tear.
+ *   theme-5  GREEN/CORRUPTED DESKTOP — green phosphor GUI that "glitch-corrupts"
+ *            on the beat: torn title, datamosh block bands. Beat = hard tear + shift.
+ *   theme-6  DITHERED PASTEL — soft mint/peach/lavender platinum, ordered-dither
+ *            matte, rounded pixel bevels. Beat = gentle dither shimmer + RGB ghost.
+ *
+ * Research notes: Chicago typeface used 9×7 bitmap glyphs and a checkerboard
+ * pixel pattern to fake gray on 1-bit displays (Wikipedia "Chicago (typeface)");
+ * System 6/7 chrome used faux-3D angled/inset bevels rather than soft shadows
+ * (versionmuseum.com classic Mac OS history); IIgs Super Hi-Res ran a 16-color
+ * palette from a 4096-color space; amber/green monochrome phosphor + scanlines
+ * are the canonical CRT-terminal look. Datamosh / RGB-split / strip-invert are
+ * the standard CSS vocabulary for "corrupted GUI" glitch (speckyboy synthwave
+ * CSS snippets; aesthetics.fandom Glitchcore / Synthwave VHS notes).
  */
 
 /* ======================================================================= */
-/* THEME 1 — OUTRUN CHROME                                                 */
+/* THEME 1 — SYSTEM 7 PLATINUM                                             */
 /* ======================================================================= */
 
 .eddie-theme-1 {
-  --t1-magenta: #ff2bd6;
-  --t1-cyan: #00f0ff;
-  --t1-violet: #7b2ff7;
-  --t1-sun-top: #ff5acd;
-  --t1-sun-mid: #ff7a2b;
-  --t1-sun-low: #ffd02b;
-  --t1-deep: #07021a;
-}
-
-/* A perspective grid floor + a violet→magenta sky behind the whole card. */
-.eddie-theme-1 .levelselect-inner {
-  position: relative;
-  overflow: hidden;
-  padding: 30px 44px 38px;
-  border: 2px solid var(--t1-cyan);
-  border-radius: 6px;
-  background:
-    linear-gradient(180deg, #2a0a4a 0%, #5a0e6e 45%, #1a0533 100%);
-  box-shadow:
-    0 0 70px rgba(255, 43, 214, 0.5),
-    0 0 0 1px rgba(0, 240, 255, 0.4),
-    inset 0 0 60px rgba(123, 47, 247, 0.35);
-}
-
-/* Striped Miami sun, clipped behind the title. */
-.eddie-theme-1 .levelselect-inner::before {
-  content: "";
-  position: absolute;
-  top: -40px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 260px;
-  height: 260px;
-  border-radius: 50%;
-  background:
-    repeating-linear-gradient(
-      180deg,
-      transparent 0 10px,
-      rgba(0, 0, 0, 0.55) 10px 14px
-    ),
-    linear-gradient(180deg, var(--t1-sun-top), var(--t1-sun-mid) 55%, var(--t1-sun-low));
-  filter: drop-shadow(0 0 40px rgba(255, 90, 205, 0.7));
-  opacity: 0.85;
-  pointer-events: none;
-}
-
-/* Neon perspective grid hugging the floor of the card. */
-.eddie-theme-1 .levelselect-inner::after {
-  content: "";
-  position: absolute;
-  left: -20%;
-  right: -20%;
-  bottom: 0;
-  height: 42%;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(90deg,
-      rgba(0, 240, 255, 0.55) 0 1px, transparent 1px 44px),
-    repeating-linear-gradient(0deg,
-      rgba(255, 43, 214, 0.5) 0 1px, transparent 1px 30px);
-  transform: perspective(220px) rotateX(62deg);
-  transform-origin: bottom center;
-  mask-image: linear-gradient(180deg, transparent, #000 30%);
-  -webkit-mask-image: linear-gradient(180deg, transparent, #000 30%);
-}
-
-/* Airbrushed chrome title: stacked metallic gradient + dark bevel underline. */
-.eddie-theme-1 .levelselect-title {
-  position: relative;
-  z-index: 2;
-  font-family: "Arial Black", Impact, system-ui, sans-serif;
-  font-size: 40px;
-  letter-spacing: 7px;
-  background: linear-gradient(
-    180deg,
-    #fff 0%, #cfe9ff 30%, #7fb6e6 48%,
-    #2b3b66 50%, #7fd8ff 52%, #ffffff 78%, #ff9be8 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  text-shadow: none;
-  filter:
-    drop-shadow(0 2px 0 #102) drop-shadow(0 0 18px rgba(0, 240, 255, 0.6));
-  margin-bottom: 26px;
-}
-
-.eddie-theme-1 .eddie-settings-row {
-  position: relative;
-  z-index: 2;
-}
-
-.eddie-theme-1 .eddie-settings-label {
-  color: var(--t1-cyan);
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
-  letter-spacing: 5px;
-}
-
-.eddie-theme-1 .eddie-settings-value {
-  color: #fff;
-  background: rgba(7, 2, 26, 0.7);
-  border: 1px solid var(--t1-magenta);
-  border-radius: 3px;
-  text-shadow: 0 0 12px var(--t1-magenta);
-  box-shadow: inset 0 0 14px rgba(255, 43, 214, 0.25);
-}
-
-.eddie-theme-1 .eddie-settings-btn {
-  color: #07021a;
-  background: linear-gradient(180deg, #d9fbff, var(--t1-cyan) 55%, #00a7c4);
-  border: 2px solid #fff;
-  border-radius: 5px;
-  box-shadow:
-    0 0 16px rgba(0, 240, 255, 0.7),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-.eddie-theme-1 .eddie-settings-btn:hover {
-  background: linear-gradient(180deg, #ffd6f6, var(--t1-magenta) 55%, #c4189f);
-  box-shadow:
-    0 0 26px rgba(255, 43, 214, 0.95),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  transform: translateY(-1px) scale(1.05);
-}
-
-.eddie-theme-1 .eddie-settings-btn:active { transform: scale(0.96); }
-
-.eddie-theme-1 .eddie-settings-timeline {
-  position: relative;
-  z-index: 2;
-  border: 2px solid var(--t1-cyan);
-  border-radius: 5px;
-  background: rgba(7, 2, 26, 0.6);
-  box-shadow:
-    0 0 20px rgba(0, 240, 255, 0.5),
-    inset 0 0 18px rgba(123, 47, 247, 0.3);
-}
-
-.eddie-theme-1 .eddie-settings-timeline .menupulse-label {
-  color: var(--t1-cyan);
-  text-shadow: 0 0 8px rgba(0, 240, 255, 0.8);
-  letter-spacing: 4px;
-}
-
-.eddie-theme-1 .eddie-settings-play {
-  position: relative;
-  z-index: 2;
-}
-
-/* ======================================================================= */
-/* THEME 2 — MEMPHIS POP                                                   */
-/* ======================================================================= */
-
-.eddie-theme-2 {
-  --m-pink: #ff2e88;
-  --m-yellow: #ffd400;
-  --m-blue: #2b6bff;
-  --m-teal: #00d6c2;
-  --m-black: #0d0d0d;
-  --m-white: #fff;
-}
-
-/* Flat black ground, hard blocky card, NO neon glow — pure Memphis. */
-.eddie-theme-2 .levelselect-inner {
-  position: relative;
-  overflow: visible;
-  padding: 34px 46px 40px;
-  background: var(--m-black);
-  border: 4px solid var(--m-white);
-  border-radius: 0;
-  box-shadow: 12px 12px 0 var(--m-pink), 0 0 0 4px var(--m-yellow) inset;
-}
-
-/* Confetti corner: floating triangle + dotted grid, top-left. */
-.eddie-theme-2 .levelselect-inner::before {
-  content: "";
-  position: absolute;
-  top: -22px;
-  left: -22px;
-  width: 90px;
-  height: 90px;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 50% 50%, var(--m-teal) 0 3px, transparent 3px) 0 0 / 16px 16px,
-    linear-gradient(135deg, transparent 48%, var(--m-yellow) 48% 52%, transparent 52%);
-  transform: rotate(-8deg);
-}
-
-/* Squiggle + black/white stripe bar, bottom-right of the card. */
-.eddie-theme-2 .levelselect-inner::after {
-  content: "";
-  position: absolute;
-  right: -16px;
-  bottom: -16px;
-  width: 120px;
-  height: 28px;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(45deg,
-      var(--m-black) 0 8px, var(--m-white) 8px 16px);
-  border: 3px solid var(--m-blue);
-  transform: rotate(-4deg);
-}
-
-.eddie-theme-2 .levelselect-title {
-  position: relative;
-  font-family: "Arial Black", Impact, system-ui, sans-serif;
-  font-size: 38px;
-  letter-spacing: 4px;
-  color: var(--m-yellow);
-  text-shadow: 4px 4px 0 var(--m-pink), 8px 8px 0 var(--m-blue);
-  margin-bottom: 26px;
-}
-
-/* A jaunty squiggle under the title via underline-as-zigzag gradient. */
-.eddie-theme-2 .levelselect-title::after {
-  content: "";
-  display: block;
-  height: 10px;
-  margin: 10px auto 0;
-  width: 70%;
-  background:
-    repeating-linear-gradient(135deg,
-      var(--m-teal) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(45deg,
-      var(--m-pink) 0 6px, transparent 6px 12px);
-}
-
-.eddie-theme-2 .eddie-settings-label {
-  color: var(--m-teal);
-  text-shadow: 2px 2px 0 var(--m-black);
-  letter-spacing: 3px;
-}
-
-.eddie-theme-2 .eddie-settings-value {
-  color: var(--m-black);
-  background: var(--m-yellow);
-  border: 3px solid var(--m-black);
-  border-radius: 0;
-  box-shadow: 3px 3px 0 var(--m-blue);
-  text-shadow: none;
-}
-
-/* Hard offset block buttons, each row alternates primaries on hover. */
-.eddie-theme-2 .eddie-settings-btn {
-  color: var(--m-white);
-  background: var(--m-blue);
-  border: 3px solid var(--m-white);
-  border-radius: 0;
-  box-shadow: 3px 3px 0 var(--m-black);
-  text-shadow: none;
-  transition: transform 0.08s ease-out, box-shadow 0.08s ease-out,
-    background 0.08s ease-out;
-}
-
-.eddie-theme-2 .eddie-settings-btn:hover {
-  background: var(--m-pink);
-  transform: translate(-1px, -1px);
-  box-shadow: 5px 5px 0 var(--m-teal);
-}
-
-.eddie-theme-2 .eddie-settings-btn:active {
-  transform: translate(3px, 3px);
-  box-shadow: 0 0 0 var(--m-black);
-}
-
-.eddie-theme-2 .eddie-settings-timeline {
-  border: 3px solid var(--m-white);
-  border-radius: 0;
-  background: #141414;
-  box-shadow: 6px 6px 0 var(--m-pink);
-}
-
-.eddie-theme-2 .eddie-settings-timeline .menupulse-label {
-  color: var(--m-yellow);
-  text-shadow: 2px 2px 0 var(--m-black);
-  letter-spacing: 3px;
-}
-
-/* ======================================================================= */
-/* THEME 3 — APPLE IIgs / CLASSIC MAC (1-bit beveled chrome)               */
-/* ======================================================================= */
-
-.eddie-theme-3 {
-  --mac-paper: #e8e8e8;
-  --mac-ink: #000;
-  --mac-shadow: #808080;
-  --mac-light: #fff;
-  --mac-accent: #0033cc;   /* the single IIgs-ish accent */
+  --p-paper: #dcdcde;
+  --p-light: #fff;
+  --p-shadow: #8a8a92;
+  --p-dark: #555;
+  --p-ink: #111;
+  --p-accent: #000088;
   --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
 }
 
-/* Beveled window: light top-left, dark bottom-right, hard pixel edges. */
-.eddie-theme-3 .levelselect-inner {
+.eddie-theme-1 .levelselect-inner {
   position: relative;
   overflow: hidden;
-  padding: 0 0 26px;
+  padding: 0 0 24px;
   font-family: var(--mac-font);
-  background: var(--mac-paper);
-  border: 1px solid var(--mac-ink);
+  background: var(--p-paper);
+  border: 1px solid var(--p-ink);
   border-radius: 0;
   box-shadow:
-    inset 2px 2px 0 var(--mac-light),
-    inset -2px -2px 0 var(--mac-shadow),
-    3px 3px 0 rgba(0, 0, 0, 0.45);
+    inset 2px 2px 0 var(--p-light),
+    inset -2px -2px 0 var(--p-shadow),
+    4px 4px 0 rgba(0, 0, 0, 0.4);
   image-rendering: pixelated;
+  transition: transform 0.04s steps(1), filter 0.04s steps(1);
 }
 
-/* Classic pinstriped title bar with close box, drawn behind the title text. */
-.eddie-theme-3 .levelselect-title {
+/* Pinstriped title bar + close box. */
+.eddie-theme-1 .levelselect-title {
   position: relative;
   font-family: var(--mac-font);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 1px;
-  color: var(--mac-ink);
+  color: var(--p-ink);
   text-shadow: none;
   margin: 0 0 22px;
-  padding: 6px 0 7px;
-  background:
-    repeating-linear-gradient(0deg,
-      var(--mac-ink) 0 1px, var(--mac-paper) 1px 3px);
-  border-bottom: 2px solid var(--mac-ink);
-  box-shadow: inset 0 -1px 0 var(--mac-shadow);
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--p-ink) 0 1px, var(--p-paper) 1px 3px);
+  border-bottom: 2px solid var(--p-ink);
 }
-
-/* White plate so the title text sits clear of the pinstripes. */
-.eddie-theme-3 .levelselect-title::after {
+.eddie-theme-1 .levelselect-title::after {
   content: "";
   position: absolute;
-  inset: 4px 14px 5px 14px;
-  background: var(--mac-paper);
+  inset: 4px 16px 5px 16px;
+  background: var(--p-paper);
   z-index: -1;
 }
-
-/* The close box, top-left of the title bar. */
-.eddie-theme-3 .levelselect-title::before {
+.eddie-theme-1 .levelselect-title::before {
   content: "";
   position: absolute;
-  left: 8px;
-  top: 50%;
+  left: 9px; top: 50%;
   transform: translateY(-50%);
-  width: 11px;
-  height: 11px;
-  background: var(--mac-light);
-  border: 1px solid var(--mac-ink);
-  box-shadow: inset 1px 1px 0 var(--mac-shadow);
+  width: 11px; height: 11px;
+  background: var(--p-light);
+  border: 1px solid var(--p-ink);
+  box-shadow: inset 1px 1px 0 var(--p-shadow);
 }
 
-.eddie-theme-3 .eddie-settings-row {
-  padding: 0 18px;
-}
+.eddie-theme-1 .eddie-settings-row { padding: 0 18px; }
 
-.eddie-theme-3 .eddie-settings-label {
+.eddie-theme-1 .eddie-settings-label {
   font-family: var(--mac-font);
-  color: var(--mac-ink);
+  color: var(--p-ink);
   text-shadow: none;
   letter-spacing: 1px;
   font-weight: 700;
 }
-
-/* Sunken 1-bit field: checkerboard dither behind a white value plate. */
-.eddie-theme-3 .eddie-settings-value {
+.eddie-theme-1 .eddie-settings-value {
   font-family: var(--mac-font);
-  color: var(--mac-ink);
-  background:
-    var(--mac-light);
-  border: 1px solid var(--mac-ink);
+  color: var(--p-ink);
+  background: var(--p-light);
+  border: 1px solid var(--p-ink);
   border-radius: 0;
-  box-shadow: inset 1px 1px 0 var(--mac-shadow);
+  box-shadow: inset 1px 1px 0 var(--p-shadow);
   text-shadow: none;
 }
-
-/* Beveled push buttons (light TL / dark BR), invert on press. */
-.eddie-theme-3 .eddie-settings-btn {
+.eddie-theme-1 .eddie-settings-btn {
   font-family: var(--mac-font);
-  color: var(--mac-ink);
-  background: var(--mac-paper);
-  border: 1px solid var(--mac-ink);
-  border-radius: 0;
-  box-shadow:
-    inset 1px 1px 0 var(--mac-light),
-    inset -1px -1px 0 var(--mac-shadow);
+  color: var(--p-ink);
+  background: linear-gradient(180deg, var(--p-light), var(--p-paper));
+  border: 1px solid var(--p-ink);
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 0 var(--p-light), inset -1px -1px 0 var(--p-shadow);
   text-shadow: none;
+  transition: none;
 }
-
-.eddie-theme-3 .eddie-settings-btn:hover {
-  background: var(--mac-light);
-  transform: none;
+.eddie-theme-1 .eddie-settings-btn:hover { background: var(--p-light); }
+.eddie-theme-1 .eddie-settings-btn:active {
+  color: var(--p-light);
+  background: var(--p-ink);
+  box-shadow: inset 1px 1px 0 #000, inset -1px -1px 0 var(--p-dark);
 }
-
-.eddie-theme-3 .eddie-settings-btn:active {
-  color: var(--mac-light);
-  background: var(--mac-ink);
-  box-shadow:
-    inset 1px 1px 0 var(--mac-shadow),
-    inset -1px -1px 0 var(--mac-ink);
-  transform: none;
-}
-
-/* SIGNAL CHAIN framed as a sunken document well with dither matte. */
-.eddie-theme-3 .eddie-settings-timeline {
+.eddie-theme-1 .eddie-settings-timeline {
   margin: 18px 18px 8px;
-  border: 1px solid var(--mac-ink);
+  border: 1px solid var(--p-ink);
   border-radius: 0;
   background:
-    repeating-conic-gradient(var(--mac-shadow) 0 25%, var(--mac-paper) 0 50%)
-      0 0 / 4px 4px;
-  box-shadow:
-    inset 2px 2px 0 var(--mac-shadow),
-    inset -1px -1px 0 var(--mac-light);
+    repeating-conic-gradient(var(--p-shadow) 0 25%, var(--p-paper) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--p-shadow), inset -1px -1px 0 var(--p-light);
 }
-
-.eddie-theme-3 .eddie-settings-timeline .menupulse-label {
+.eddie-theme-1 .eddie-settings-timeline .menupulse-label {
   font-family: var(--mac-font);
-  color: var(--mac-ink);
+  color: var(--p-ink);
   text-shadow: none;
   letter-spacing: 1px;
   font-weight: 700;
 }
-
-.eddie-theme-3 .eddie-settings-play {
-  margin-top: 22px;
+/* BEAT: a scanline jump — the whole window nudges + brightens. */
+.eddie-theme-1.eddie-beat .levelselect-inner { transform: translateY(-1px); }
+.eddie-theme-1.eddie-beat-down .levelselect-inner {
+  transform: translateY(-2px);
+  filter: contrast(1.15) brightness(1.08);
+}
+.eddie-theme-1.eddie-beat-down .levelselect-title {
+  background: repeating-linear-gradient(0deg, var(--p-accent) 0 1px, var(--p-paper) 1px 3px);
 }
 
 /* ======================================================================= */
-/* THEME 4 — VHS TAPE LABEL                                                */
+/* THEME 2 — 1-BIT BLACK & WHITE MAC                                       */
+/* ======================================================================= */
+
+.eddie-theme-2 {
+  --bw-ink: #000;
+  --bw-paper: #fff;
+  --mac-font: "Chicago", "Geneva", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-2 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  box-shadow: 0 0 0 2px var(--bw-paper), 0 0 0 4px var(--bw-ink);
+  image-rendering: pixelated;
+}
+/* Striped title bar (solid 1-bit lines) + close box. */
+.eddie-theme-2 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--bw-ink);
+  text-shadow: none;
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--bw-ink) 0 2px, var(--bw-paper) 2px 4px);
+  border-bottom: 2px solid var(--bw-ink);
+}
+.eddie-theme-2 .levelselect-title::after {
+  content: "";
+  position: absolute;
+  inset: 3px 16px 4px 16px;
+  background: var(--bw-paper);
+  z-index: -1;
+}
+.eddie-theme-2 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+}
+.eddie-theme-2 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-2 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-2 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  text-shadow: none;
+}
+.eddie-theme-2 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 6px;
+  text-shadow: none;
+  transition: none;
+}
+/* "gray" hover = 50% checkerboard dither. */
+.eddie-theme-2 .eddie-settings-btn:hover {
+  background:
+    repeating-conic-gradient(var(--bw-ink) 0 25%, var(--bw-paper) 0 50%) 0 0 / 2px 2px;
+}
+.eddie-theme-2 .eddie-settings-btn:active {
+  color: var(--bw-paper);
+  background: var(--bw-ink);
+}
+.eddie-theme-2 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--bw-ink) 0 25%, var(--bw-paper) 0 50%) 0 0 / 3px 3px;
+}
+.eddie-theme-2 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  padding: 0 4px;
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: invert a horizontal strip across the window (classic 1-bit glitch). */
+.eddie-theme-2.eddie-beat .levelselect-inner::after,
+.eddie-theme-2.eddie-beat-down .levelselect-inner::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  height: 14%;
+  top: 42%;
+  background: var(--bw-ink);
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+.eddie-theme-2.eddie-beat-down .levelselect-inner::after {
+  height: 26%;
+  top: 30%;
+}
+
+/* ======================================================================= */
+/* THEME 3 — APPLE IIgs COLOR                                              */
+/* ======================================================================= */
+
+.eddie-theme-3 {
+  --gs-desk: #20338f;       /* IIgs default blue desktop */
+  --gs-paper: #c7c7c7;
+  --gs-light: #fff;
+  --gs-shadow: #6b6b6b;
+  --gs-ink: #000;
+  --gs-blue: #0040ff;
+  --gs-orange: #ff7a18;
+  --gs-green: #28a428;
+  --gs-magenta: #d020a0;
+  --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-3 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--gs-paper);
+  border: 2px solid var(--gs-ink);
+  border-radius: 0;
+  box-shadow:
+    inset 2px 2px 0 var(--gs-light),
+    inset -2px -2px 0 var(--gs-shadow),
+    0 0 0 4px var(--gs-desk),
+    6px 6px 0 rgba(0, 0, 0, 0.45);
+  image-rendering: pixelated;
+  transition: filter 0.05s steps(2), transform 0.04s steps(1);
+}
+/* Color title bar: striped blue→magenta "active window" bar + orange close box. */
+.eddie-theme-3 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--gs-light);
+  text-shadow: 1px 1px 0 var(--gs-ink);
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background:
+    repeating-linear-gradient(0deg,
+      rgba(255,255,255,0.35) 0 1px, transparent 1px 3px),
+    linear-gradient(90deg, var(--gs-blue), var(--gs-magenta));
+  border-bottom: 2px solid var(--gs-ink);
+}
+.eddie-theme-3 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--gs-orange);
+  border: 1px solid var(--gs-ink);
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,0.7);
+}
+.eddie-theme-3 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-3 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--gs-blue);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-3 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--gs-ink);
+  background: var(--gs-light);
+  border: 1px solid var(--gs-ink);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--gs-shadow);
+  text-shadow: none;
+}
+.eddie-theme-3 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--gs-ink);
+  background: linear-gradient(180deg, #e9f0ff, #b9c8f0);
+  border: 1px solid var(--gs-ink);
+  border-radius: 5px;
+  box-shadow: inset 1px 1px 0 var(--gs-light), inset -1px -1px 0 var(--gs-shadow);
+  text-shadow: none;
+  transition: none;
+}
+.eddie-theme-3 .eddie-settings-btn:hover {
+  background: linear-gradient(180deg, #ffe6cf, var(--gs-orange));
+}
+.eddie-theme-3 .eddie-settings-btn:active {
+  color: var(--gs-light);
+  background: var(--gs-blue);
+  box-shadow: inset 1px 1px 0 #001a66, inset -1px -1px 0 #3a6bff;
+}
+.eddie-theme-3 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 1px solid var(--gs-ink);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--gs-green) 0 25%, var(--gs-ink) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--gs-shadow);
+}
+.eddie-theme-3 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--gs-orange);
+  text-shadow: 1px 1px 0 var(--gs-ink);
+  letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: RGB channel split — cyan/magenta drop-shadow ghosts on the window. */
+.eddie-theme-3.eddie-beat .levelselect-inner {
+  filter: drop-shadow(-1px 0 0 rgba(255,0,200,0.55))
+    drop-shadow(1px 0 0 rgba(0,220,255,0.55));
+}
+.eddie-theme-3.eddie-beat-down .levelselect-inner {
+  filter: drop-shadow(-3px 0 0 rgba(255,0,200,0.85))
+    drop-shadow(3px 0 0 rgba(0,220,255,0.85)) saturate(1.3);
+  transform: translateX(1px);
+}
+
+/* ======================================================================= */
+/* THEME 4 — AMBER TERMINAL (CRT phosphor)                                 */
 /* ======================================================================= */
 
 .eddie-theme-4 {
-  --vhs-paper: #f4f0e6;
-  --vhs-paper2: #e7e1d0;
-  --vhs-marker: #1a1a1a;
-  --vhs-blue: #1d3a8a;
-  --vhs-red: #d8221f;
-  --vhs-tape: #2a2622;
+  --amb-bg: #100b00;
+  --amb-fg: #ffb000;
+  --amb-dim: #a36b00;
+  --amb-hot: #ffd47a;
+  --mac-font: "Lucida Console", "Consolas", ui-monospace, monospace;
 }
 
-/* Cream paper sticker with a torn-tape top edge and a tape spine on the left. */
 .eddie-theme-4 .levelselect-inner {
   position: relative;
   overflow: hidden;
-  padding: 30px 40px 36px 54px;
-  background:
-    linear-gradient(180deg, var(--vhs-paper), var(--vhs-paper2));
-  border: 1px solid #b8b0a0;
-  border-radius: 2px;
+  padding: 22px 30px 26px;
+  font-family: var(--mac-font);
+  color: var(--amb-fg);
+  background: radial-gradient(120% 90% at 50% 40%, #1a1200 0%, var(--amb-bg) 100%);
+  border: 2px solid var(--amb-dim);
+  border-radius: 10px / 14px;
   box-shadow:
-    0 10px 30px rgba(0, 0, 0, 0.55),
-    inset 0 0 60px rgba(120, 100, 60, 0.12);
+    0 0 0 2px #000,
+    0 0 36px rgba(255, 176, 0, 0.25),
+    inset 0 0 60px rgba(255, 176, 0, 0.08);
 }
-
-/* Magnetic-tape spine down the left + a faint scotch-tape strip across top. */
+/* CRT scanline overlay. */
 .eddie-theme-4 .levelselect-inner::before {
   content: "";
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 22px;
-  background:
-    repeating-linear-gradient(0deg,
-      var(--vhs-tape) 0 3px, #3a352f 3px 6px);
-  border-right: 2px solid #000;
-  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.4) inset;
+  position: absolute; inset: 0;
   pointer-events: none;
+  background: repeating-linear-gradient(0deg,
+    rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.35) 2px 3px);
 }
-
-/* Scanline + tracking band overlay across the whole sticker. */
-.eddie-theme-4 .levelselect-inner::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(0deg,
-      rgba(0, 0, 0, 0.05) 0 1px, transparent 1px 3px),
-    linear-gradient(0deg,
-      transparent 60%, rgba(255, 255, 255, 0.5) 62%, transparent 64%);
-  mix-blend-mode: multiply;
-  animation: eddie-t4-tracking 5.5s linear infinite;
-}
-
-@keyframes eddie-t4-tracking {
-  0%, 92%, 100% { background-position: 0 0, 0 0; opacity: 0.5; }
-  94% { background-position: 0 0, 0 -8px; opacity: 0.8; }
-  96% { background-position: 0 0, 0 6px; opacity: 0.7; }
-}
-
-/* Marker-pen handwritten title with a red REC dot. */
 .eddie-theme-4 .levelselect-title {
-  position: relative;
-  font-family: "Bradley Hand", "Segoe Print", "Comic Sans MS", cursive;
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: var(--vhs-marker);
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
-  margin-bottom: 22px;
-  transform: rotate(-1.2deg);
+  font-family: var(--mac-font);
+  font-size: 26px; font-weight: 700; letter-spacing: 4px;
+  color: var(--amb-hot);
+  text-shadow: 0 0 8px var(--amb-fg), 0 0 18px rgba(255,176,0,0.7);
+  margin-bottom: 20px;
 }
-
-/* Hand-underline + REC dot. */
 .eddie-theme-4 .levelselect-title::after {
-  content: "● REC";
-  display: inline-block;
-  margin-left: 12px;
-  font-family: "Arial Narrow", system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 2px;
-  color: var(--vhs-red);
-  vertical-align: middle;
-  animation: eddie-t4-rec 1.4s steps(1) infinite;
+  content: "_";
+  animation: eddie-t4-caret 1s steps(1) infinite;
 }
-
-@keyframes eddie-t4-rec {
-  0%, 60% { opacity: 1; }
-  61%, 100% { opacity: 0.25; }
-}
-
-.eddie-theme-4 .eddie-settings-row {
-  position: relative;
-  z-index: 1;
-}
-
+@keyframes eddie-t4-caret { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
 .eddie-theme-4 .eddie-settings-label {
-  font-family: "Segoe Print", "Comic Sans MS", cursive;
-  color: var(--vhs-blue);
-  text-shadow: none;
-  letter-spacing: 2px;
-  font-weight: 700;
+  font-family: var(--mac-font);
+  color: var(--amb-dim);
+  text-shadow: 0 0 6px rgba(255,176,0,0.4);
+  letter-spacing: 3px; font-weight: 700;
 }
-
-/* Value reads like it was typed onto a label field with a ruled box. */
 .eddie-theme-4 .eddie-settings-value {
-  font-family: "Courier New", ui-monospace, monospace;
-  color: var(--vhs-marker);
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid var(--vhs-marker);
-  border-radius: 1px;
-  text-shadow: none;
-  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12);
-}
-
-/* Buttons styled as little stamped/marker boxes. */
-.eddie-theme-4 .eddie-settings-btn {
-  font-family: "Arial Narrow", system-ui, sans-serif;
-  color: var(--vhs-paper);
-  background: var(--vhs-blue);
-  border: 2px solid var(--vhs-marker);
+  font-family: var(--mac-font);
+  color: var(--amb-hot);
+  background: rgba(255,176,0,0.06);
+  border: 1px solid var(--amb-dim);
   border-radius: 2px;
+  text-shadow: 0 0 8px var(--amb-fg);
+}
+.eddie-theme-4 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--amb-bg);
+  background: var(--amb-fg);
+  border: 1px solid var(--amb-hot);
+  border-radius: 3px;
   text-shadow: none;
-  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 10px rgba(255,176,0,0.5);
+  transition: none;
 }
-
 .eddie-theme-4 .eddie-settings-btn:hover {
-  background: var(--vhs-red);
-  transform: translateY(-1px) rotate(-1deg);
-  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.4);
+  background: var(--amb-hot);
+  box-shadow: 0 0 18px rgba(255,176,0,0.9);
 }
-
 .eddie-theme-4 .eddie-settings-btn:active {
-  transform: translate(2px, 2px);
-  box-shadow: 0 0 0 rgba(0, 0, 0, 0.4);
+  color: var(--amb-hot);
+  background: var(--amb-bg);
+  box-shadow: inset 0 0 12px rgba(255,176,0,0.5);
 }
-
-/* SIGNAL CHAIN window framed as a TV/preview pane on the sticker. */
 .eddie-theme-4 .eddie-settings-timeline {
   position: relative;
-  z-index: 1;
-  border: 3px solid var(--vhs-tape);
-  border-radius: 3px;
-  background: #0c0c0c;
-  box-shadow:
-    0 0 0 1px var(--vhs-paper),
-    inset 0 0 24px rgba(0, 0, 0, 0.8);
+  border: 1px solid var(--amb-dim);
+  border-radius: 4px;
+  background: #060400;
+  box-shadow: inset 0 0 24px rgba(255,176,0,0.12);
 }
-
 .eddie-theme-4 .eddie-settings-timeline .menupulse-label {
-  font-family: "Courier New", ui-monospace, monospace;
-  color: #d8d2c2;
-  text-shadow: 0 0 6px rgba(255, 255, 255, 0.4);
-  letter-spacing: 3px;
+  font-family: var(--mac-font);
+  color: var(--amb-fg);
+  text-shadow: 0 0 8px var(--amb-fg);
+  letter-spacing: 3px; font-weight: 700;
+}
+/* BEAT: phosphor flicker + a 1px scanline tear nudges the whole screen. */
+.eddie-theme-4.eddie-beat .levelselect-inner { filter: brightness(1.12); }
+.eddie-theme-4.eddie-beat-down .levelselect-inner {
+  filter: brightness(1.3) contrast(1.15);
+  transform: translateY(-1px) skewX(-0.4deg);
+}
+.eddie-theme-4.eddie-beat-down .levelselect-inner::before {
+  background: repeating-linear-gradient(0deg,
+    rgba(255,176,0,0.05) 0 2px, rgba(0,0,0,0.45) 2px 3px);
 }
 
-.eddie-theme-4 .eddie-settings-play {
+/* ======================================================================= */
+/* THEME 5 — GREEN / CORRUPTED DESKTOP (datamosh glitch)                   */
+/* ======================================================================= */
+
+.eddie-theme-5 {
+  --grn-bg: #021207;
+  --grn-fg: #39ff7a;
+  --grn-dim: #1f8f47;
+  --grn-hot: #b6ffce;
+  --grn-paper: #06240f;
+  --mac-font: "Lucida Console", "Consolas", ui-monospace, monospace;
+}
+
+.eddie-theme-5 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  color: var(--grn-fg);
+  background: var(--grn-bg);
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  box-shadow:
+    0 0 0 2px #000,
+    0 0 28px rgba(57,255,122,0.2),
+    inset 0 0 50px rgba(57,255,122,0.06);
+  transition: transform 0.04s steps(1), filter 0.04s steps(1);
+}
+/* Datamosh block bands overlay — faint horizontal color bands. */
+.eddie-theme-5 .levelselect-inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent 0 7px, rgba(57,255,122,0.05) 7px 8px),
+    repeating-linear-gradient(0deg,
+      transparent 0 23px, rgba(57,255,122,0.08) 23px 26px);
+}
+.eddie-theme-5 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 22px; font-weight: 700; letter-spacing: 3px;
+  color: var(--grn-hot);
+  text-shadow: 0 0 8px var(--grn-fg);
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--grn-dim) 0 1px, transparent 1px 3px);
+  border-bottom: 1px solid var(--grn-dim);
+}
+.eddie-theme-5 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-5 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--grn-dim);
+  text-shadow: 0 0 5px rgba(57,255,122,0.4);
+  letter-spacing: 2px; font-weight: 700;
+}
+.eddie-theme-5 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--grn-hot);
+  background: var(--grn-paper);
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  text-shadow: 0 0 6px var(--grn-fg);
+}
+.eddie-theme-5 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--grn-bg);
+  background: var(--grn-fg);
+  border: 1px solid var(--grn-hot);
+  border-radius: 2px;
+  text-shadow: none;
+  box-shadow: 0 0 8px rgba(57,255,122,0.4);
+  transition: none;
+}
+.eddie-theme-5 .eddie-settings-btn:hover {
+  background: var(--grn-hot);
+  box-shadow: 0 0 16px rgba(57,255,122,0.8);
+}
+.eddie-theme-5 .eddie-settings-btn:active {
+  color: var(--grn-hot);
+  background: var(--grn-paper);
+  box-shadow: inset 0 0 10px rgba(57,255,122,0.5);
+}
+.eddie-theme-5 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--grn-dim) 0 25%, var(--grn-bg) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 0 0 18px rgba(57,255,122,0.15);
+}
+.eddie-theme-5 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--grn-fg);
+  text-shadow: 0 0 8px var(--grn-fg);
+  letter-spacing: 2px; font-weight: 700;
+}
+/* BEAT: hard datamosh — title tears sideways, window shifts + RGB ghost. */
+.eddie-theme-5.eddie-beat .levelselect-title { transform: translateX(2px); }
+.eddie-theme-5.eddie-beat-down .levelselect-inner {
+  transform: translateX(-2px);
+  filter: drop-shadow(-2px 0 0 rgba(255,0,200,0.7))
+    drop-shadow(2px 0 0 rgba(0,220,255,0.7));
+}
+.eddie-theme-5.eddie-beat-down .levelselect-title {
+  transform: translateX(-6px) skewX(-3deg);
+  text-shadow: 3px 0 0 rgba(255,0,200,0.8), -3px 0 0 rgba(0,220,255,0.8),
+    0 0 8px var(--grn-fg);
+}
+/* A tearing band that snaps in on the downbeat. */
+.eddie-theme-5.eddie-beat-down .levelselect-inner::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  top: 56%;
+  height: 9%;
+  background: rgba(57,255,122,0.18);
+  border-top: 1px solid var(--grn-hot);
+  border-bottom: 1px solid var(--grn-hot);
+  transform: translateX(5px);
+  pointer-events: none;
+}
+
+/* ======================================================================= */
+/* THEME 6 — DITHERED PASTEL                                               */
+/* ======================================================================= */
+
+.eddie-theme-6 {
+  --ps-paper: #efeaf6;
+  --ps-mint: #b8f0dd;
+  --ps-peach: #ffd9c2;
+  --ps-lav: #d8c8ff;
+  --ps-light: #fff;
+  --ps-shadow: #b0a6c0;
+  --ps-ink: #3a2f4a;
+  --ps-accent: #b06bd8;
+  --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-6 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--ps-paper);
+  border: 2px solid var(--ps-ink);
+  border-radius: 6px;
+  box-shadow:
+    inset 2px 2px 0 var(--ps-light),
+    inset -2px -2px 0 var(--ps-shadow),
+    5px 5px 0 rgba(58,47,74,0.3);
+  image-rendering: pixelated;
+  transition: filter 0.06s steps(2), transform 0.06s steps(1);
+  z-index: 0;
+}
+/* Ordered-dither pastel matte behind everything. */
+.eddie-theme-6 .levelselect-inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    repeating-conic-gradient(rgba(184,240,221,0.5) 0 25%, transparent 0 50%) 0 0 / 6px 6px,
+    repeating-conic-gradient(rgba(216,200,255,0.4) 0 25%, transparent 0 50%) 3px 3px / 6px 6px;
+  opacity: 0.5;
+}
+/* Pastel pinstriped title bar + close box. */
+.eddie-theme-6 .levelselect-title {
   position: relative;
   z-index: 1;
-  margin-top: 22px;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--ps-ink);
+  text-shadow: none;
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background:
+    repeating-linear-gradient(0deg, var(--ps-accent) 0 1px, transparent 1px 3px),
+    linear-gradient(90deg, var(--ps-mint), var(--ps-lav));
+  border-bottom: 2px solid var(--ps-ink);
+}
+.eddie-theme-6 .levelselect-title::after {
+  content: "";
+  position: absolute;
+  inset: 4px 16px 5px 16px;
+  background: var(--ps-paper);
+  z-index: 0;
+}
+.eddie-theme-6 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--ps-peach);
+  border: 1px solid var(--ps-ink);
+  z-index: 2;
+}
+.eddie-theme-6 .eddie-settings-row { position: relative; z-index: 1; padding: 0 18px; }
+.eddie-theme-6 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--ps-accent);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-6 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--ps-ink);
+  background: var(--ps-light);
+  border: 1px solid var(--ps-ink);
+  border-radius: 2px;
+  box-shadow: inset 1px 1px 0 var(--ps-shadow);
+  text-shadow: none;
+}
+.eddie-theme-6 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--ps-ink);
+  background: linear-gradient(180deg, var(--ps-light), var(--ps-mint));
+  border: 1px solid var(--ps-ink);
+  border-radius: 6px;
+  box-shadow: inset 1px 1px 0 var(--ps-light), inset -1px -1px 0 var(--ps-shadow);
+  text-shadow: none;
+  transition: none;
+}
+.eddie-theme-6 .eddie-settings-btn:hover {
+  background: linear-gradient(180deg, var(--ps-light), var(--ps-peach));
+}
+.eddie-theme-6 .eddie-settings-btn:active {
+  color: var(--ps-light);
+  background: var(--ps-accent);
+  box-shadow: inset 1px 1px 0 #7a4a9a, inset -1px -1px 0 #cf9ae8;
+}
+.eddie-theme-6 .eddie-settings-timeline {
+  position: relative;
+  z-index: 1;
+  margin: 18px 18px 8px;
+  border: 1px solid var(--ps-ink);
+  border-radius: 3px;
+  background:
+    repeating-conic-gradient(var(--ps-lav) 0 25%, var(--ps-paper) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--ps-shadow), inset -1px -1px 0 var(--ps-light);
+}
+.eddie-theme-6 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--ps-accent);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: gentle dither shimmer + soft RGB ghost. */
+.eddie-theme-6.eddie-beat .levelselect-inner::before { opacity: 0.75; }
+.eddie-theme-6.eddie-beat-down .levelselect-inner {
+  filter: drop-shadow(-1px 0 0 rgba(255,140,220,0.6))
+    drop-shadow(1px 0 0 rgba(120,220,255,0.6)) brightness(1.05);
+  transform: translateY(-1px);
+}
+.eddie-theme-6.eddie-beat-down .levelselect-inner::before {
+  opacity: 0.9;
+  background:
+    repeating-conic-gradient(rgba(255,140,220,0.5) 0 25%, transparent 0 50%) 0 0 / 6px 6px,
+    repeating-conic-gradient(rgba(120,220,255,0.45) 0 25%, transparent 0 50%) 3px 3px / 6px 6px;
 }
 
 /* ======================================================================= */
 /* MARKUP REQUESTS                                                         */
 /* ======================================================================= */
-/* None required — all four themes are pure CSS (gradients, box-shadows, and
- * ::before/::after on existing elements). No extra wrappers or elements are
- * needed. The only integration the lead must do is add one theme class
- * (.eddie-theme-1 … .eddie-theme-4) onto the existing
- * `.outrun-levelselect.eddie-settings` root element, and import this file.
+/* None required for the CSS — all six themes + beat reactions are pure CSS
+ * (gradients, box-shadows, ::before/::after) on the existing elements.
  *
- * Notes for the lead:
- *  - These themes only RESTYLE the panel chrome / controls / title / timeline
- *    frame. The PLAY button and the timeline CANVAS bring their own colors
- *    (drawGrid()/drawPulse() paint magenta+cyan); they will still read fine on
- *    every theme since each timeline frame uses a dark interior. If you want the
- *    canvas grid to match theme-3 (1-bit) specifically, that's a JS change in
- *    EddieSettingsState.drawGrid and out of scope for this CSS file.
+ * Integration the lead owns (JS, out of scope for this file):
+ *  1) import "./settings-themes.css" once.
+ *  2) Add ONE theme class (.eddie-theme-1 … .eddie-theme-6) onto the existing
+ *     `.outrun-levelselect.eddie-settings` root element.
+ *  3) BEAT GLITCH hook: on each Conductor beat, add `.eddie-beat` to that same
+ *     root (and `.eddie-beat-down` on the downbeat), then remove after ~110ms.
+ *     The themes transition/snap off automatically. (The PLAY button reads these
+ *     classes from its parent too — see EddiePlayButton.ts.)
+ *
+ * Note: each theme keeps a dark or neutral timeline interior so the GUITAR
+ * canvas (drawGrid/drawPulse paint magenta+cyan in JS) still reads. Recoloring
+ * the canvas grid per-theme (e.g. amber for theme-4, green for theme-5) would be
+ * a JS change in EddieSettingsState.drawGrid — out of scope for this CSS file.
  */

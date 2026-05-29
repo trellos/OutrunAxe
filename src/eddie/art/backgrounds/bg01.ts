@@ -1,20 +1,27 @@
-// bg01 — "Chrome Sunset". Airbrushed multi-band sunset sky, a big chrome-gradient
-// banded sun, and a row of flat-black palm-tree silhouettes on a hazy horizon.
+// bg01 — "Chroma Crash". A pixely Apple-IIgs / retro-computer neon city skyline
+// rendered to a LOW-RES CanvasTexture (chunky NearestFilter pixels, limited
+// dithered palette) that GLITCHES ON THE BEAT with RGB channel split / chromatic
+// aberration: on each eddieBeatPulse the red & cyan channels shear apart and a
+// few index-corruption sparks fire, decaying back to a clean pixel image in
+// ~150-200ms. Downbeats hit harder.
 //
-// Visuals only (GDD §8): subscribes to the juice bus — eddieBeatPulse pumps the
-// sky/sun brightness on the beat (Art interpolates the decay), eddieShake jolts
-// the parked camera with a decaying random offset. Sets scene.background/fog in
-// mount and RESTORES them in dispose, disposing every geometry/material/texture.
+// Visuals only (GDD §8): subscribes eddieBeatPulse (glitch burst) + eddieShake
+// (camera jolt). Sets+restores scene.background/fog, disposes every
+// geometry/material/texture, unsubscribes.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const SKY_W = 700;
-const SKY_H = 420;
-const SUN_SIZE = 150;
-const HAZE_COLOR = 0xff7a2b;
+// Low-res framebuffer (chunky pixels once scaled onto the big quad).
+const TEX_W = 192;
+const TEX_H = 120;
+const PLANE_W = 640;
+const PLANE_H = 400;
+
+// Limited palette: IIgs-ish darks + neon accents.
+const NEON = ["#ff2bd6", "#00f0ff", "#ffd02b", "#ff5a8a", "#7a3cff"];
 
 class Bg01 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -22,242 +29,221 @@ class Bg01 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private skyTex!: THREE.CanvasTexture;
-  private skyMat!: THREE.MeshBasicMaterial;
-  private sky!: THREE.Mesh;
-
-  private sunTex!: THREE.CanvasTexture;
-  private sunMat!: THREE.MeshBasicMaterial;
-  private sun!: THREE.Mesh;
-
-  private hazeMat!: THREE.MeshBasicMaterial;
-  private hazeTex!: THREE.CanvasTexture;
-  private haze!: THREE.Mesh;
-
-  private palmTex!: THREE.CanvasTexture;
-  private palmMats: THREE.MeshBasicMaterial[] = [];
-  private palmGeo!: THREE.PlaneGeometry;
-  private palms!: THREE.Group;
+  // base = clean rendered skyline; channel = single-channel tint scratch;
+  // display = per-frame glitched composite backing the texture.
+  private baseCv!: HTMLCanvasElement;
+  private base2d!: CanvasRenderingContext2D;
+  private chanCv!: HTMLCanvasElement;
+  private chan2d!: CanvasRenderingContext2D;
+  private dispCv!: HTMLCanvasElement;
+  private disp2d!: CanvasRenderingContext2D;
+  private tex!: THREE.CanvasTexture;
+  private mat!: THREE.MeshBasicMaterial;
+  private mesh!: THREE.Mesh;
 
   private camera: THREE.PerspectiveCamera | null = null;
-  private camBaseY = 8;
-  private camBaseZ = 64;
+  private camBaseY = 0;
+  private camBaseZ = 60;
 
   private offBeat?: () => void;
   private offShake?: () => void;
 
-  private pulse = 0;
+  private glitch = 0; // 0..1 decaying glitch burst
   private shake = 0;
   private t = 0;
+  private starSeeds: { x: number; y: number; tw: number }[] = [];
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x1a0030);
+    ctx.scene.background = new THREE.Color(0x0a0612);
     ctx.scene.fog = null;
 
-    // --- Sky: lush airbrushed multi-band sunset gradient on a tall canvas.
-    const cv = document.createElement("canvas");
-    cv.width = 8;
-    cv.height = 512;
-    const c2d = cv.getContext("2d")!;
-    const grad = c2d.createLinearGradient(0, 0, 0, cv.height);
-    grad.addColorStop(0.0, "#160030");
-    grad.addColorStop(0.22, "#3a0a5e");
-    grad.addColorStop(0.42, "#8a1a86");
-    grad.addColorStop(0.58, "#ff2bd6");
-    grad.addColorStop(0.72, "#ff5a8a");
-    grad.addColorStop(0.84, "#ff7a2b");
-    grad.addColorStop(0.93, "#ffb347");
-    grad.addColorStop(1.0, "#ffd02b");
-    c2d.fillStyle = grad;
-    c2d.fillRect(0, 0, cv.width, cv.height);
-    this.skyTex = new THREE.CanvasTexture(cv);
-    this.skyTex.colorSpace = THREE.SRGBColorSpace;
-    this.skyMat = new THREE.MeshBasicMaterial({ map: this.skyTex, depthWrite: false, depthTest: false, fog: false });
-    this.sky = new THREE.Mesh(new THREE.PlaneGeometry(SKY_W, SKY_H), this.skyMat);
-    this.sky.position.set(0, 60, -200);
-    this.sky.renderOrder = -20;
-    this.group.add(this.sky);
+    this.baseCv = this.makeCanvas();
+    this.base2d = this.baseCv.getContext("2d")!;
+    this.chanCv = this.makeCanvas();
+    this.chan2d = this.chanCv.getContext("2d")!;
+    this.dispCv = this.makeCanvas();
+    this.disp2d = this.dispCv.getContext("2d")!;
 
-    // --- Sun: chrome-gradient banded disc (venetian-blind slats in lower half).
-    const sunCv = document.createElement("canvas");
-    sunCv.width = 256;
-    sunCv.height = 256;
-    const s2d = sunCv.getContext("2d")!;
-    const sg = s2d.createLinearGradient(0, 8, 0, 248);
-    sg.addColorStop(0.0, "#fff7e0");
-    sg.addColorStop(0.32, "#ffe07a");
-    sg.addColorStop(0.62, "#ff9a3c");
-    sg.addColorStop(0.82, "#ff3a8e");
-    sg.addColorStop(1.0, "#ff2bd6");
-    s2d.fillStyle = sg;
-    s2d.beginPath();
-    s2d.arc(128, 128, 120, 0, Math.PI * 2);
-    s2d.fill();
-    // A subtle bright chrome streak across the upper third for the airbrushed sheen.
-    s2d.globalCompositeOperation = "lighter";
-    const sheen = s2d.createLinearGradient(0, 64, 0, 110);
-    sheen.addColorStop(0, "rgba(255,255,255,0)");
-    sheen.addColorStop(0.5, "rgba(255,255,255,0.45)");
-    sheen.addColorStop(1, "rgba(255,255,255,0)");
-    s2d.fillStyle = sheen;
-    s2d.fillRect(0, 64, 256, 46);
-    // Cut horizontal slats in the lower half (retro sun bars).
-    s2d.globalCompositeOperation = "destination-out";
-    for (let i = 0; i < 7; i++) {
-      const y = 146 + i * 14;
-      s2d.fillRect(0, y, 256, 5 + i);
-    }
-    s2d.globalCompositeOperation = "source-over";
-    this.sunTex = new THREE.CanvasTexture(sunCv);
-    this.sunTex.colorSpace = THREE.SRGBColorSpace;
-    this.sunMat = new THREE.MeshBasicMaterial({
-      map: this.sunTex,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      fog: false,
-    });
-    this.sun = new THREE.Mesh(new THREE.PlaneGeometry(SUN_SIZE, SUN_SIZE), this.sunMat);
-    this.sun.position.set(0, 34, -190);
-    this.sun.renderOrder = -19;
-    this.group.add(this.sun);
-
-    // --- Haze: a soft horizontal band glowing along the horizon line.
-    const hzCv = document.createElement("canvas");
-    hzCv.width = 8;
-    hzCv.height = 64;
-    const h2d = hzCv.getContext("2d")!;
-    const hg = h2d.createLinearGradient(0, 0, 0, 64);
-    hg.addColorStop(0, "rgba(255,122,43,0)");
-    hg.addColorStop(0.5, "rgba(255,160,80,0.55)");
-    hg.addColorStop(1, "rgba(255,122,43,0)");
-    h2d.fillStyle = hg;
-    h2d.fillRect(0, 0, 8, 64);
-    this.hazeTex = new THREE.CanvasTexture(hzCv);
-    this.hazeTex.colorSpace = THREE.SRGBColorSpace;
-    this.hazeMat = new THREE.MeshBasicMaterial({
-      map: this.hazeTex,
-      color: HAZE_COLOR,
-      transparent: true,
-      opacity: 0.8,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      depthTest: false,
-      fog: false,
-    });
-    this.haze = new THREE.Mesh(new THREE.PlaneGeometry(SKY_W, 70), this.hazeMat);
-    this.haze.position.set(0, 6, -188);
-    this.haze.renderOrder = -18;
-    this.group.add(this.haze);
-
-    // --- Palms: flat-black silhouettes stamped on one shared canvas texture,
-    //     instanced across the horizon at varied scale/depth.
-    this.palmTex = this.buildPalmTexture();
-    this.palmGeo = new THREE.PlaneGeometry(40, 56);
-    this.palms = new THREE.Group();
-    const placements = [
-      { x: -150, s: 1.15, z: -176 },
-      { x: -96, s: 0.85, z: -180 },
-      { x: -54, s: 1.35, z: -172 },
-      { x: 60, s: 1.0, z: -178 },
-      { x: 104, s: 1.5, z: -170 },
-      { x: 158, s: 0.92, z: -181 },
-    ];
-    for (const p of placements) {
-      const mat = new THREE.MeshBasicMaterial({
-        map: this.palmTex,
-        transparent: true,
-        depthWrite: false,
-        depthTest: false,
-        fog: false,
+    // Twinkle stars (low-res field redrawn each frame).
+    for (let i = 0; i < 70; i++) {
+      this.starSeeds.push({
+        x: Math.floor(Math.random() * TEX_W),
+        y: Math.floor(Math.random() * (TEX_H * 0.55)),
+        tw: Math.random() * Math.PI * 2,
       });
-      this.palmMats.push(mat);
-      const m = new THREE.Mesh(this.palmGeo, mat);
-      m.scale.setScalar(p.s);
-      // Anchor the trunk bases roughly on the horizon line (haze at y≈6).
-      m.position.set(p.x, 6 + (56 * p.s) / 2 - 6, p.z);
-      m.renderOrder = -17;
-      this.palms.add(m);
     }
-    this.group.add(this.palms);
+
+    this.drawBaseSkyline();
+    this.disp2d.drawImage(this.baseCv, 0, 0);
+
+    this.tex = new THREE.CanvasTexture(this.dispCv);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.tex.magFilter = THREE.NearestFilter;
+    this.tex.minFilter = THREE.NearestFilter;
+    this.tex.generateMipmaps = false;
+    this.mat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, PLANE_H), this.mat);
+    this.mesh.position.set(0, 30, -180);
+    this.mesh.renderOrder = -20;
+    this.group.add(this.mesh);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 24, -180);
+      this.camera.lookAt(0, 30, -180);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.pulse = e.downbeat ? 1 : 0.55;
+      this.glitch = Math.max(this.glitch, e.downbeat ? 1 : 0.6);
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
   }
 
-  private buildPalmTexture(): THREE.CanvasTexture {
+  private makeCanvas(): HTMLCanvasElement {
     const cv = document.createElement("canvas");
-    cv.width = 128;
-    cv.height = 180;
-    const g = cv.getContext("2d")!;
-    g.fillStyle = "#000000";
-    // Trunk: a gently curved tapering column.
-    g.beginPath();
-    g.moveTo(58, 178);
-    g.quadraticCurveTo(72, 110, 64, 64);
-    g.lineTo(72, 64);
-    g.quadraticCurveTo(82, 112, 70, 178);
-    g.closePath();
-    g.fill();
-    // Crown: radiating fronds drawn as tapered quad strokes.
-    const cx = 66;
-    const cy = 60;
-    const fronds = [
-      { a: -2.5, len: 52 },
-      { a: -1.8, len: 60 },
-      { a: -1.1, len: 56 },
-      { a: -0.4, len: 50 },
-      { a: 0.4, len: 50 },
-      { a: 1.1, len: 56 },
-      { a: 1.8, len: 60 },
-      { a: 2.5, len: 52 },
-    ];
-    for (const f of fronds) {
-      const ex = cx + Math.cos(f.a - Math.PI / 2) * f.len;
-      const ey = cy + Math.sin(f.a - Math.PI / 2) * f.len + 10;
-      const mx = cx + Math.cos(f.a - Math.PI / 2) * f.len * 0.5;
-      const my = cy + Math.sin(f.a - Math.PI / 2) * f.len * 0.5;
-      g.beginPath();
-      g.moveTo(cx, cy);
-      g.quadraticCurveTo(mx, my - 8, ex, ey);
-      g.quadraticCurveTo(mx, my + 4, cx, cy);
-      g.closePath();
-      g.fill();
+    cv.width = TEX_W;
+    cv.height = TEX_H;
+    return cv;
+  }
+
+  // ---- Clean low-res skyline (sky gradient, stars, layered neon buildings).
+  private drawBaseSkyline(): void {
+    const g = this.base2d;
+    g.globalCompositeOperation = "source-over";
+    g.globalAlpha = 1;
+    const grad = g.createLinearGradient(0, 0, 0, TEX_H);
+    grad.addColorStop(0.0, "#05030f");
+    grad.addColorStop(0.5, "#170a35");
+    grad.addColorStop(0.82, "#3a0f5e");
+    grad.addColorStop(1.0, "#5a1170");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, TEX_W, TEX_H);
+
+    for (const s of this.starSeeds) {
+      const a = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.t * 3 + s.tw));
+      g.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      g.fillRect(s.x, s.y, 1, 1);
     }
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
+
+    // Back (dim) then front (bright neon) skyline bands for depth.
+    this.drawSkylineLayer(g, "#241046", 7, 11, 0.55, 1337);
+    this.drawSkylineLayer(g, null, 13, 19, 1.0, 90210);
+
+    // Waterline glow strip.
+    const refl = g.createLinearGradient(0, TEX_H - 14, 0, TEX_H);
+    refl.addColorStop(0, "rgba(0,240,255,0.0)");
+    refl.addColorStop(1, "rgba(0,240,255,0.22)");
+    g.fillStyle = refl;
+    g.fillRect(0, TEX_H - 14, TEX_W, 14);
+  }
+
+  // backFill non-null = dim silhouette band; null = lit neon front band.
+  private drawSkylineLayer(
+    g: CanvasRenderingContext2D,
+    backFill: string | null,
+    minH: number,
+    maxH: number,
+    bright: number,
+    seed0: number,
+  ): void {
+    const baseY = Math.floor(TEX_H * (backFill ? 0.62 : 0.78));
+    let x = -2;
+    let i = 0;
+    let seed = seed0;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    while (x < TEX_W) {
+      const w = 8 + Math.floor(rnd() * 12);
+      const h = minH + Math.floor(rnd() * (maxH - minH));
+      const topY = baseY - h;
+      const color = NEON[i % NEON.length];
+      if (backFill) {
+        g.fillStyle = backFill;
+        g.fillRect(x, topY, w, TEX_H - topY);
+      } else {
+        g.fillStyle = "#0c0820";
+        g.fillRect(x, topY, w, TEX_H - topY);
+        g.fillStyle = color;
+        g.globalAlpha = bright;
+        g.fillRect(x, topY, w, 1); // neon roofline
+        for (let wy = topY + 3; wy < TEX_H - 3; wy += 3) {
+          for (let wx = x + 1; wx < x + w - 1; wx += 2) {
+            if ((wx + wy + i) % 3 === 0 && rnd() < 0.6) g.fillRect(wx, wy, 1, 1);
+          }
+        }
+        g.globalAlpha = 1;
+      }
+      x += w + 1 + Math.floor(rnd() * 3);
+      i++;
+    }
+  }
+
+  // Draw the base into the channel scratch, tint it to one RGB channel via a
+  // "multiply" mask, and return it ready to be screened onto the display.
+  private tintChannel(mask: string): HTMLCanvasElement {
+    const c = this.chan2d;
+    c.globalCompositeOperation = "source-over";
+    c.globalAlpha = 1;
+    c.clearRect(0, 0, TEX_W, TEX_H);
+    c.drawImage(this.baseCv, 0, 0);
+    c.globalCompositeOperation = "multiply";
+    c.fillStyle = mask;
+    c.fillRect(0, 0, TEX_W, TEX_H);
+    c.globalCompositeOperation = "source-over";
+    return this.chanCv;
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * 5.5);
 
-    // Beat-pulse brightness pump (decays).
-    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 3.0);
-    this.skyMat.color.setScalar(1 + this.pulse * 0.22);
-    this.sunMat.color.setScalar(1 + this.pulse * 0.3);
-    this.sun.scale.setScalar(1 + this.pulse * 0.07 + Math.sin(this.t * 1.3) * 0.012);
-    this.hazeMat.opacity = 0.65 + this.pulse * 0.3 + Math.sin(this.t * 0.8) * 0.05;
-    // Palms hold their flat black; only their crowns sway a hair on the pulse.
-    const sway = Math.sin(this.t * 0.9) * 0.015 + this.pulse * 0.01;
-    for (const m of this.palms.children) m.rotation.z = sway;
+    this.drawBaseSkyline();
 
-    // Shake decay + camera jolt.
+    const d = this.disp2d;
+    d.globalCompositeOperation = "source-over";
+    d.globalAlpha = 1;
+    const gl = this.glitch;
+
+    if (gl <= 0.001) {
+      d.clearRect(0, 0, TEX_W, TEX_H);
+      d.drawImage(this.baseCv, 0, 0);
+    } else {
+      // Chromatic aberration: split into R / G / B channel copies, offset each
+      // horizontally, and screen them back together with "lighter".
+      const off = Math.round(gl * 6);
+      const jy = Math.round((Math.random() - 0.5) * gl * 3);
+      d.fillStyle = "#000000";
+      d.fillRect(0, 0, TEX_W, TEX_H);
+      d.globalCompositeOperation = "lighter";
+      d.globalAlpha = 1;
+      const red = this.tintChannel("#ff0000");
+      d.drawImage(red, -off, jy);
+      const grn = this.tintChannel("#00ff00");
+      d.drawImage(grn, 0, 0);
+      const blu = this.tintChannel("#0000ff");
+      d.drawImage(blu, off, -jy);
+
+      // Index-corruption sparks: random bright neon pixels.
+      const sparks = Math.floor(gl * 18);
+      for (let s = 0; s < sparks; s++) {
+        d.fillStyle = NEON[(s + ((Math.random() * NEON.length) | 0)) % NEON.length];
+        d.fillRect((Math.random() * TEX_W) | 0, (Math.random() * TEX_H) | 0, 1 + ((Math.random() * 2) | 0), 1);
+      }
+      d.globalCompositeOperation = "source-over";
+      d.globalAlpha = 1;
+    }
+    this.tex.needsUpdate = true;
+    this.mat.color.setScalar(1 + gl * 0.2);
+
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 6);
       if (this.camera) {
@@ -267,11 +253,11 @@ class Bg01 implements EddieBackgroundVariant {
           this.camBaseY + (Math.random() - 0.5) * m * 1.8,
           this.camBaseZ + (Math.random() - 0.5) * m,
         );
-        this.camera.lookAt(0, 24, -180);
+        this.camera.lookAt(0, 30, -180);
       }
     } else if (this.camera) {
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 24, -180);
+      this.camera.lookAt(0, 30, -180);
     }
   }
 
@@ -288,27 +274,18 @@ class Bg01 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.sky.geometry.dispose();
-    this.skyTex.dispose();
-    this.skyMat.dispose();
-    this.sun.geometry.dispose();
-    this.sunTex.dispose();
-    this.sunMat.dispose();
-    this.haze.geometry.dispose();
-    this.hazeTex.dispose();
-    this.hazeMat.dispose();
-    this.palmGeo.dispose();
-    this.palmTex.dispose();
-    for (const m of this.palmMats) m.dispose();
-    this.palmMats = [];
+    this.mesh.geometry.dispose();
+    this.tex.dispose();
+    this.mat.dispose();
+    this.starSeeds = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg01",
-  label: "Chrome Sunset",
-  blurb: "Airbrushed multi-band sunset, chrome banded sun, black palm silhouettes on a hazy horizon — pumps on the beat.",
+  label: "Chroma Crash",
+  blurb: "Pixely IIgs neon skyline that splits into RGB chromatic aberration + index-corruption sparks on every beat.",
   create: () => new Bg01(),
 };
 

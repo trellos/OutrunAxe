@@ -1,28 +1,25 @@
-// bg02 — "Neon Skyline". A wireframe/emissive neon city skyline against a
-// night-purple sky with a star + scanline field. Building windows flicker on the
-// beat; the whole skyline pumps brightness on the downbeat.
+// bg02 — "Datamosh City". A pixely Apple-IIgs / retro-computer neon city skyline
+// rendered to a LOW-RES CanvasTexture (chunky NearestFilter pixels, limited
+// palette) that DATAMOSHES ON THE BEAT: on each eddieBeatPulse the image tears
+// into horizontal blocks that shear sideways, smear pixel rows, and drop
+// corrupted color blocks — decaying back to a clean pixel image in ~150-220ms.
+// Downbeats tear harder.
 //
-// Visuals only (GDD §8): subscribes to the juice bus — eddieBeatPulse flickers
-// windows + pumps the neon, eddieShake jolts the parked camera. Sets
-// scene.background/fog in mount and RESTORES them in dispose, disposing every
-// geometry/material/texture and unsubscribing.
+// Visuals only (GDD §8): subscribes eddieBeatPulse (glitch burst) + eddieShake
+// (camera jolt). Sets+restores scene.background/fog, disposes every
+// geometry/material/texture, unsubscribes.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const SKY_W = 700;
-const SKY_H = 440;
-const NEON_COLORS = [0xff2bd6, 0x00f0ff, 0xffd02b, 0xff5a8a];
+const TEX_W = 192;
+const TEX_H = 120;
+const PLANE_W = 640;
+const PLANE_H = 400;
 
-interface Building {
-  edges: THREE.LineSegments;
-  edgeMat: THREE.LineBasicMaterial;
-  windows: THREE.Points;
-  winMat: THREE.PointsMaterial;
-  baseHue: THREE.Color;
-}
+const NEON = ["#00f0ff", "#ff2bd6", "#ffd02b", "#36e07a", "#ff5a8a"];
 
 class Bg02 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -30,234 +27,206 @@ class Bg02 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  private skyTex!: THREE.CanvasTexture;
-  private skyMat!: THREE.MeshBasicMaterial;
-  private sky!: THREE.Mesh;
-
-  private starTex!: THREE.CanvasTexture;
-  private starMat!: THREE.MeshBasicMaterial;
-  private stars!: THREE.Mesh;
-
-  private scanTex!: THREE.CanvasTexture;
-  private scanMat!: THREE.MeshBasicMaterial;
-  private scan!: THREE.Mesh;
-
-  private buildings: Building[] = [];
-  private buildingGeos: THREE.BufferGeometry[] = [];
+  private baseCv!: HTMLCanvasElement;
+  private base2d!: CanvasRenderingContext2D;
+  private dispCv!: HTMLCanvasElement;
+  private disp2d!: CanvasRenderingContext2D;
+  private tex!: THREE.CanvasTexture;
+  private mat!: THREE.MeshBasicMaterial;
+  private mesh!: THREE.Mesh;
 
   private camera: THREE.PerspectiveCamera | null = null;
-  private camBaseY = 10;
-  private camBaseZ = 70;
+  private camBaseY = 0;
+  private camBaseZ = 60;
 
   private offBeat?: () => void;
   private offShake?: () => void;
 
-  private pulse = 0;
-  private flicker = 0;
+  private glitch = 0;
   private shake = 0;
   private t = 0;
+  private starSeeds: { x: number; y: number; tw: number }[] = [];
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x0a0612);
+    ctx.scene.background = new THREE.Color(0x070310);
     ctx.scene.fog = null;
 
-    // --- Sky: deep night-purple vertical gradient.
-    const cv = document.createElement("canvas");
-    cv.width = 8;
-    cv.height = 256;
-    const c2d = cv.getContext("2d")!;
-    const grad = c2d.createLinearGradient(0, 0, 0, cv.height);
-    grad.addColorStop(0.0, "#05030f");
-    grad.addColorStop(0.5, "#170a35");
-    grad.addColorStop(0.82, "#3a0f5e");
-    grad.addColorStop(1.0, "#5a1170");
-    c2d.fillStyle = grad;
-    c2d.fillRect(0, 0, cv.width, cv.height);
-    this.skyTex = new THREE.CanvasTexture(cv);
-    this.skyTex.colorSpace = THREE.SRGBColorSpace;
-    this.skyMat = new THREE.MeshBasicMaterial({ map: this.skyTex, depthWrite: false, depthTest: false, fog: false });
-    this.sky = new THREE.Mesh(new THREE.PlaneGeometry(SKY_W, SKY_H), this.skyMat);
-    this.sky.position.set(0, 60, -210);
-    this.sky.renderOrder = -20;
-    this.group.add(this.sky);
+    this.baseCv = this.makeCanvas();
+    this.base2d = this.baseCv.getContext("2d")!;
+    this.dispCv = this.makeCanvas();
+    this.disp2d = this.dispCv.getContext("2d")!;
 
-    // --- Stars: scattered white dots stamped on a transparent canvas.
-    this.starTex = this.buildStarTexture();
-    this.starMat = new THREE.MeshBasicMaterial({
-      map: this.starTex,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      fog: false,
-    });
-    this.stars = new THREE.Mesh(new THREE.PlaneGeometry(SKY_W, SKY_H * 0.7), this.starMat);
-    this.stars.position.set(0, 90, -205);
-    this.stars.renderOrder = -19;
-    this.group.add(this.stars);
-
-    // --- Buildings: an emissive wireframe skyline with point-sprite windows.
-    let cursorX = -200;
-    let idx = 0;
-    while (cursorX < 200) {
-      const w = 18 + Math.random() * 26;
-      const h = 40 + Math.random() * 130;
-      const d = 16 + Math.random() * 18;
-      const color = new THREE.Color(NEON_COLORS[idx % NEON_COLORS.length]);
-      this.buildings.push(this.buildBuilding(cursorX + w / 2, w, h, d, color));
-      cursorX += w + 6 + Math.random() * 10;
-      idx++;
+    for (let i = 0; i < 60; i++) {
+      this.starSeeds.push({
+        x: Math.floor(Math.random() * TEX_W),
+        y: Math.floor(Math.random() * (TEX_H * 0.5)),
+        tw: Math.random() * Math.PI * 2,
+      });
     }
 
-    // --- Scanlines: faint horizontal CRT bands overlaid on everything far.
-    this.scanTex = this.buildScanTexture();
-    this.scanMat = new THREE.MeshBasicMaterial({
-      map: this.scanTex,
-      transparent: true,
-      opacity: 0.18,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      depthTest: false,
-      fog: false,
-    });
-    this.scan = new THREE.Mesh(new THREE.PlaneGeometry(SKY_W, SKY_H), this.scanMat);
-    this.scan.position.set(0, 60, -160);
-    this.scan.renderOrder = -10;
-    this.group.add(this.scan);
+    this.drawBaseSkyline();
+    this.disp2d.drawImage(this.baseCv, 0, 0);
+
+    this.tex = new THREE.CanvasTexture(this.dispCv);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.tex.magFilter = THREE.NearestFilter;
+    this.tex.minFilter = THREE.NearestFilter;
+    this.tex.generateMipmaps = false;
+    this.mat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, PLANE_H), this.mat);
+    this.mesh.position.set(0, 30, -180);
+    this.mesh.renderOrder = -20;
+    this.group.add(this.mesh);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 36, -180);
+      this.camera.lookAt(0, 30, -180);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.pulse = e.downbeat ? 1 : 0.55;
-      this.flicker = e.downbeat ? 1 : 0.7;
+      this.glitch = Math.max(this.glitch, e.downbeat ? 1 : 0.6);
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
   }
 
-  private buildBuilding(x: number, w: number, h: number, d: number, color: THREE.Color): Building {
-    // Emissive wireframe box edges.
-    const boxGeo = new THREE.BoxGeometry(w, h, d);
-    const edgeGeo = new THREE.EdgesGeometry(boxGeo);
-    boxGeo.dispose();
-    this.buildingGeos.push(edgeGeo);
-    const edgeMat = new THREE.LineBasicMaterial({
-      color: color.clone(),
-      transparent: true,
-      opacity: 0.9,
-      fog: false,
-    });
-    const edges = new THREE.LineSegments(edgeGeo, edgeMat);
-    edges.position.set(x, h / 2 - 18, -150 - Math.random() * 20);
-    edges.renderOrder = -15;
-    this.group.add(edges);
-
-    // Windows: a grid of point sprites on the building's near face.
-    const winPts: number[] = [];
-    const cols = Math.max(2, Math.floor(w / 7));
-    const rows = Math.max(3, Math.floor(h / 9));
-    const halfW = w / 2 - 3;
-    const halfH = h / 2 - 4;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (Math.random() < 0.28) continue; // some windows dark
-        const wx = cols > 1 ? -halfW + (c / (cols - 1)) * (halfW * 2) : 0;
-        const wy = rows > 1 ? -halfH + (r / (rows - 1)) * (halfH * 2) : 0;
-        winPts.push(wx, wy, d / 2 + 0.4);
-      }
-    }
-    const winGeo = new THREE.BufferGeometry();
-    winGeo.setAttribute("position", new THREE.Float32BufferAttribute(winPts, 3));
-    this.buildingGeos.push(winGeo);
-    const winMat = new THREE.PointsMaterial({
-      color: color.clone().offsetHSL(0, -0.1, 0.25),
-      size: 2.2,
-      sizeAttenuation: true,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false,
-    });
-    const windows = new THREE.Points(winGeo, winMat);
-    windows.position.copy(edges.position);
-    windows.renderOrder = -14;
-    windows.frustumCulled = false;
-    this.group.add(windows);
-
-    return { edges, edgeMat, windows, winMat, baseHue: color.clone() };
+  private makeCanvas(): HTMLCanvasElement {
+    const cv = document.createElement("canvas");
+    cv.width = TEX_W;
+    cv.height = TEX_H;
+    return cv;
   }
 
-  private buildStarTexture(): THREE.CanvasTexture {
-    const cv = document.createElement("canvas");
-    cv.width = 512;
-    cv.height = 256;
-    const g = cv.getContext("2d")!;
-    g.clearRect(0, 0, 512, 256);
-    for (let i = 0; i < 220; i++) {
-      const x = Math.random() * 512;
-      const y = Math.random() * 256;
-      const r = Math.random() * 1.3 + 0.3;
-      g.globalAlpha = 0.4 + Math.random() * 0.6;
-      g.fillStyle = Math.random() < 0.15 ? "#00f0ff" : "#ffffff";
-      g.beginPath();
-      g.arc(x, y, r, 0, Math.PI * 2);
-      g.fill();
-    }
+  private drawBaseSkyline(): void {
+    const g = this.base2d;
+    g.globalCompositeOperation = "source-over";
     g.globalAlpha = 1;
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
+    const grad = g.createLinearGradient(0, 0, 0, TEX_H);
+    grad.addColorStop(0.0, "#03020c");
+    grad.addColorStop(0.5, "#12082c");
+    grad.addColorStop(0.82, "#2c0b4e");
+    grad.addColorStop(1.0, "#4a0d62");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, TEX_W, TEX_H);
+
+    for (const s of this.starSeeds) {
+      const a = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.t * 2.6 + s.tw));
+      g.fillStyle = `rgba(200,255,255,${a.toFixed(3)})`;
+      g.fillRect(s.x, s.y, 1, 1);
+    }
+
+    this.drawSkylineLayer(g, "#1c0a3a", 8, 12, 0.5, 4242);
+    this.drawSkylineLayer(g, null, 14, 22, 1.0, 71755);
+
+    const refl = g.createLinearGradient(0, TEX_H - 16, 0, TEX_H);
+    refl.addColorStop(0, "rgba(255,43,214,0.0)");
+    refl.addColorStop(1, "rgba(255,43,214,0.22)");
+    g.fillStyle = refl;
+    g.fillRect(0, TEX_H - 16, TEX_W, 16);
   }
 
-  private buildScanTexture(): THREE.CanvasTexture {
-    const cv = document.createElement("canvas");
-    cv.width = 4;
-    cv.height = 256;
-    const g = cv.getContext("2d")!;
-    g.clearRect(0, 0, 4, 256);
-    g.fillStyle = "#00f0ff";
-    for (let y = 0; y < 256; y += 3) g.fillRect(0, y, 4, 1);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(1, 30);
-    return tex;
+  private drawSkylineLayer(
+    g: CanvasRenderingContext2D,
+    backFill: string | null,
+    minH: number,
+    maxH: number,
+    bright: number,
+    seed0: number,
+  ): void {
+    const baseY = Math.floor(TEX_H * (backFill ? 0.6 : 0.78));
+    let x = -2;
+    let i = 0;
+    let seed = seed0;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    while (x < TEX_W) {
+      const w = 9 + Math.floor(rnd() * 13);
+      const h = minH + Math.floor(rnd() * (maxH - minH));
+      const topY = baseY - h;
+      const color = NEON[i % NEON.length];
+      if (backFill) {
+        g.fillStyle = backFill;
+        g.fillRect(x, topY, w, TEX_H - topY);
+      } else {
+        g.fillStyle = "#0a0618";
+        g.fillRect(x, topY, w, TEX_H - topY);
+        g.fillStyle = color;
+        g.globalAlpha = bright;
+        g.fillRect(x, topY, w, 1);
+        // A neon vertical edge stripe (antenna) on some buildings.
+        if (rnd() < 0.4) g.fillRect(x + (w >> 1), topY - 3, 1, 4);
+        for (let wy = topY + 3; wy < TEX_H - 3; wy += 3) {
+          for (let wx = x + 2; wx < x + w - 1; wx += 2) {
+            if ((wx + wy * 2 + i) % 4 < 2 && rnd() < 0.55) g.fillRect(wx, wy, 1, 1);
+          }
+        }
+        g.globalAlpha = 1;
+      }
+      x += w + 1 + Math.floor(rnd() * 3);
+      i++;
+    }
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * 5.0);
 
-    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 3.0);
-    if (this.flicker > 0) this.flicker = Math.max(0, this.flicker - dt * 4.5);
+    this.drawBaseSkyline();
 
-    this.skyMat.color.setScalar(1 + this.pulse * 0.18);
-    this.starMat.opacity = 0.7 + this.pulse * 0.3 + Math.sin(this.t * 2.0) * 0.08;
-    this.scanMat.opacity = 0.14 + this.pulse * 0.12;
-    // Slow scanline drift for the rolling-CRT feel.
-    this.scanTex.offset.y = (this.t * 0.05) % 1;
+    const d = this.disp2d;
+    d.globalCompositeOperation = "source-over";
+    d.globalAlpha = 1;
+    const gl = this.glitch;
 
-    const neon = 1 + this.pulse * 0.6;
-    for (let i = 0; i < this.buildings.length; i++) {
-      const b = this.buildings[i];
-      b.edgeMat.opacity = 0.65 + this.pulse * 0.35;
-      b.edgeMat.color.copy(b.baseHue).multiplyScalar(Math.min(1.0, neon));
-      // Per-building window flicker, phase-offset so they don't all blink in sync.
-      const ph = Math.sin(this.t * 9 + i * 1.7) * 0.5 + 0.5;
-      const lit = 0.55 + this.flicker * 0.45 * ph;
-      b.winMat.opacity = Math.min(1, 0.5 + lit * 0.5);
-      b.winMat.size = 2.0 + this.flicker * 1.4 * ph;
+    if (gl <= 0.001) {
+      d.clearRect(0, 0, TEX_W, TEX_H);
+      d.drawImage(this.baseCv, 0, 0);
+    } else {
+      // Datamosh: slice into horizontal bands and shear each sideways. Some
+      // bands get vertically smeared (stretched) for the "frozen p-frame" look.
+      d.clearRect(0, 0, TEX_W, TEX_H);
+      const bands = 6 + Math.floor(gl * 8);
+      const bandH = Math.ceil(TEX_H / bands);
+      let seed = (this.t * 1000) | 0;
+      const rnd = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      for (let b = 0; b < bands; b++) {
+        const sy = b * bandH;
+        const h = Math.min(bandH, TEX_H - sy);
+        if (h <= 0) break;
+        const shift = Math.round((rnd() - 0.5) * gl * 28);
+        const smear = rnd() < gl * 0.4 ? 1 + Math.floor(rnd() * 3) : 1; // vertical stretch
+        d.drawImage(this.baseCv, 0, sy, TEX_W, h, shift, sy, TEX_W, h * smear);
+        // Wrap the sheared band so the tear edge fills (no black gap).
+        if (shift > 0) d.drawImage(this.baseCv, TEX_W - shift, sy, shift, h, 0, sy, shift, h);
+        else if (shift < 0) d.drawImage(this.baseCv, 0, sy, -shift, h, TEX_W + shift, sy, -shift, h);
+      }
+      // Corrupted color blocks dropped over the tear.
+      const blocks = Math.floor(gl * 6);
+      d.globalCompositeOperation = "lighter";
+      for (let k = 0; k < blocks; k++) {
+        d.globalAlpha = 0.3 + rnd() * 0.4;
+        d.fillStyle = NEON[(rnd() * NEON.length) | 0];
+        const bw = 8 + ((rnd() * 30) | 0);
+        const bh = 2 + ((rnd() * 5) | 0);
+        d.fillRect((rnd() * TEX_W) | 0, (rnd() * TEX_H) | 0, bw, bh);
+      }
+      d.globalCompositeOperation = "source-over";
+      d.globalAlpha = 1;
     }
+    this.tex.needsUpdate = true;
+    this.mat.color.setScalar(1 + gl * 0.18);
 
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 6);
@@ -268,11 +237,11 @@ class Bg02 implements EddieBackgroundVariant {
           this.camBaseY + (Math.random() - 0.5) * m * 1.8,
           this.camBaseZ + (Math.random() - 0.5) * m,
         );
-        this.camera.lookAt(0, 36, -180);
+        this.camera.lookAt(0, 30, -180);
       }
     } else if (this.camera) {
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 36, -180);
+      this.camera.lookAt(0, 30, -180);
     }
   }
 
@@ -289,31 +258,18 @@ class Bg02 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.sky.geometry.dispose();
-    this.skyTex.dispose();
-    this.skyMat.dispose();
-    this.stars.geometry.dispose();
-    this.starTex.dispose();
-    this.starMat.dispose();
-    this.scan.geometry.dispose();
-    this.scanTex.dispose();
-    this.scanMat.dispose();
-
-    for (const b of this.buildings) {
-      b.edgeMat.dispose();
-      b.winMat.dispose();
-    }
-    for (const g of this.buildingGeos) g.dispose();
-    this.buildings = [];
-    this.buildingGeos = [];
+    this.mesh.geometry.dispose();
+    this.tex.dispose();
+    this.mat.dispose();
+    this.starSeeds = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg02",
-  label: "Neon Skyline",
-  blurb: "Emissive wireframe city skyline against a night-purple sky with stars + scanlines — windows flicker on the beat.",
+  label: "Datamosh City",
+  blurb: "Pixely IIgs neon skyline that tears into datamosh block-shear + corrupted color blocks on every beat.",
   create: () => new Bg02(),
 };
 

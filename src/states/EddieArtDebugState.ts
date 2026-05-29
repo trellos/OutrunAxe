@@ -59,6 +59,7 @@ export class EddieArtDebugState implements GameState {
   /** Selected variant indices (0-based), from ?bg=N / ?fx=N (1-based in the URL). */
   private bgIndex = 0;
   private fxIndex = 0;
+  private glitchHold = false;
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -72,6 +73,9 @@ export class EddieArtDebugState implements GameState {
     const params = new URLSearchParams(location.search);
     this.bgIndex = Math.max(0, (parseInt(params.get("bg") ?? "1", 10) || 1) - 1) % BACKGROUNDS.length;
     this.fxIndex = Math.max(0, (parseInt(params.get("fx") ?? "1", 10) || 1) - 1) % PARTICLES.length;
+    // ?glitch=1 holds the beat-glitch saturated (continuous downbeat pulses) so a
+    // still screenshot reliably captures the on-beat glitch for review.
+    this.glitchHold = params.get("glitch") === "1";
 
     this.rig = createEddieArt("option-1");
     this.rig.mount({
@@ -127,6 +131,10 @@ export class EddieArtDebugState implements GameState {
       return;
     }
     this.t += dt;
+    if (this.glitchHold) {
+      // Saturate the beat-glitch every frame so a still captures it (review only).
+      this.juice.emit("eddieBeatPulse", { beatInMeasure: 0, downbeat: true, audioTime: this.t });
+    }
     const beatDur = 60 / this.bpm;
 
     // Synthetic beat clock: fire eddieBeatPulse every quarter, advance the

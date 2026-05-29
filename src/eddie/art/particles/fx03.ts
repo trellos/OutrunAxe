@@ -1,45 +1,46 @@
-// fx03 — "Cassette Confetti": little 80s icons (tape-reel rectangles, triangles,
-// stars) tumbling with rotation and a paper-confetti flutter as they home to the
-// score readout. Pure DOM, no Three.js. Default-exports an EddieParticlesDef.
+// fx03 — "Dither Sparkle": 8-bit starburst sparkles built from a dithered pixel
+// cross (a plus-shaped cluster of chunky pixels with a checkerboard dither in the
+// glow). Each sparkle pops out in a quantized starburst, twinkles by toggling its
+// dither pattern on/off (a 2-frame on/off flicker like a IIgs sprite), and homes
+// to the score on a pixel-snapped path. A fraction are tiny pixel digits.
+// Pure DOM, no Three.js.
 //
-// Motion: each piece is flung outward/up then homes toward the score on a
-// quadratic Bezier. On top of the path it flutters — a sinusoidal sideways sway
-// plus a scaleX "card flip" that simulates paper catching the air — while
-// tumbling via rotateZ. Shapes are drawn with CSS (clip-path triangle/star, a
-// two-window cassette reel rectangle). dispose() removes every live element + the
-// injected <style> and unsubscribes.
+// Evolved from the old fx05 "Pixel Burst": keeps crisp pixel-grid snapping and
+// digit sprites, but the plain blocks become dithered twinkling starbursts drawn
+// with CSS conic/repeating gradients on a pixel grid. Sparkles self-remove on
+// arrival; dispose() removes every element + injected <style> and unsubscribes.
 
 import type { EddieParticlesDef, EddieParticlesVariant } from "./types";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 
-type Shape = "reel" | "triangle" | "star";
+const STYLE_ID = "eddie-fx03-dither-style";
+const STEP = 4; // px snap grid
+const DIGITS = "0123456789";
+const PALETTE = ["#00f0ff", "#ff2bd6", "#ffd02b", "#c7ff2b", "#ffffff"];
 
-interface Confetti {
+interface Spark {
   el: HTMLDivElement;
+  isDigit: boolean;
   x0: number;
   y0: number;
-  cx: number;
-  cy: number;
+  sx: number; // starburst peak
+  sy: number;
   t: number;
   dur: number;
-  rot: number;
-  spin: number; // deg/sec tumble
-  flutterPhase: number;
-  flutterRate: number;
-  flutterAmp: number; // px sideways sway
   size: number;
+  twPhase: number;
+  twRate: number;
+  spin: number; // sparkle rotation deg/sec
+  rot: number;
 }
-
-const STYLE_ID = "eddie-fx03-style";
-const SHAPES: Shape[] = ["reel", "triangle", "star"];
 
 class Fx03 implements EddieParticlesVariant {
   private parent: HTMLElement | null = null;
   private resolveScore: (() => { x: number; y: number }) | null = null;
-  private pieces: Confetti[] = [];
+  private sparks: Spark[] = [];
   private off?: () => void;
-  private style?: HTMLStyleElement;
+  private styleEl?: HTMLStyleElement;
 
   mount(ctx: {
     hudParent: HTMLElement;
@@ -48,160 +49,173 @@ class Fx03 implements EddieParticlesVariant {
   }): void {
     this.parent = ctx.hudParent;
     this.resolveScore = ctx.resolveScore;
-
-    if (!document.getElementById(STYLE_ID)) {
-      const style = document.createElement("style");
-      style.id = STYLE_ID;
-      style.textContent = `
-.eddie-fx03-piece {
-  position: absolute;
-  pointer-events: none;
-  will-change: transform, opacity;
-  transform-origin: 50% 50%;
-}
-.eddie-fx03-reel {
-  border-radius: 2px;
-  background: currentColor;
-  box-shadow: 0 0 5px currentColor;
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-}
-.eddie-fx03-reel::before,
-.eddie-fx03-reel::after {
-  content: "";
-  width: 28%;
-  height: 60%;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.55);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4);
-}
-.eddie-fx03-triangle {
-  background: currentColor;
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-  filter: drop-shadow(0 0 4px currentColor);
-}
-.eddie-fx03-star {
-  background: currentColor;
-  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
-  filter: drop-shadow(0 0 4px currentColor);
-}`;
-      document.head.appendChild(style);
-      this.style = style;
-    }
-
+    this.injectStyle();
     this.off = ctx.juice.on("eddieParticles", (e) => {
       this.spawn(e.from.x, e.from.y, Math.max(1, Math.min(40, e.count)), e.color);
     });
   }
 
+  private injectStyle(): void {
+    if (document.getElementById(STYLE_ID)) return;
+    const s = document.createElement("style");
+    s.id = STYLE_ID;
+    // The sparkle is a plus-shaped cross via CSS mask, filled with a checkerboard
+    // dither (repeating conic gradient on a small pixel grid). image-rendering
+    // pixelated keeps the dither crisp/chunky.
+    s.textContent = `
+.eddie-fx03-spark{position:absolute;left:0;top:0;pointer-events:none;
+  image-rendering:pixelated;will-change:transform,opacity;
+  background:
+    repeating-conic-gradient(currentColor 0 25%, transparent 0 50%) 0 0 / 4px 4px,
+    radial-gradient(closest-side, currentColor, transparent);
+  -webkit-mask:
+    linear-gradient(#000 0 0) center/100% 34% no-repeat,
+    linear-gradient(#000 0 0) center/34% 100% no-repeat;
+  mask:
+    linear-gradient(#000 0 0) center/100% 34% no-repeat,
+    linear-gradient(#000 0 0) center/34% 100% no-repeat;
+  filter:drop-shadow(0 0 5px currentColor);}
+.eddie-fx03-digit{position:absolute;left:0;top:0;pointer-events:none;
+  font-family:"Courier New",monospace;font-weight:900;line-height:1;
+  -webkit-font-smoothing:none;image-rendering:pixelated;will-change:transform,opacity;
+  text-shadow:0 0 6px currentColor,1px 1px 0 rgba(0,0,0,.6);}`;
+    document.head.appendChild(s);
+    this.styleEl = s;
+  }
+
   private spawn(x: number, y: number, count: number, color: string): void {
     if (!this.parent) return;
     const rect = this.parent.getBoundingClientRect();
-    const localX = x - rect.left;
-    const localY = y - rect.top;
+    const lx = x - rect.left;
+    const ly = y - rect.top;
 
     for (let i = 0; i < count; i++) {
-      const jx = (Math.random() - 0.5) * 48;
-      const jy = (Math.random() - 0.5) * 48;
-      const sx = localX + jx;
-      const sy = localY + jy;
-
-      const shape = SHAPES[i % SHAPES.length];
-      const size = 9 + Math.random() * 8;
+      const isDigit = Math.random() < 0.28;
+      const x0 = snap(lx + (Math.random() - 0.5) * 44);
+      const y0 = snap(ly + (Math.random() - 0.5) * 44);
+      const pal = PALETTE[(Math.random() * PALETTE.length) | 0] || color;
 
       const el = document.createElement("div");
-      el.style.color = color;
-      if (shape === "reel") {
-        el.className = "eddie-fx03-piece eddie-fx03-reel";
-        el.style.width = `${size * 1.6}px`;
-        el.style.height = `${size}px`;
-      } else if (shape === "triangle") {
-        el.className = "eddie-fx03-piece eddie-fx03-triangle";
-        el.style.width = `${size}px`;
-        el.style.height = `${size}px`;
+      let size: number;
+      if (isDigit) {
+        size = 12 + Math.random() * 8;
+        el.className = "eddie-fx03-digit";
+        el.textContent = DIGITS[(Math.random() * 10) | 0];
+        el.style.color = pal;
+        el.style.fontSize = `${size}px`;
       } else {
-        el.className = "eddie-fx03-piece eddie-fx03-star";
-        el.style.width = `${size}px`;
-        el.style.height = `${size}px`;
+        size = STEP * (3 + ((Math.random() * 3) | 0)); // 12..20 px sparkles
+        el.className = "eddie-fx03-spark";
+        el.style.color = pal;
+        sizePx(el, size);
       }
       this.parent.appendChild(el);
 
-      // Toss up and out, then home in — confetti pops before it settles.
-      const cx = sx + (Math.random() - 0.5) * 150;
-      const cy = sy - 60 - Math.random() * 130;
+      // Quantized starburst peak: pop outward, biased upward like an arcade twinkle.
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 26 + Math.random() * 64;
+      const sx = snap(x0 + Math.cos(ang) * dist);
+      const sy = snap(y0 + Math.sin(ang) * dist - 22);
 
-      this.pieces.push({
+      this.sparks.push({
         el,
-        x0: sx,
-        y0: sy,
-        cx,
-        cy,
+        isDigit,
+        x0,
+        y0,
+        sx,
+        sy,
         t: 0,
-        dur: 0.62 + Math.random() * 0.45,
-        rot: Math.random() * 360,
-        spin: (Math.random() < 0.5 ? -1 : 1) * (160 + Math.random() * 320),
-        flutterPhase: Math.random() * Math.PI * 2,
-        flutterRate: 6 + Math.random() * 6,
-        flutterAmp: 6 + Math.random() * 10,
+        dur: 0.6 + Math.random() * 0.4,
         size,
+        twPhase: Math.random() * Math.PI * 2,
+        twRate: 30 + Math.random() * 34,
+        spin: (Math.random() < 0.5 ? -1 : 1) * (60 + Math.random() * 180),
+        rot: Math.random() * 90,
       });
     }
   }
 
   update(dt: number): void {
-    if (!this.parent || !this.resolveScore || this.pieces.length === 0) return;
+    if (!this.parent || !this.resolveScore || this.sparks.length === 0) return;
     const rect = this.parent.getBoundingClientRect();
     const score = this.resolveScore();
     const tx = score.x - rect.left;
     const ty = score.y - rect.top;
+    const BURST = 0.3; // fraction of life spent in the starburst pop
 
-    for (let i = this.pieces.length - 1; i >= 0; i--) {
-      const p = this.pieces[i];
+    for (let i = this.sparks.length - 1; i >= 0; i--) {
+      const p = this.sparks[i];
       p.t += dt / p.dur;
       if (p.t >= 1) {
         p.el.remove();
-        this.pieces.splice(i, 1);
+        this.sparks.splice(i, 1);
         continue;
       }
-      const e = p.t * p.t * (3 - 2 * p.t); // smoothstep along the homing path
-      const u = 1 - e;
-      let x = u * u * p.x0 + 2 * u * e * p.cx + e * e * tx;
-      const y = u * u * p.y0 + 2 * u * e * p.cy + e * e * ty;
 
-      // Flutter: sideways sway that eases out as it nears the target.
-      p.flutterPhase += p.flutterRate * dt;
-      x += Math.sin(p.flutterPhase) * p.flutterAmp * (1 - e);
+      let x: number;
+      let y: number;
+      let baseOpacity = 1;
+      if (p.t < BURST) {
+        const k = p.t / BURST;
+        const o = backOut(k);
+        x = p.x0 + (p.sx - p.x0) * o;
+        y = p.y0 + (p.sy - p.y0) * o;
+      } else {
+        const k = (p.t - BURST) / (1 - BURST);
+        const e = k * k * (3 - 2 * k);
+        x = p.sx + (tx - p.sx) * e;
+        y = p.sy + (ty - p.sy) * e;
+        if (k > 0.8) baseOpacity = (1 - k) / 0.2;
+      }
+      x = snap(x);
+      y = snap(y);
 
-      // Tumble + paper "card flip" (scaleX driven by a second sine).
+      // Twinkle: a 2-state on/off flicker (square wave) so the sparkle reads as a
+      // toggling 8-bit sprite rather than a smooth fade.
+      p.twPhase += p.twRate * dt;
+      const on = Math.sin(p.twPhase) > -0.25 ? 1 : 0.25;
       p.rot += p.spin * dt;
-      const flip = 0.35 + 0.65 * Math.abs(Math.cos(p.flutterPhase * 0.9));
-      const scale = 1 - e * 0.4;
-      const fade = e < 0.85 ? 1 : Math.max(0, (1 - e) / 0.15);
 
-      p.el.style.left = `${x - p.size / 2}px`;
-      p.el.style.top = `${y - p.size / 2}px`;
-      p.el.style.transform = `rotate(${p.rot}deg) scale(${scale}) scaleX(${flip})`;
-      p.el.style.opacity = `${fade}`;
+      const scale = p.t < BURST ? backOut(p.t / BURST) : 1 - (p.t - BURST) * 0.35;
+      const rot = p.isDigit ? 0 : p.rot;
+      p.el.style.transform =
+        `translate(${x}px,${y}px) translate(-50%,-50%) rotate(${rot}deg) scale(${Math.max(0.1, scale)})`;
+      p.el.style.opacity = `${baseOpacity * on}`;
     }
   }
 
   dispose(): void {
     this.off?.();
     this.off = undefined;
-    for (const p of this.pieces) p.el.remove();
-    this.pieces = [];
-    if (this.style && this.style.parentNode) this.style.parentNode.removeChild(this.style);
-    this.style = undefined;
+    for (const p of this.sparks) p.el.remove();
+    this.sparks = [];
+    this.styleEl?.remove();
+    this.styleEl = undefined;
     this.parent = null;
     this.resolveScore = null;
   }
 }
 
+function snap(v: number): number {
+  return Math.round(v / STEP) * STEP;
+}
+
+function backOut(k: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  const m = k - 1;
+  return 1 + c3 * m * m * m + c1 * m * m;
+}
+
+function sizePx(el: HTMLDivElement, size: number): void {
+  el.style.width = `${size}px`;
+  el.style.height = `${size}px`;
+}
+
 const def: EddieParticlesDef = {
   id: "fx03",
-  label: "Cassette Confetti",
-  blurb: "Tape reels, triangles and stars tumble and flutter like paper confetti as they home in on the score.",
+  label: "Dither Sparkle",
+  blurb: "Dithered 8-bit star-crosses pop in a pixel starburst, twinkling on/off as they home to the score.",
   create: () => new Fx03(),
 };
 

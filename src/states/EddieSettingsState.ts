@@ -247,7 +247,7 @@ export class EddieSettingsState implements GameState {
       new URLSearchParams(location.search).get("theme") ?? "0",
       10,
     );
-    if (themeN >= 1 && themeN <= 4) overlay.classList.add(`eddie-theme-${themeN}`);
+    if (themeN >= 1 && themeN <= 6) overlay.classList.add(`eddie-theme-${themeN}`);
 
     overlay.innerHTML = `
       <div class="levelselect-inner">
@@ -355,7 +355,7 @@ export class EddieSettingsState implements GameState {
     wrap.style.position = "relative";
     const label = document.createElement("div");
     label.className = "menupulse-label";
-    label.textContent = "SIGNAL CHAIN";
+    label.textContent = "GUITAR";
     wrap.appendChild(label);
 
     const canvas = document.createElement("canvas");
@@ -395,6 +395,15 @@ export class EddieSettingsState implements GameState {
     // Register the beat listener BEFORE startPreroll so beat 0 (which fires
     // synchronously inside startPreroll) is caught and opens the first window.
     this.offBeat = this.conductor.onBeat((info) => {
+      // Beat-synced glitch hook: theme CSS reacts to .eddie-beat (every beat) and
+      // .eddie-beat-down (downbeat) to flicker/RGB-split the settings UI in time.
+      const root = this.overlay;
+      if (root) {
+        const down = info.beat % BEATS === 0;
+        root.classList.add("eddie-beat");
+        if (down) root.classList.add("eddie-beat-down");
+        window.setTimeout(() => root.classList.remove("eddie-beat", "eddie-beat-down"), 110);
+      }
       if (info.beat % BEATS === 0) {
         this.measureStart = info.time;
         this.bars.reset();

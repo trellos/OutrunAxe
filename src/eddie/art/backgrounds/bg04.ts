@@ -1,34 +1,39 @@
-// bg04 — "VHS Tunnel" — dead-channel analog video tunnel.
+// bg04 — "Pixel Skyline / Wireframe Boot" — a pixely retro-computer evolution of
+// the old "Neon Skyline" motif. The whole scene is ONE low-res CanvasTexture
+// (160x100) rendered with NearestFilter so it shows as chunky, dithered pixels
+// on a fullscreen quad — think an Apple IIgs city demo booting up.
 //
-// A low-res CanvasTexture redrawn every frame as analog video garbage: grain,
-// horizontal chroma color bands, a rolling tracking bar, and a torn
-// head-switching strip at the very bottom. The texture is wrapped onto the
-// inside of a long open cylinder so it reads as a tunnel of screen static
-// rushing past the camera. On the beat the noise intensifies, the chroma
-// saturates, and the tracking bar jumps — a TV losing sync to the kick drum.
+// Glitch flavor: WIREFRAME-TO-SOLID pixel flicker. Between beats the skyline
+// settles into a clean filled-pixel image; on each eddieBeatPulse a short glitch
+// burst (~120-220ms, downbeat stronger) tears the image — buildings snap to bare
+// wireframe outlines, channels split sideways, scanlines jump, and pixel rows
+// drop out — then it re-solidifies as the burst decays.
 //
-// Visuals only: subscribes to eddieBeatPulse (intensity pump) and eddieShake
-// (camera jolt), sets+restores scene.background/fog, and disposes every
-// geometry/material/texture on teardown.
+// Visuals only (GDD §8): subscribes to eddieBeatPulse (glitch burst) and
+// eddieShake (camera jolt), sets+restores scene.background/fog, disposes every
+// geometry/material/texture and unsubscribes.
 
 import * as THREE from "three";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-// Deliberately low-res so the static looks chunky and analog, not crisp.
-const NOISE_W = 160;
-const NOISE_H = 120;
-const TUNNEL_R = 90;
-const TUNNEL_LEN = 520;
+const TEX_W = 160;
+const TEX_H = 100;
 
-// 80s broadcast chroma bands cycled through the color-burst stripes.
-const CHROMA = [
-  [255, 43, 214], // #ff2bd6 magenta
-  [0, 240, 255], // #00f0ff cyan
-  [255, 208, 43], // #ffd02b amber
-  [120, 60, 200], // violet
-];
+// Limited dithered Apple-IIgs-ish palette + neon accents.
+const SKY_TOP = "#0a0612";
+const SKY_MID = "#241047";
+const SKY_LOW = "#5a1170";
+const NEON = ["#ff2bd6", "#00f0ff", "#ffd02b", "#ff5a8a"];
+
+interface PxBuilding {
+  x: number; // left edge in texture px
+  w: number;
+  topY: number; // y of the roofline (smaller = taller)
+  neon: number; // index into NEON
+  windowSeed: number;
+}
 
 class Bg04 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
@@ -38,13 +43,11 @@ class Bg04 implements EddieBackgroundVariant {
 
   private canvas!: HTMLCanvasElement;
   private c2d!: CanvasRenderingContext2D;
-  private image!: ImageData;
   private tex!: THREE.CanvasTexture;
-  private tunnel!: THREE.Mesh;
-  private tunnelMat!: THREE.MeshBasicMaterial;
-  private vignette!: THREE.Mesh;
-  private vignetteMat!: THREE.MeshBasicMaterial;
-  private vignetteTex!: THREE.CanvasTexture;
+  private quad!: THREE.Mesh;
+  private quadMat!: THREE.MeshBasicMaterial;
+
+  private buildings: PxBuilding[] = [];
 
   private camera: THREE.PerspectiveCamera | null = null;
   private camBaseY = 0;
@@ -53,189 +56,241 @@ class Bg04 implements EddieBackgroundVariant {
   private offBeat?: () => void;
   private offShake?: () => void;
 
-  private pulse = 0; // 0..1 decaying intensity pump
+  private glitch = 0; // 0..1 glitch-burst intensity, decays fast
+  private glitchDecay = 6; // per-second decay (set per pulse for 120-220ms)
   private shake = 0;
   private t = 0;
-  private trackingY = 0.5; // 0..1 rolling tracking-bar position
-  private redrawAccum = 0; // throttles the noise redraw a touch
+  private starField: { x: number; y: number; c: string }[] = [];
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x05030a);
-    ctx.scene.fog = new THREE.Fog(0x05030a, 60, TUNNEL_LEN * 0.95);
+    ctx.scene.background = new THREE.Color(0x0a0612);
+    ctx.scene.fog = null;
 
-    // --- Noise canvas. Drawn into an ImageData buffer each redraw for speed.
+    // --- Pixel canvas.
     this.canvas = document.createElement("canvas");
-    this.canvas.width = NOISE_W;
-    this.canvas.height = NOISE_H;
+    this.canvas.width = TEX_W;
+    this.canvas.height = TEX_H;
     this.c2d = this.canvas.getContext("2d")!;
-    this.image = this.c2d.createImageData(NOISE_W, NOISE_H);
-    this.paintNoise(0);
+    this.c2d.imageSmoothingEnabled = false;
+
+    // Skyline laid out across the texture width.
+    let cx = -6;
+    let idx = 0;
+    while (cx < TEX_W) {
+      const w = 8 + Math.floor(Math.random() * 16);
+      const height = 22 + Math.floor(Math.random() * 50);
+      this.buildings.push({
+        x: cx,
+        w,
+        topY: TEX_H - 18 - height,
+        neon: idx % NEON.length,
+        windowSeed: Math.floor(Math.random() * 0xffff) || 1,
+      });
+      cx += w + 1 + Math.floor(Math.random() * 4);
+      idx++;
+    }
+
+    // Scattered pixel stars.
+    for (let i = 0; i < 60; i++) {
+      this.starField.push({
+        x: Math.floor(Math.random() * TEX_W),
+        y: Math.floor(Math.random() * (TEX_H - 30)),
+        c: Math.random() < 0.2 ? "#00f0ff" : "#dfe6ff",
+      });
+    }
+
+    this.paint(0);
     this.tex = new THREE.CanvasTexture(this.canvas);
     this.tex.colorSpace = THREE.SRGBColorSpace;
-    this.tex.wrapS = THREE.RepeatWrapping;
-    this.tex.wrapT = THREE.RepeatWrapping;
-    this.tex.repeat.set(3, 5); // tile around + along the tunnel
-    this.tex.magFilter = THREE.NearestFilter; // keep the chunky-static look
-    this.tex.minFilter = THREE.LinearMipmapLinearFilter;
+    this.tex.magFilter = THREE.NearestFilter;
+    this.tex.minFilter = THREE.NearestFilter;
+    this.tex.generateMipmaps = false;
 
-    // --- Tunnel: open cylinder, faces inward (BackSide).
-    const geo = new THREE.CylinderGeometry(TUNNEL_R, TUNNEL_R, TUNNEL_LEN, 48, 1, true);
-    geo.rotateX(Math.PI / 2); // lay the axis along -Z
-    this.tunnelMat = new THREE.MeshBasicMaterial({
-      map: this.tex,
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: true,
-    });
-    this.tunnel = new THREE.Mesh(geo, this.tunnelMat);
-    this.tunnel.position.set(0, 0, -TUNNEL_LEN / 2 + 40);
-    this.tunnel.renderOrder = -10;
-    this.group.add(this.tunnel);
-
-    // --- Vignette ring near the camera to darken the edges like a CRT.
-    this.vignetteTex = new THREE.CanvasTexture(this.buildVignette());
-    this.vignetteTex.colorSpace = THREE.SRGBColorSpace;
-    this.vignetteMat = new THREE.MeshBasicMaterial({
-      map: this.vignetteTex,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      fog: false,
-    });
-    this.vignette = new THREE.Mesh(new THREE.PlaneGeometry(260, 200), this.vignetteMat);
-    this.vignette.position.set(0, 0, 24);
-    this.vignette.renderOrder = 50;
-    this.group.add(this.vignette);
+    this.quadMat = new THREE.MeshBasicMaterial({ map: this.tex, depthWrite: false, depthTest: false, fog: false });
+    // A plane sized to roughly fill the parked camera's view at z=-160.
+    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(320, 200), this.quadMat);
+    this.quad.position.set(0, 30, -160);
+    this.quad.renderOrder = -20;
+    this.group.add(this.quad);
 
     ctx.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.camBaseY = 0;
-      this.camBaseZ = 40;
+      this.camBaseY = 30;
+      this.camBaseZ = 70;
       this.camera.position.set(0, this.camBaseY, this.camBaseZ);
-      this.camera.lookAt(0, 0, -200);
+      this.camera.lookAt(0, 30, -160);
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
-      this.pulse = e.downbeat ? 1 : 0.6;
-      // A beat kicks the tracking bar to a new random row — TV loses sync.
-      this.trackingY = Math.random();
+      this.glitch = e.downbeat ? 1 : 0.6;
+      // 120ms (downbeat) to ~220ms (offbeat) bursts: decay = 1/seconds.
+      this.glitchDecay = e.downbeat ? 1 / 0.12 : 1 / 0.22;
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
     });
   }
 
-  /** Paint one frame of analog video garbage into the ImageData buffer. */
-  private paintNoise(intensity: number): void {
-    const data = this.image.data;
-    const sat = 0.35 + intensity * 0.55; // chroma strength rises on the beat
-    const trackRow = Math.floor(this.trackingY * NOISE_H);
-    const trackThick = 5 + Math.floor(intensity * 7);
-    const tearRow = NOISE_H - 6; // head-switching tear lives at the bottom
-
-    for (let y = 0; y < NOISE_H; y++) {
-      // Horizontal scanline base luma — gentle dark/light banding.
-      const scan = 0.5 + 0.5 * Math.sin((y + this.t * 30) * 0.5);
-      // Chroma color band for this scanline (slow vertical drift).
-      const band = CHROMA[(y + Math.floor(this.t * 4)) % CHROMA.length];
-
-      const inTrack = y >= trackRow && y < trackRow + trackThick;
-      const inTear = y >= tearRow;
-
-      for (let x = 0; x < NOISE_W; x++) {
-        const i = (y * NOISE_W + x) * 4;
-        // Base grain.
-        let g = Math.random() * 255;
-
-        if (inTear) {
-          // Head-switching: torn, smeared bright/dark blocks at the bottom.
-          const smear = (Math.sin(x * 0.4 + this.t * 60) + 1) * 0.5;
-          g = smear * 255;
-          data[i] = g;
-          data[i + 1] = g;
-          data[i + 2] = g;
-          data[i + 3] = 255;
-          continue;
-        }
-
-        if (inTrack) {
-          // The rolling tracking bar: a brighter, noisier washed-out strip.
-          g = 140 + Math.random() * 115;
-        } else {
-          g *= 0.35 + scan * 0.65;
-        }
-
-        // Mix grain luma with the chroma band by saturation amount.
-        const r = g * (1 - sat) + band[0] * sat * (g / 255);
-        const gg = g * (1 - sat) + band[1] * sat * (g / 255);
-        const b = g * (1 - sat) + band[2] * sat * (g / 255);
-        data[i] = r;
-        data[i + 1] = gg;
-        data[i + 2] = b;
-        data[i + 3] = 255;
-      }
-    }
-    this.c2d.putImageData(this.image, 0, 0);
+  /** Tiny xorshift so window patterns are stable per building. */
+  private rng(seed: number): () => number {
+    let s = seed | 0 || 1;
+    return () => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return ((s >>> 0) % 1000) / 1000;
+    };
   }
 
-  /** Radial CRT vignette: transparent center, dark feathered edges. */
-  private buildVignette(): HTMLCanvasElement {
-    const cv = document.createElement("canvas");
-    cv.width = 256;
-    cv.height = 256;
-    const g2d = cv.getContext("2d")!;
-    const rg = g2d.createRadialGradient(128, 128, 40, 128, 128, 150);
-    rg.addColorStop(0, "rgba(5,3,10,0)");
-    rg.addColorStop(0.7, "rgba(5,3,10,0)");
-    rg.addColorStop(1, "rgba(5,3,10,0.92)");
-    g2d.fillStyle = rg;
-    g2d.fillRect(0, 0, 256, 256);
-    return cv;
+  /** Redraw the whole pixel image for this frame at glitch intensity g (0..1). */
+  private paint(g: number): void {
+    const ctx = this.c2d;
+
+    // --- Sky: 3-band vertical gradient, dithered at the seams for the retro look.
+    ctx.fillStyle = SKY_TOP;
+    ctx.fillRect(0, 0, TEX_W, Math.floor(TEX_H * 0.45));
+    ctx.fillStyle = SKY_MID;
+    ctx.fillRect(0, Math.floor(TEX_H * 0.45), TEX_W, Math.floor(TEX_H * 0.3));
+    ctx.fillStyle = SKY_LOW;
+    ctx.fillRect(0, Math.floor(TEX_H * 0.75), TEX_W, TEX_H);
+    // Ordered-dither the band boundaries (checker every other column).
+    ctx.fillStyle = SKY_TOP;
+    for (let x = 0; x < TEX_W; x += 2) ctx.fillRect(x, Math.floor(TEX_H * 0.45), 1, 2);
+    ctx.fillStyle = SKY_MID;
+    for (let x = 1; x < TEX_W; x += 2) ctx.fillRect(x, Math.floor(TEX_H * 0.75), 1, 2);
+
+    // --- Stars (twinkle subtly via time).
+    for (const s of this.starField) {
+      if ((Math.sin(this.t * 3 + s.x) + 1) * 0.5 > 0.35) {
+        ctx.fillStyle = s.c;
+        ctx.fillRect(s.x, s.y, 1, 1);
+      }
+    }
+
+    // --- Buildings. Wireframe-to-solid: at high glitch we draw bare outlines;
+    // as it settles we fill them solid and add lit windows.
+    const solidness = 1 - g; // 1 = fully solid, 0 = pure wireframe
+    const horizon = TEX_H - 18;
+    for (const b of this.buildings) {
+      const neon = NEON[b.neon];
+      const bodyY = b.topY;
+      const bodyH = horizon - b.topY;
+
+      if (solidness > 0.05) {
+        // Solid body: dark fill with a faint neon-tinted face.
+        ctx.fillStyle = "#0c0820";
+        ctx.fillRect(b.x, bodyY, b.w, bodyH);
+        // Neon-tinted vertical light streak down the face, alpha by solidness.
+        ctx.globalAlpha = 0.18 * solidness;
+        ctx.fillStyle = neon;
+        ctx.fillRect(b.x + 1, bodyY, Math.max(1, Math.floor(b.w * 0.5)), bodyH);
+        ctx.globalAlpha = 1;
+      }
+
+      // Wireframe outline always present; brighter during glitch.
+      ctx.fillStyle = neon;
+      ctx.globalAlpha = 0.7 + g * 0.3;
+      ctx.fillRect(b.x, bodyY, b.w, 1); // top edge
+      ctx.fillRect(b.x, bodyY, 1, bodyH); // left edge
+      ctx.fillRect(b.x + b.w - 1, bodyY, 1, bodyH); // right edge
+      ctx.globalAlpha = 1;
+
+      // Windows only when mostly solid.
+      if (solidness > 0.45) {
+        const r = this.rng(b.windowSeed);
+        ctx.fillStyle = NEON[(b.neon + 1) % NEON.length];
+        for (let wy = bodyY + 3; wy < horizon - 2; wy += 3) {
+          for (let wx = b.x + 2; wx < b.x + b.w - 1; wx += 3) {
+            if (r() < 0.55) continue;
+            // Flicker a few windows with time.
+            if ((Math.sin(this.t * 8 + wx * 1.3 + wy) + 1) * 0.5 < 0.25) continue;
+            ctx.fillRect(wx, wy, 1, 1);
+          }
+        }
+      }
+    }
+
+    // --- Ground neon strip at the horizon.
+    ctx.fillStyle = "#00f0ff";
+    ctx.globalAlpha = 0.5 + g * 0.5;
+    ctx.fillRect(0, horizon, TEX_W, 1);
+    ctx.globalAlpha = 1;
+
+    // --- Scanlines (jump phase on glitch).
+    const scanOff = Math.floor(this.t * 8 + g * 20) % 3;
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    for (let y = scanOff; y < TEX_H; y += 3) ctx.fillRect(0, y, TEX_W, 1);
+
+    // --- Glitch overlays only fire while g > threshold.
+    if (g > 0.04) this.applyGlitch(g);
+  }
+
+  /** Chroma split, block tear and row dropout drawn over the finished image. */
+  private applyGlitch(g: number): void {
+    const ctx = this.c2d;
+    // Chroma split: additively re-stamp the canvas shifted sideways so edges
+    // fringe cyan/magenta (cheap fake of an RGB channel separation).
+    const shift = Math.max(1, Math.round(g * 5));
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.3 * g;
+    ctx.drawImage(this.canvas, shift, 0);
+    ctx.drawImage(this.canvas, -shift, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+
+    // Block tear: a few horizontal bands get yanked sideways.
+    const bands = 1 + Math.floor(g * 3);
+    for (let i = 0; i < bands; i++) {
+      const by = Math.floor(Math.random() * TEX_H);
+      const bh = Math.min(2 + Math.floor(Math.random() * 6), TEX_H - by);
+      if (bh <= 0) continue;
+      const dx = Math.round((Math.random() - 0.5) * g * 24);
+      const slice = ctx.getImageData(0, by, TEX_W, bh);
+      ctx.putImageData(slice, dx, by);
+    }
+
+    // Row dropout: a couple of solid dark/neon scan rows.
+    const drops = Math.floor(g * 4);
+    for (let i = 0; i < drops; i++) {
+      const dy = Math.floor(Math.random() * TEX_H);
+      ctx.fillStyle = Math.random() < 0.5 ? "#000000" : NEON[Math.floor(Math.random() * NEON.length)];
+      ctx.globalAlpha = 0.6 * g;
+      ctx.fillRect(0, dy, TEX_W, 1);
+      ctx.globalAlpha = 1;
+    }
   }
 
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
-    // Redraw the static ~30fps regardless of frame rate (it's expensive-ish).
-    this.redrawAccum += dt;
-    if (this.redrawAccum >= 1 / 30) {
-      this.redrawAccum = 0;
-      this.paintNoise(this.pulse);
-      this.tex.needsUpdate = true;
-    }
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt * this.glitchDecay);
 
-    // Scroll the texture down the tunnel toward the camera + slow roll around.
-    this.tex.offset.y = (this.tex.offset.y + dt * 0.9) % 1;
-    this.tex.offset.x = (this.tex.offset.x + dt * 0.05) % 1;
+    this.paint(this.glitch);
+    this.tex.needsUpdate = true;
 
-    // Beat-pulse: brighten the tunnel material and nudge the FOV-ish scale.
-    if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 2.6);
-    const pump = 1 + this.pulse * 0.6;
-    this.tunnelMat.color.setScalar(0.85 * pump);
-    this.tunnel.rotation.z += dt * (0.12 + this.pulse * 0.5);
-    this.vignetteMat.opacity = 1 - this.pulse * 0.25;
+    // Material brightens slightly on the burst so the neon blooms.
+    this.quadMat.color.setScalar(1 + this.glitch * 0.25);
 
-    // Shake decay + camera jolt; otherwise drift forward with a slow weave.
+    // Shake decay + camera jolt; otherwise hold the parked shot.
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 6);
       if (this.camera) {
         const m = this.shake;
         this.camera.position.set(
-          (Math.random() - 0.5) * m * 2.4,
-          (Math.random() - 0.5) * m * 2.0,
+          (Math.random() - 0.5) * m * 2.2,
+          this.camBaseY + (Math.random() - 0.5) * m * 1.8,
           this.camBaseZ + (Math.random() - 0.5) * m,
         );
-        this.camera.lookAt(0, 0, -200);
+        this.camera.lookAt(0, 30, -160);
       }
     } else if (this.camera) {
-      const weave = Math.sin(this.t * 0.7) * 1.2;
-      this.camera.position.set(weave, Math.cos(this.t * 0.5) * 0.8, this.camBaseZ);
-      this.camera.lookAt(weave * 0.3, 0, -200);
+      this.camera.position.set(0, this.camBaseY, this.camBaseZ);
+      this.camera.lookAt(0, 30, -160);
     }
   }
 
@@ -252,20 +307,19 @@ class Bg04 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.tunnel.geometry.dispose();
-    this.tunnelMat.dispose();
+    this.quad.geometry.dispose();
+    this.quadMat.dispose();
     this.tex.dispose();
-    this.vignette.geometry.dispose();
-    this.vignetteMat.dispose();
-    this.vignetteTex.dispose();
+    this.buildings = [];
+    this.starField = [];
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg04",
-  label: "VHS Tunnel",
-  blurb: "Dead-channel analog video tunnel — grain, chroma bands, rolling tracking bar and head-switching tear, all losing sync to the beat.",
+  label: "Pixel Skyline / Boot",
+  blurb: "Chunky low-res pixel neon skyline that snaps from solid to bare wireframe with chroma split, block tear and row dropout on every beat.",
   create: () => new Bg04(),
 };
 

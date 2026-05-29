@@ -1,43 +1,44 @@
-// fx01 — "Chrome Shards": angular metallic shard rectangles that spin and catch
-// light (CSS gradient sheen) as they arc to the score readout, trailing a faint
-// motion streak. Pure DOM, no Three.js. Default-exports an EddieParticlesDef.
+// fx01 — "Chroma Shards": chunky pixel blocks that home to the score with a
+// chromatic RGB-split glitch. Each block carries two offset ghost copies (a cyan
+// and a magenta channel) that separate and re-converge as it travels, plus a
+// 1-frame horizontal tear jitter so the motion reads as a glitching CRT signal.
+// A fraction are tiny pixel digits (0-9) for arcade flavor. Pure DOM, no Three.js.
 //
-// Motion: each shard is flung from `from` along a quadratic Bezier toward the
-// score, with a strong upward/outward control point for a "thrown metal" arc.
-// Shards spin on two axes (rotateZ + skew sheen) and scale down on arrival; a
-// short-lived streak element rides behind each shard and fades. dispose() removes
-// every live element and the injected <style>, and unsubscribes.
+// Evolved from the old fx05 "Pixel Burst": same crisp pixel-grid snapping and
+// digit sprites, but the burst-march is replaced with an RGB-split datachannel
+// glitch homing run. Blocks self-remove on arrival; dispose() removes every
+// element + injected <style> and unsubscribes (no leaks).
 
 import type { EddieParticlesDef, EddieParticlesVariant } from "./types";
 import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 
+const STYLE_ID = "eddie-fx01-chroma-style";
+const STEP = 4; // px snap grid — chunky IIgs pixel cadence
+const DIGITS = "0123456789";
+// Limited retro palette (Apple IIgs-ish saturated set) used for the core block.
+const PALETTE = ["#00f0ff", "#ff2bd6", "#ffd02b", "#c7ff2b", "#ffffff"];
+
 interface Shard {
-  el: HTMLDivElement;
-  sheen: HTMLDivElement;
-  streak: HTMLDivElement;
+  el: HTMLDivElement; // wrapper
+  rGhost: HTMLDivElement; // red/magenta channel ghost
+  bGhost: HTMLDivElement; // blue/cyan channel ghost
   x0: number;
   y0: number;
-  cx: number;
+  cx: number; // arc control
   cy: number;
   t: number;
   dur: number;
-  spin: number; // deg/sec
-  rot: number; // current rotation
-  len: number; // shard length px
-  wide: number; // shard width px
-  px: number; // previous frame x (for streak orientation)
-  py: number;
+  glitchPhase: number;
+  glitchRate: number;
 }
-
-const STYLE_ID = "eddie-fx01-style";
 
 class Fx01 implements EddieParticlesVariant {
   private parent: HTMLElement | null = null;
   private resolveScore: (() => { x: number; y: number }) | null = null;
   private shards: Shard[] = [];
   private off?: () => void;
-  private style?: HTMLStyleElement;
+  private styleEl?: HTMLStyleElement;
 
   mount(ctx: {
     hudParent: HTMLElement;
@@ -46,102 +47,107 @@ class Fx01 implements EddieParticlesVariant {
   }): void {
     this.parent = ctx.hudParent;
     this.resolveScore = ctx.resolveScore;
-
-    if (!document.getElementById(STYLE_ID)) {
-      const style = document.createElement("style");
-      style.id = STYLE_ID;
-      style.textContent = `
-.eddie-fx01-shard {
-  position: absolute;
-  pointer-events: none;
-  will-change: transform, opacity;
-  transform-origin: 50% 50%;
-  border-radius: 1px;
-  overflow: hidden;
-  box-shadow: 0 0 6px currentColor, 0 0 14px currentColor;
-}
-.eddie-fx01-sheen {
-  position: absolute;
-  inset: -40%;
-  background: linear-gradient(115deg,
-    rgba(255,255,255,0) 30%,
-    rgba(255,255,255,0.95) 48%,
-    rgba(255,255,255,0) 62%);
-  mix-blend-mode: screen;
-  will-change: transform;
-}
-.eddie-fx01-streak {
-  position: absolute;
-  pointer-events: none;
-  height: 2px;
-  transform-origin: 0% 50%;
-  background: linear-gradient(90deg, currentColor, rgba(255,255,255,0));
-  opacity: 0.5;
-  will-change: transform, opacity, width;
-}`;
-      document.head.appendChild(style);
-      this.style = style;
-    }
-
+    this.injectStyle();
     this.off = ctx.juice.on("eddieParticles", (e) => {
       this.spawn(e.from.x, e.from.y, Math.max(1, Math.min(40, e.count)), e.color);
     });
   }
 
+  private injectStyle(): void {
+    if (document.getElementById(STYLE_ID)) return;
+    const s = document.createElement("style");
+    s.id = STYLE_ID;
+    s.textContent = `
+.eddie-fx01-shard{position:absolute;left:0;top:0;pointer-events:none;
+  will-change:transform,opacity;image-rendering:pixelated;}
+.eddie-fx01-px{position:absolute;left:0;top:0;image-rendering:pixelated;
+  will-change:transform;}
+.eddie-fx01-core{box-shadow:0 0 0 1px rgba(0,0,0,.5),0 0 7px currentColor;}
+.eddie-fx01-ghost{mix-blend-mode:screen;opacity:.85;}
+.eddie-fx01-digit{position:absolute;left:0;top:0;pointer-events:none;
+  font-family:"Courier New",monospace;font-weight:900;line-height:1;
+  -webkit-font-smoothing:none;image-rendering:pixelated;will-change:transform,opacity;
+  text-shadow:1px 0 0 #ff2bd6,-1px 0 0 #00f0ff,0 0 6px currentColor;}`;
+    document.head.appendChild(s);
+    this.styleEl = s;
+  }
+
   private spawn(x: number, y: number, count: number, color: string): void {
     if (!this.parent) return;
     const rect = this.parent.getBoundingClientRect();
-    const localX = x - rect.left;
-    const localY = y - rect.top;
+    const lx = x - rect.left;
+    const ly = y - rect.top;
 
     for (let i = 0; i < count; i++) {
-      const jx = (Math.random() - 0.5) * 46;
-      const jy = (Math.random() - 0.5) * 46;
-      const sx = localX + jx;
-      const sy = localY + jy;
+      const isDigit = Math.random() < 0.3;
+      const jx = (Math.random() - 0.5) * 44;
+      const jy = (Math.random() - 0.5) * 44;
+      const x0 = snap(lx + jx);
+      const y0 = snap(ly + jy);
 
-      const len = 14 + Math.random() * 16;
-      const wide = 3 + Math.random() * 4;
+      const wrap = document.createElement("div");
+      wrap.className = "eddie-fx01-shard";
 
-      const el = document.createElement("div");
-      el.className = "eddie-fx01-shard";
-      el.style.color = color;
-      el.style.width = `${len}px`;
-      el.style.height = `${wide}px`;
-      el.style.background = `linear-gradient(90deg, ${color}, #ffffff 45%, ${color})`;
+      let core: HTMLDivElement;
+      const rGhost = document.createElement("div");
+      const bGhost = document.createElement("div");
 
-      const sheen = document.createElement("div");
-      sheen.className = "eddie-fx01-sheen";
-      el.appendChild(sheen);
+      if (isDigit) {
+        const size = 12 + Math.random() * 8;
+        const ch = DIGITS[(Math.random() * 10) | 0];
+        core = document.createElement("div");
+        core.className = "eddie-fx01-digit";
+        core.textContent = ch;
+        core.style.color = "#ffffff";
+        core.style.fontSize = `${size}px`;
+        rGhost.className = "eddie-fx01-digit eddie-fx01-ghost";
+        bGhost.className = "eddie-fx01-digit eddie-fx01-ghost";
+        rGhost.textContent = ch;
+        bGhost.textContent = ch;
+        rGhost.style.color = "#ff2bd6";
+        bGhost.style.color = "#00f0ff";
+        rGhost.style.fontSize = `${size}px`;
+        bGhost.style.fontSize = `${size}px`;
+        rGhost.style.textShadow = "none";
+        bGhost.style.textShadow = "none";
+      } else {
+        const size = STEP * (2 + ((Math.random() * 3) | 0)); // 8..16 px chunky blocks
+        const pal = PALETTE[(Math.random() * PALETTE.length) | 0] || color;
+        core = document.createElement("div");
+        core.className = "eddie-fx01-px eddie-fx01-core";
+        core.style.background = pal;
+        core.style.color = pal;
+        sizePx(core, size);
+        rGhost.className = "eddie-fx01-px eddie-fx01-ghost";
+        bGhost.className = "eddie-fx01-px eddie-fx01-ghost";
+        rGhost.style.background = "#ff2bd6";
+        bGhost.style.background = "#00f0ff";
+        sizePx(rGhost, size);
+        sizePx(bGhost, size);
+      }
 
-      const streak = document.createElement("div");
-      streak.className = "eddie-fx01-streak";
-      streak.style.color = color;
-      streak.style.width = "0px";
+      // Ghosts under the core so the bright core reads on top.
+      wrap.appendChild(rGhost);
+      wrap.appendChild(bGhost);
+      wrap.appendChild(core);
+      this.parent.appendChild(wrap);
 
-      this.parent.appendChild(streak);
-      this.parent.appendChild(el);
-
-      // Control point flung up and outward for a tossed-metal arc.
-      const cx = sx + (Math.random() - 0.5) * 160;
-      const cy = sy - 70 - Math.random() * 140;
+      // Arc control biased up + toward score for a flung feel.
+      const cx = x0 + (Math.random() - 0.5) * 140;
+      const cy = y0 - 50 - Math.random() * 120;
 
       this.shards.push({
-        el,
-        sheen,
-        streak,
-        x0: sx,
-        y0: sy,
+        el: wrap,
+        rGhost,
+        bGhost,
+        x0,
+        y0,
         cx,
         cy,
         t: 0,
         dur: 0.5 + Math.random() * 0.4,
-        spin: (Math.random() < 0.5 ? -1 : 1) * (240 + Math.random() * 420),
-        rot: Math.random() * 360,
-        len,
-        wide,
-        px: sx,
-        py: sy,
+        glitchPhase: Math.random() * Math.PI * 2,
+        glitchRate: 26 + Math.random() * 26,
       });
     }
   }
@@ -154,67 +160,64 @@ class Fx01 implements EddieParticlesVariant {
     const ty = score.y - rect.top;
 
     for (let i = this.shards.length - 1; i >= 0; i--) {
-      const s = this.shards[i];
-      s.t += dt / s.dur;
-      if (s.t >= 1) {
-        s.el.remove();
-        s.streak.remove();
+      const p = this.shards[i];
+      p.t += dt / p.dur;
+      if (p.t >= 1) {
+        p.el.remove();
         this.shards.splice(i, 1);
         continue;
       }
-      const e = s.t * s.t * (3 - 2 * s.t); // smoothstep
+      const e = p.t * p.t * (3 - 2 * p.t); // smoothstep
       const u = 1 - e;
-      const x = u * u * s.x0 + 2 * u * e * s.cx + e * e * tx;
-      const y = u * u * s.y0 + 2 * u * e * s.cy + e * e * ty;
+      let x = u * u * p.x0 + 2 * u * e * p.cx + e * e * tx;
+      let y = u * u * p.y0 + 2 * u * e * p.cy + e * e * ty;
 
-      s.rot += s.spin * dt;
-      const scale = 1 - e * 0.55;
-      const fade = e < 0.82 ? 1 : Math.max(0, (1 - e) / 0.18);
+      // 1-frame horizontal tear: occasional sudden offset that snaps back.
+      p.glitchPhase += p.glitchRate * dt;
+      const tear = Math.sin(p.glitchPhase) > 0.85 ? (Math.random() - 0.5) * 14 : 0;
+      x = snap(x + tear);
+      y = snap(y);
 
-      // Position the shard centered on (x, y).
-      s.el.style.left = `${x - s.len / 2}px`;
-      s.el.style.top = `${y - s.wide / 2}px`;
-      s.el.style.transform = `rotate(${s.rot}deg) scale(${scale})`;
-      s.el.style.opacity = `${fade}`;
+      // RGB split magnitude swells mid-flight, collapses on arrival.
+      const split = (3 + 7 * Math.sin(Math.PI * p.t)) * (0.6 + 0.4 * Math.abs(Math.sin(p.glitchPhase)));
+      this.applyGhost(p.rGhost, -split);
+      this.applyGhost(p.bGhost, split);
 
-      // Sheen sweeps across the shard as it spins, catching the light.
-      const sheenPhase = ((s.rot % 360) + 360) % 360;
-      s.sheen.style.transform = `translateX(${-60 + (sheenPhase / 360) * 120}%)`;
-
-      // Streak rides from the previous frame position to the current one.
-      const dx = x - s.px;
-      const dy = y - s.py;
-      const dist = Math.hypot(dx, dy);
-      const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
-      s.streak.style.left = `${s.px}px`;
-      s.streak.style.top = `${s.py}px`;
-      s.streak.style.width = `${Math.min(dist * 1.6, 40)}px`;
-      s.streak.style.transform = `rotate(${ang}deg)`;
-      s.streak.style.opacity = `${0.45 * fade}`;
-      s.px = x;
-      s.py = y;
+      const fade = p.t < 0.82 ? 1 : Math.max(0, (1 - p.t) / 0.18);
+      p.el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%)`;
+      p.el.style.opacity = `${fade}`;
     }
+  }
+
+  private applyGhost(g: HTMLDivElement, dx: number): void {
+    g.style.transform = `translate(${Math.round(dx)}px,0)`;
   }
 
   dispose(): void {
     this.off?.();
     this.off = undefined;
-    for (const s of this.shards) {
-      s.el.remove();
-      s.streak.remove();
-    }
+    for (const p of this.shards) p.el.remove();
     this.shards = [];
-    if (this.style && this.style.parentNode) this.style.parentNode.removeChild(this.style);
-    this.style = undefined;
+    this.styleEl?.remove();
+    this.styleEl = undefined;
     this.parent = null;
     this.resolveScore = null;
   }
 }
 
+function snap(v: number): number {
+  return Math.round(v / STEP) * STEP;
+}
+
+function sizePx(el: HTMLDivElement, size: number): void {
+  el.style.width = `${size}px`;
+  el.style.height = `${size}px`;
+}
+
 const def: EddieParticlesDef = {
   id: "fx01",
-  label: "Chrome Shards",
-  blurb: "Angular metallic shards spin and catch a sweeping sheen as they arc to the score, dragging faint streaks.",
+  label: "Chroma Shards",
+  blurb: "Chunky pixel blocks home to the score with a chromatic RGB-split glitch, ghost channels tearing apart and snapping back.",
   create: () => new Fx01(),
 };
 
