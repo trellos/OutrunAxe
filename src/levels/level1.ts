@@ -1,9 +1,17 @@
 import * as THREE from "three";
-import type { PitchClass } from "../music/keys";
+import type { KeyMode, PitchClass } from "../music/keys";
+import { buildSharedWaveSpawns } from "./waves";
 
 export interface EnemySpawn {
   beat: number;
   pitchClass: PitchClass;
+  /** Tonic of the key the enemy lives in. Defaults to `pitchClass`. Allowing
+   *  this to differ lets a wave put several distinctly-labelled enemies all
+   *  inside one shared key (e.g. wave 1 = all in C major). */
+  keyRoot?: PitchClass;
+  /** Major vs natural minor. Used by wave 3+ to add relative-minor enemies
+   *  alongside their major counterparts. */
+  keyMode?: KeyMode;
   travelBeats: number;
   hp: number;
   lane: number;
@@ -40,33 +48,7 @@ export const level1: LevelConfig = {
   fogColor: 0x2a1145,
   fogNear: 30,
   fogFar: 180,
-  spawns: (() => {
-    // Tutorial wave: TWO keys (C major and E major) so the key-narrowing puzzle
-    // is actually visible. Shared notes E/A/B hit both groups; C/D/F/G hit only
-    // C-rooted enemies; F#/G#/C#/D# hit only E-rooted enemies.
-    //
-    // travelBeats = 12 (3 measures) for every spawn — the player has a full
-    // three measures from spawn to arrival, plenty of read time. Arrivals are
-    // spread across the play window so each enemy reads as a distinct wave.
-    // hp = 2.5 for early enemies pairs with the root-note 2.5× damage bonus
-    // (BulletSystem) so: 2 non-root in-key notes chip (≈2.0), root + non-root
-    // kills (≈3.5), single full-confidence root one-shots (=2.5).
-    const schedule: Array<{ beat: number; pc: PitchClass; lane: number; hp: number }> = [
-      { beat: 8,    pc: "C", lane: -1.5, hp: 2.5 },
-      { beat: 12,   pc: "E", lane:  1.5, hp: 2.5 },
-      { beat: 16,   pc: "C", lane: -1,   hp: 2.5 },
-      { beat: 19,   pc: "E", lane:  1,   hp: 2.5 },
-      { beat: 22,   pc: "C", lane: -2,   hp: 2.5 },
-      { beat: 24,   pc: "E", lane:  2,   hp: 2.5 },
-      { beat: 26.5, pc: "C", lane: -0.5, hp: 4   },
-      { beat: 29,   pc: "E", lane:  0.5, hp: 4   },
-    ];
-    return schedule.map((s) => ({
-      beat: s.beat,
-      pitchClass: s.pc,
-      travelBeats: 12,
-      hp: s.hp,
-      lane: s.lane,
-    }));
-  })(),
+  // All three levels share the same enemy schedule — for now levels differ
+  // only in background and tempo. See src/levels/waves.ts.
+  spawns: buildSharedWaveSpawns(),
 };

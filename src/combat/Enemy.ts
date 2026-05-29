@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ALL_MAJOR_KEYS, type PitchClass } from "../music/keys";
+import { keyPitchClasses, type KeyMode, type PitchClass } from "../music/keys";
 import { sharedToonRamp } from "../render/ToonRamp";
 import { addOutline } from "../render/Outline";
 
@@ -56,6 +56,12 @@ const APPROACH_EASE_POWER = 1.3;
 const HIT_FLASH_DURATION = 0.2;
 const HIT_PUNCH_DURATION = 0.18;
 
+// On death: slowly expand + fade to transparency over this window. Longer than
+// the old 0.3s death-pop so the player sees a clear "this enemy is gone"
+// feedback, while the floating pitch label that detaches at the same instant
+// has time to drift up to the timeline note bar.
+export const DEATH_DURATION = 1.0;
+
 const geoCache = new Map<string, THREE.BufferGeometry>();
 function geo<T extends THREE.BufferGeometry>(key: string, make: () => T): T {
   let g = geoCache.get(key);
@@ -104,11 +110,15 @@ export class Enemy {
   readonly object: THREE.Object3D;
   readonly mesh: THREE.Mesh;
   /** The pitch class this enemy's visual design/color/label derive from.
-   *  Also the root of the major key the enemy "lives in" (see `key`). */
+   *  Also the trigger for ROOT damage (a played note equal to this pitch
+   *  class lands the root multiplier, see BulletSystem). */
   readonly pitchClass: PitchClass;
-  /** The major key this enemy is vulnerable in. Any played note whose pitch
-   *  class is in this key scores a hit (see `isVulnerableTo`). */
+  /** Tonic of the key the enemy "lives in" (root of the scale, NOT necessarily
+   *  the same as `pitchClass`). Combined with `mode` to build the vulnerable
+   *  pitch set. */
   readonly key: PitchClass;
+  /** Major vs natural-minor scale around `key`. */
+  readonly mode: KeyMode;
   hp: number;
   readonly maxHp: number;
   readonly spawnPosition: THREE.Vector3;
@@ -116,8 +126,14 @@ export class Enemy {
   readonly arriveAt: number;
   readonly spawnedAt: number;
   alive = true;
+  /** Time at which the death animation completes. -1 while alive. Used by
+   *  EnemyDirector to defer disposal so the expand+fade actually plays out. */
+  deathDoneAt = -1;
 
-  private label: THREE.Sprite;
+  /** Visible in-world pitch-letter sprite. Exposed (not private) so the HUD
+   *  kill-letter spawn can project its world position — the floating glyph
+   *  must peel off the exact pixel the player just saw. */
+  label!: THREE.Sprite;
   private flashUntil = 0;
   private punchUntil = 0;
   private fadeStart = -1;
@@ -130,6 +146,8 @@ export class Enemy {
 
   constructor(opts: {
     pitchClass: PitchClass;
+    keyRoot?: PitchClass;
+    keyMode?: KeyMode;
     hp: number;
     spawnPosition: THREE.Vector3;
     targetPosition: THREE.Vector3;
@@ -137,9 +155,12 @@ export class Enemy {
     arriveAt: number;
   }) {
     this.pitchClass = opts.pitchClass;
-    // The spawn's pitch class doubles as the root of the major key the enemy
-    // is vulnerable in. A "C" enemy lives in C major.
-    this.key = opts.pitchClass;
+    // `keyRoot` defaults to `pitchClass` so legacy callers (one enemy = one
+    // major key keyed on its own label) keep working. Waves that want to put
+    // several different-labelled enemies inside the same key (e.g. all of
+    // wave 1 in C major) pass `keyRoot: "C"` explicitly.
+    this.key = opts.keyRoot ?? opts.pitchClass;
+    this.mode = opts.keyMode ?? "major";
     this.hp = opts.hp;
     this.maxHp = opts.hp;
     this.spawnPosition = opts.spawnPosition.clone();
@@ -166,7 +187,12 @@ export class Enemy {
     // Nudged up from 1.35 → 1.75 so the now-larger square label still floats
     // clearly above the enemy body instead of overlapping it.
     this.label.position.set(0, 1.75, 0);
-    this.object.add(this.label);
+    // Parent the label to the design group (not `object`) so it inherits the
+    // hit-flash scale-punch, the slow death expand-fade, and the idle bob —
+    // i.e. the same "juice" the body gets. The body's Y-rotation does affect
+    // the label's parent, but Sprites always face the camera so the letter
+    // stays readable.
+    this.design.group.add(this.label);
   }
 
   update(audioTime: number) {
@@ -216,25 +242,29 @@ export class Enemy {
     const emissiveBoost = 0.5 * (1 - hpFrac);
 
     if (this.fadeStart >= 0) {
-      // Death pop: scale UP fast (first ~35%) then collapse + fade out over
-      // ~0.3s total. Cheap — just transforms on the existing group.
-      const k = Math.min(1, (audioTime - this.fadeStart) / 0.3);
-      const pop = k < 0.35
-        ? 1 + (k / 0.35) * 0.5            // 1.0 -> 1.5
-        : 1.5 - ((k - 0.35) / 0.65) * 1.5; // 1.5 -> 0.0
-      this.design.group.scale.setScalar(Math.max(0.001, pop));
-      this.design.group.rotation.y += dt * 9; // spin out
-      const fade = 1 - k;
+      // Death animation: slowly expand and fade out. Visible enough that the
+      // player can READ that an enemy died (the old 0.3s death-pop was so fast
+      // enemies just blinked out). The label sprite is hidden from the start
+      // — a separate HUD letter floats to the timeline note bar (see
+      // LevelState.spawnKillLetter / Overlay.spawnKillLetter).
+      const k = Math.min(1, (audioTime - this.fadeStart) / DEATH_DURATION);
+      const scale = 1.0 + k * 1.2;          // 1.0 -> 2.2
+      this.design.group.scale.setScalar(scale);
+      this.design.group.rotation.y += dt * 1.6;
+      const fade = 1 - k;                    // linear 1 -> 0
       for (let i = 0; i < this.toonMats.length; i++) {
         const m = this.toonMats[i];
         m.transparent = true;
         m.opacity = fade;
-        // Flash white on the way out for a bright "burst".
-        const w = Math.min(1, k * 2.5);
-        m.color.copy(this.baseColors[i]).lerp(WHITE, w);
-        m.emissiveIntensity = this.baseEmissive[i] + 1.4 * (1 - k);
+        // Brief white-burst on the way out for impact, mostly in the first
+        // third of the window.
+        const w = Math.min(1, k * 2.0);
+        m.color.copy(this.baseColors[i]).lerp(WHITE, w * 0.6);
+        m.emissiveIntensity = this.baseEmissive[i] + 1.2 * (1 - k);
       }
-      this.label.material.opacity = fade;
+      // Detach the label visually — it's been hoisted into a HUD overlay
+      // letter that flies to the timeline.
+      this.label.material.opacity = 0;
       return;
     }
 
@@ -248,6 +278,12 @@ export class Enemy {
         m.emissiveIntensity = this.baseEmissive[i] + emissiveBoost;
       }
     }
+    // Brighten the pitch-letter sprite during a hit too — Sprite materials
+    // multiply their map by `color`, so >1 components overdrive the texture
+    // for a clear "snap" pulse synchronised with the body flash.
+    const labelMat = this.label.material as THREE.SpriteMaterial;
+    if (flashing) labelMat.color.setRGB(1.5, 1.5, 1.5);
+    else labelMat.color.setRGB(1, 1, 1);
   }
 
   takeDamage(dmg: number, audioTime: number): number {
@@ -259,6 +295,7 @@ export class Enemy {
     if (this.hp <= 0) {
       this.alive = false;
       this.fadeStart = audioTime;
+      this.deathDoneAt = audioTime + DEATH_DURATION;
     }
     return applied;
   }
@@ -267,7 +304,7 @@ export class Enemy {
    *  it scores a hit. Every in-key note counts, so a C-major run and a
    *  repeated-C run both register every note against a key-of-C enemy. */
   isVulnerableTo(pc: PitchClass): boolean {
-    return ALL_MAJOR_KEYS.get(this.key)?.has(pc) ?? false;
+    return keyPitchClasses(this.key, this.mode).has(pc);
   }
 
   hasReachedPlayer(audioTime: number): boolean {

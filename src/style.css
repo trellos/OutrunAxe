@@ -212,6 +212,28 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -32px) scale(1); }
 }
 
+/* The pitch-class letter that detaches from a dying enemy and flies up to the
+   timeline note bar that killed it. Positioned in viewport coords (`fixed`)
+   so the JS can drive `left`/`top` directly off camera projection and
+   `getBoundingClientRect`. translate(-50%, -50%) keeps the glyph centred on
+   its (left, top) point through the animation. */
+.hud-kill-letter {
+  position: fixed;
+  pointer-events: none;
+  font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 900;
+  font-size: 64px;
+  letter-spacing: 0;
+  transform: translate(-50%, -50%);
+  text-shadow:
+    0 0 18px currentColor,
+    0 0 4px #000,
+    0 0 2px #000;
+  z-index: 100;
+  opacity: 1;
+  will-change: left, top, font-size, opacity;
+}
+
 /* Pinned to the very top, confined to the top 25% of the viewport so the
    3-row stack never overlaps the menu card / character / gameplay centre. */
 /* Centred via auto margins (not transform): a transform:translateX(-50%) can

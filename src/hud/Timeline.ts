@@ -239,6 +239,30 @@ export class Timeline {
     return this.conductor.measureStartTime(measureStart);
   }
 
+  /** Viewport-space (x, y) of the timeline cell for `midi` plotted at
+   *  `audioTime`. Used by the kill-letter animation to know where the freshly
+   *  played note sits on the timeline so the floating letter can drift toward
+   *  that exact bar. Returns null if the active row is unallocated or the
+   *  time falls outside it. */
+  getNoteScreenPos(audioTime: number, midi: number): { x: number; y: number } | null {
+    const row = this.rows[ROWS - 1];
+    if (row.measureStart < -1) return null;
+    if (row.measureStart === -1 && this.countInStart < 0) return null;
+    const beatDur = 60 / this.conductor.currentBpm;
+    const rowStartTime = this.rowStartTime(row.measureStart);
+    const rowSpan = BEATS_PER_ROW * beatDur;
+    const into = audioTime - rowStartTime;
+    const clamped = Math.max(0, Math.min(rowSpan, into));
+    const rect = row.canvas.getBoundingClientRect();
+    const xLocal = (clamped / beatDur) * PX_PER_BEAT;
+    const yLocal = laneY(midi);
+    // Scale by the rect-to-backing-store ratio so we stay correct even if CSS
+    // ever resizes the canvas (currently it doesn't — 1:1 — but cheap insurance).
+    const sx = rect.width / row.canvas.width;
+    const sy = rect.height / row.canvas.height;
+    return { x: rect.left + xLocal * sx, y: rect.top + yLocal * sy };
+  }
+
   private plotPitch(audioTime: number, midi: number, onsetId: number) {
     // Bug 3 fix: activeRow was a dead field always equal to ROWS - 1; removed.
     const row = this.rows[ROWS - 1];

@@ -75,3 +75,43 @@ export function spawnDamagePopup(el: OverlayElements, text: string, color = "#ff
   node.addEventListener("animationend", cleanup, { once: true });
   setTimeout(cleanup, 700);
 }
+
+/**
+ * Spawn a big floating note letter at `from` (viewport coords) and animate it
+ * to `to` over `durationMs`. Used on enemy kills: the pitch label detaches
+ * from the dying mesh and drifts up to the bar on the timeline that was the
+ * kill shot. Duration is capped at ~2 beats by the caller.
+ */
+export function spawnKillLetter(
+  el: OverlayElements,
+  text: string,
+  color: string,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  durationMs: number,
+) {
+  const node = document.createElement("div");
+  node.className = "hud-kill-letter";
+  node.textContent = text;
+  node.style.color = color;
+  node.style.left = `${from.x}px`;
+  node.style.top = `${from.y}px`;
+  el.root.appendChild(node);
+  // Force the browser to commit the `from` styles BEFORE attaching the
+  // transition. Reading `offsetWidth` flushes pending style/layout — without
+  // this flush the browser batches the from/to writes into a single update
+  // and the element teleports (which is what the user saw: kill letters
+  // "flying up from elsewhere and aren't visible"). rAF was not enough
+  // because both writes still landed inside the same render frame.
+  void node.offsetWidth;
+  node.style.transition =
+    `left ${durationMs}ms cubic-bezier(.3,.7,.4,1),` +
+    `top ${durationMs}ms cubic-bezier(.3,.7,.4,1),` +
+    `font-size ${durationMs}ms ease-out,` +
+    `opacity ${durationMs}ms ease-in`;
+  node.style.left = `${to.x}px`;
+  node.style.top = `${to.y}px`;
+  node.style.fontSize = "18px";
+  node.style.opacity = "0";
+  setTimeout(() => node.remove(), durationMs + 80);
+}

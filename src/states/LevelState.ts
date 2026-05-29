@@ -9,9 +9,10 @@ import { PlayerAnchor } from "../world/PlayerAnchor";
 import { RailRunner } from "../world/RailRunner";
 import { buildEnvironment } from "../world/Environment";
 import { EnemyDirector } from "../combat/EnemyDirector";
+import type { Enemy } from "../combat/Enemy";
 import { BulletSystem } from "../combat/BulletSystem";
 import { PlayerStats } from "../combat/PlayerStats";
-import { createOverlay, flashCombo, setHp, spawnDamagePopup, type OverlayElements } from "../hud/Overlay";
+import { createOverlay, flashCombo, setHp, spawnDamagePopup, spawnKillLetter, type OverlayElements } from "../hud/Overlay";
 import { Timeline } from "../hud/Timeline";
 import { level1, type LevelConfig } from "../levels/level1";
 import { ResultsState } from "./ResultsState";
@@ -205,6 +206,14 @@ export class LevelState implements GameState {
           rootHit ? "#ffe45a" : enemyColor,
         );
         this.playHitThud(ev.audioTime, rootHit);
+      }
+
+      // Killed-enemy feedback: detach each dead enemy's pitch label and fly it
+      // up to the timeline bar that just landed the kill. The mesh keeps doing
+      // its slow expand-fade in world space (Enemy.update / DEATH_DURATION).
+      for (const t of targets) {
+        if (t.alive) continue;
+        this.spawnKillLetterFor(t, ev.midi, ev.audioTime);
       }
       this.avatar?.triggerStrum(ev.audioTime);
 
@@ -486,6 +495,52 @@ export class LevelState implements GameState {
     sawOsc.start(t0);
     sineOsc.stop(end);
     sawOsc.stop(end);
+  }
+
+  /**
+   * Project the dying enemy into screen space, then drift its pitch letter up
+   * to the timeline note bar that just killed it. Duration is roughly
+   * proportional to travel distance, capped at TWO BEATS at the current BPM.
+   */
+  private spawnKillLetterFor(enemy: Enemy, killShotMidi: number, audioTime: number) {
+    const camera = this.game.renderer.worldCamera;
+    // Project the world position of the LABEL sprite, not the enemy origin.
+    // The label floats roughly 1.75 units above the body, so projecting
+    // `enemy.object.position` would start the kill letter from the enemy's
+    // feet — far from the glyph the player actually saw and often partly
+    // occluded by the body / HUD chrome. Using the label position makes the
+    // HUD letter peel off the exact pixel cluster it replaces.
+    const worldPos = new THREE.Vector3();
+    enemy.label.getWorldPosition(worldPos);
+    const v = worldPos.project(camera);
+    // Cull off-frustum. After project(), behind-camera points come back with
+    // z > 1, so a single z>1 / z<-1 guard catches both extreme cases.
+    if (v.z >= 1) return;
+    const fromX = (v.x * 0.5 + 0.5) * window.innerWidth;
+    const fromY = (-v.y * 0.5 + 0.5) * window.innerHeight;
+
+    const target = this.timeline.getNoteScreenPos(audioTime, killShotMidi);
+    if (!target) return;
+
+    const dx = target.x - fromX;
+    const dy = target.y - fromY;
+    const dist = Math.hypot(dx, dy);
+    // "Up to two beats to move there, depending on how far it is." Scale time
+    // with distance, clamped at 2 beats so a far enemy doesn't drag a letter
+    // across multiple measures.
+    const beatDur = 60 / this.conductor.currentBpm;
+    const maxMs = 2 * beatDur * 1000;
+    const duration = Math.max(220, Math.min(maxMs, dist * 1.8));
+
+    const color = `#${(enemy.mesh.material as THREE.MeshToonMaterial).color.getHexString()}`;
+    spawnKillLetter(
+      this.overlay,
+      enemy.pitchClass,
+      color,
+      { x: fromX, y: fromY },
+      { x: target.x, y: target.y },
+      duration,
+    );
   }
 
   /**

@@ -43,8 +43,16 @@ export class EnemyDirector {
     const remaining: Enemy[] = [];
     for (const e of this.active) {
       if (!e.alive) {
-        this.scene.remove(e.object);
-        e.dispose();
+        // Defer disposal until the slow expand-fade death animation completes
+        // (see Enemy.DEATH_DURATION). The enemy is gone from `enemiesAlive()`
+        // immediately so new shots can't target it, but the mesh stays in
+        // scene so the player sees it die.
+        if (e.deathDoneAt > 0 && audioTime >= e.deathDoneAt) {
+          this.scene.remove(e.object);
+          e.dispose();
+          continue;
+        }
+        remaining.push(e);
         continue;
       }
       if (e.hasReachedPlayer(audioTime)) {
@@ -70,7 +78,12 @@ export class EnemyDirector {
   }
 
   get aliveCount(): number {
-    return this.active.length;
+    // Dying enemies linger in `active` until their death animation completes
+    // so the visual fade can play — they're already removed from gameplay
+    // (no new hits, no contact). Count only the still-alive ones for HUD.
+    let n = 0;
+    for (const e of this.active) if (e.alive) n++;
+    return n;
   }
 
   get totalSpawned(): number {
@@ -124,6 +137,8 @@ export class EnemyDirector {
 
       const enemy = new Enemy({
         pitchClass: spawn.pitchClass,
+        keyRoot: spawn.keyRoot,
+        keyMode: spawn.keyMode,
         hp: spawn.hp,
         spawnPosition: spawnPos,
         targetPosition: targetPos,

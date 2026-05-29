@@ -23,13 +23,12 @@ export interface BeatInfo {
 const SCHEDULE_INTERVAL_MS = 25;
 const LOOKAHEAD_SEC = 0.1;
 const COUNT_IN_BEATS = 4;
-// 8 measures × 4 beats. Doubled from the original 16 (4 measures) so each
-// level has room for a longer, more spread-out enemy schedule. The four-chord
-// progression in BackingTrack cycles twice across the play window — still
-// musically coherent. travelBeats up to 12 means enemies can start arriving
-// at beat 8 (one measure into play) and arrivals can spread all the way to
-// beat ~30 instead of being packed into the last measure.
-const PLAY_BEATS = 32;
+// 32 measures × 4 beats. A wave of enemies spawns every 8 measures (see
+// src/levels/waves.ts), so the play window holds four difficulty-tiered waves
+// back-to-back. The four-chord BackingTrack progression loops eight times
+// across the window.
+const PLAY_MEASURES = 32;
+const PLAY_BEATS = PLAY_MEASURES * 4;
 export const MIN_BPM = 60;
 export const MAX_BPM = 120;
 
@@ -225,7 +224,7 @@ export class Conductor {
 
       this.nextBeat++;
 
-      if (info.phase === "playing" && info.measureInPlay === 3 && info.beatInPhase === 3) {
+      if (info.phase === "playing" && info.measureInPlay === PLAY_MEASURES - 1 && info.beatInPhase === 3) {
         // Last beat of the last measure has been scheduled. Let it ring out,
         // then transition to done.
         const endAt = time + spb;
