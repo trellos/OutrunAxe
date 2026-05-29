@@ -748,3 +748,24 @@ Asset/branch names (exact, QA audits these):
 - `npm test` (vitest) is run by Gameplay (scorer/bassline units) and by QA at
   integration; Art/Sound aren't required to add unit tests but must keep their
   worktree's `tsc` clean.
+
+---
+
+## 13. Corrections (post-review round — authoritative)
+
+These supersede earlier conflicting guidance.
+
+- **Grid cells are note timelines, not labels.** Each measure cell plots the
+  *played notes* for that measure (positioned by beat), via a new `eddieNote`
+  juice event. Never render text/number labels ("INTRO 1", "1".."16") as the cell
+  body. Bass-chord labels above a cell and the 8th/16th tag badges are the only
+  text.
+- **No PLAY button on the play screen.** `InfiniteEddieState` is already playing
+  when it loads. The PLAY button belongs only to `EddieSettingsState`. (The art
+  debug gallery mounts the button solely to review that asset.)
+- **Fire default = option-3** (retro pixel-fire / Doom automaton).
+- **Background & particles: 6 options each**, in registries under
+  `src/eddie/art/backgrounds/` and `src/eddie/art/particles/`, reviewable via
+  `?eddieart=1&bg=N` / `&fx=N` (N = 1..6).
+- **Settings screen: research-driven 80s themes**, reviewable via
+  `?eddie=1&theme=N`.

@@ -15,9 +15,11 @@ import type { EventBus } from "../../engine/EventBus";
 import type { EddieConfig, EddieJuiceEvents } from "../../music/eddie/eddieTypes";
 import "./eddie.css";
 import { EddieGrid } from "./EddieGrid";
-import { EddieBackground } from "./EddieBackground";
 import { EddieFire } from "./EddieFire";
-import { EddieParticles } from "./EddieParticles";
+import { backgroundByIndex } from "./backgrounds/registry";
+import { particlesByIndex } from "./particles/registry";
+import type { EddieBackgroundVariant } from "./backgrounds/types";
+import type { EddieParticlesVariant } from "./particles/types";
 
 export interface EddieArtRig {
   /** Build DOM/scene objects. `hudParent` is the HUD div; `scene` is the
@@ -30,6 +32,11 @@ export interface EddieArtRig {
     /** Optional camera for the background to park/shake. The play state may
      *  pass renderer.worldCamera; the debug gallery passes its own. */
     camera?: THREE.PerspectiveCamera;
+    /** 0-based registry index for the background variant (default 0). The debug
+     *  gallery sets this from ?bg=N; the play state uses the production default. */
+    bgIndex?: number;
+    /** 0-based registry index for the particles variant (default 0; ?fx=N). */
+    fxIndex?: number;
   }): void;
   update(dt: number, audioTime: number): void;
   setActiveMeasure(scoredMeasure: number): void;
@@ -40,9 +47,9 @@ export type EddieArtVariant = "option-1" | "option-2" | "option-3";
 
 class EddieArtRigImpl implements EddieArtRig {
   private grid = new EddieGrid();
-  private background = new EddieBackground();
   private fire = new EddieFire();
-  private particles = new EddieParticles();
+  private background: EddieBackgroundVariant | null = null;
+  private particles: EddieParticlesVariant | null = null;
 
   private hudRoot: HTMLDivElement | null = null;
   private scoreValueEl: HTMLDivElement | null = null;
@@ -54,6 +61,8 @@ class EddieArtRigImpl implements EddieArtRig {
     config: EddieConfig;
     juice: EventBus<EddieJuiceEvents>;
     camera?: THREE.PerspectiveCamera;
+    bgIndex?: number;
+    fxIndex?: number;
   }): void {
     // A single scoped root so dispose() can guarantee zero leaked DOM and the
     // CSS custom properties (--eddie-*) cascade to every child.
@@ -75,6 +84,7 @@ class EddieArtRigImpl implements EddieArtRig {
     root.appendChild(score);
     this.scoreValueEl = value;
 
+    this.background = backgroundByIndex(ctx.bgIndex ?? 0).create();
     this.background.mount({ scene: ctx.scene, camera: ctx.camera, juice: ctx.juice });
     this.grid.mount({ hudParent: root, config: ctx.config, juice: ctx.juice });
     this.fire.mount({
@@ -82,6 +92,7 @@ class EddieArtRigImpl implements EddieArtRig {
       juice: ctx.juice,
       resolveCell: (measure) => this.resolveCell(measure),
     });
+    this.particles = particlesByIndex(ctx.fxIndex ?? 0).create();
     this.particles.mount({
       hudParent: root,
       juice: ctx.juice,
@@ -119,10 +130,10 @@ class EddieArtRigImpl implements EddieArtRig {
   }
 
   update(dt: number, audioTime: number): void {
-    this.background.update(dt, audioTime);
+    this.background?.update(dt, audioTime);
     this.grid.update(dt);
     this.fire.update(dt);
-    this.particles.update(dt);
+    this.particles?.update(dt);
   }
 
   setActiveMeasure(scoredMeasure: number): void {
@@ -132,10 +143,12 @@ class EddieArtRigImpl implements EddieArtRig {
   dispose(): void {
     this.offScorePop?.();
     this.offScorePop = undefined;
-    this.particles.dispose();
+    this.particles?.dispose();
     this.fire.dispose();
     this.grid.dispose();
-    this.background.dispose();
+    this.background?.dispose();
+    this.particles = null;
+    this.background = null;
     this.scoreValueEl = null;
     this.hudRoot?.remove();
     this.hudRoot = null;

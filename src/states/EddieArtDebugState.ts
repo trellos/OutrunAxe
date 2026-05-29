@@ -11,9 +11,11 @@
 
 import type { Game, GameState } from "../engine/Game";
 import { EventBus } from "../engine/EventBus";
-import type { EddieConfig, EddieJuiceEvents } from "../music/eddie/eddieTypes";
+import type { EddieConfig, EddieJuiceEvents, PitchClass } from "../music/eddie/eddieTypes";
 import { createEddieArt, type EddieArtRig } from "../eddie/art/eddieArtFactory";
 import { createEddiePlayButton, type EddiePlayButton } from "../eddie/art/EddiePlayButton";
+import { BACKGROUNDS } from "../eddie/art/backgrounds/registry";
+import { PARTICLES } from "../eddie/art/particles/registry";
 
 // A representative synthetic config so the grid renders bass labels + both tags.
 function makeDebugConfig(): EddieConfig {
@@ -52,6 +54,11 @@ export class EddieArtDebugState implements GameState {
   private fakeTotal = 0;
   private paused = false;
   private bpm = 120;
+  /** Active scored measure (>=0) for synthetic note plotting; <0 during intro. */
+  private activeScoredDbg = 0;
+  /** Selected variant indices (0-based), from ?bg=N / ?fx=N (1-based in the URL). */
+  private bgIndex = 0;
+  private fxIndex = 0;
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -62,6 +69,10 @@ export class EddieArtDebugState implements GameState {
 
     const config = makeDebugConfig();
 
+    const params = new URLSearchParams(location.search);
+    this.bgIndex = Math.max(0, (parseInt(params.get("bg") ?? "1", 10) || 1) - 1) % BACKGROUNDS.length;
+    this.fxIndex = Math.max(0, (parseInt(params.get("fx") ?? "1", 10) || 1) - 1) % PARTICLES.length;
+
     this.rig = createEddieArt("option-1");
     this.rig.mount({
       hudParent: this.hudParent,
@@ -69,6 +80,8 @@ export class EddieArtDebugState implements GameState {
       config,
       juice: this.juice,
       camera: worldCamera,
+      bgIndex: this.bgIndex,
+      fxIndex: this.fxIndex,
     });
     this.rig.setActiveMeasure(0);
 
@@ -127,6 +140,19 @@ export class EddieArtDebugState implements GameState {
         downbeat,
         audioTime: this.t,
       });
+      // Synthetic played notes plotted into the active scored cell so the grid's
+      // note timeline is visible in review. The 8th-tag measure gets 2 notes/beat,
+      // the 16th-tag measure 4, others 1.
+      if (this.activeScoredDbg >= 0) {
+        const beat = (this.beatInMeasure + 3) % 4; // the beat just pulsed
+        let sub = 1;
+        if (this.activeScoredDbg === 6) sub = 2;
+        else if (this.activeScoredDbg === 11) sub = 4;
+        for (let s = 0; s < sub; s++) {
+          this.emitNote(this.activeScoredDbg, (beat + s / sub) / 4);
+        }
+      }
+
       this.beatInMeasure = (this.beatInMeasure + 1) % 4;
       if (this.beatInMeasure === 0) {
         // Advance the active measure: walk intro (-1..-4) then scored 0..15.
@@ -134,6 +160,7 @@ export class EddieArtDebugState implements GameState {
         const cycle = 20;
         const m = this.fakeMeasure % cycle;
         const scored = m < 4 ? -(m + 1) : m - 4; // -1..-4 intro, then 0..15
+        this.activeScoredDbg = scored;
         this.rig?.setActiveMeasure(scored);
       }
     }
@@ -171,6 +198,30 @@ export class EddieArtDebugState implements GameState {
     this.juice.emit("eddieScorePop", { total: this.fakeTotal, delta, audioTime: this.t });
   }
 
+  // E-major scale pitch classes (the debug config key) for synthetic in-key
+  // notes, paired with a representative MIDI in the grid's plot range.
+  private static readonly IN_KEY: Array<[PitchClass, number]> = [
+    ["E", 52], ["F#", 54], ["G#", 56], ["A", 57], ["B", 59], ["C#", 61], ["D#", 63],
+    ["E", 64], ["F#", 66], ["A", 69], ["B", 71],
+  ];
+  private static readonly OFF_KEY: Array<[PitchClass, number]> = [
+    ["F", 53], ["G", 55], ["C", 60], ["D", 62],
+  ];
+
+  private emitNote(measure: number, beatFraction: number) {
+    const off = Math.random() < 0.18;
+    const pool = off ? EddieArtDebugState.OFF_KEY : EddieArtDebugState.IN_KEY;
+    const [pitchClass, midi] = pool[Math.floor(Math.random() * pool.length)];
+    this.juice.emit("eddieNote", {
+      measure,
+      beatFraction,
+      pitchClass,
+      midi,
+      inKey: !off,
+      audioTime: this.t,
+    });
+  }
+
   private fireBurst(big: boolean) {
     const measure = big ? 11 : 6; // the tagged measures in the debug config
     this.juice.emit("eddieFire", { measure, tier: big ? 2 : 1, audioTime: this.t });
@@ -178,11 +229,15 @@ export class EddieArtDebugState implements GameState {
   }
 
   private hudText(): string {
+    const bg = BACKGROUNDS[this.bgIndex];
+    const fx = PARTICLES[this.fxIndex];
     return (
-      `EDDIE ART GALLERY (option-1) — driven by a synthetic juice bus<br>` +
-      `<b>SPACE</b> pause/resume &middot; <b>F</b> 8th fire &middot; ` +
-      `<b>G</b> 16th fire &middot; <b>P</b> particles &middot; <b>S</b> shake<br>` +
-      `&minus;/&plus; tempo (${this.bpm} BPM). Switch branches to review option-2/3.`
+      `EDDIE ART GALLERY — driven by a synthetic juice bus<br>` +
+      `BG ${this.bgIndex + 1}/${BACKGROUNDS.length}: <b>${bg.label}</b> &middot; ` +
+      `FX ${this.fxIndex + 1}/${PARTICLES.length}: <b>${fx.label}</b><br>` +
+      `<b>SPACE</b> pause &middot; <b>F</b> 8th fire &middot; <b>G</b> 16th fire &middot; ` +
+      `<b>P</b> particles &middot; <b>S</b> shake &middot; &minus;/&plus; tempo (${this.bpm})<br>` +
+      `Review others via <b>?eddieart=1&amp;bg=N&amp;fx=N</b> (N=1..6).`
     );
   }
 

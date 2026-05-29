@@ -20,6 +20,7 @@ import { getAudioContext } from "../audio/AudioContextSingleton";
 import type { Game, GameState } from "../engine/Game";
 import { EventBus } from "../engine/EventBus";
 import { KeyResolver } from "../music/KeyResolver";
+import { keyPitchClasses } from "../music/keys";
 import { EddieScorer } from "../music/eddie/EddieScorer";
 import type {
   EddieConfig,
@@ -79,7 +80,11 @@ export class InfiniteEddieState implements GameState {
   private offPhase?: () => void;
   private offScore?: () => void;
   private offTotal?: () => void;
+  private offNote?: () => void;
   private keyHandler?: (e: KeyboardEvent) => void;
+
+  /** Pitch classes of the selected key, for the in-key note coloring. */
+  private keySet = new Set<string>();
 
   /** Audio time of the very first count-in beat (intro origin). */
   private introStart = -1;
@@ -116,6 +121,10 @@ export class InfiniteEddieState implements GameState {
 
     this.scorer = new EddieScorer(this.conductor, this.resolver, this.config);
     this.scorer.attach();
+
+    this.keySet = new Set<string>(
+      keyPitchClasses(this.config.keyRoot, this.config.keyMode),
+    );
 
     // Art rig: mounts the grid/background/fire/particles + score readout and
     // subscribes to the juice bus. Background may park/shake the world camera.
@@ -174,6 +183,23 @@ export class InfiniteEddieState implements GameState {
       });
     });
 
+    // Plot every played note into its measure cell on the grid (GDD §13: the
+    // grid cells are note timelines). pitchFired fires only during the playing
+    // phase (KeyResolver gates on phase), so measureIdx is a scored measure.
+    this.offNote = this.resolver.bus.on("pitchFired", (p) => {
+      const dur = this.conductor.measureDuration();
+      const start = this.conductor.measureStartTime(p.measureIdx);
+      const frac = dur > 0 ? (p.audioTime - start) / dur : 0;
+      this.juice.emit("eddieNote", {
+        measure: p.measureIdx,
+        beatFraction: Math.max(0, Math.min(1, frac)),
+        pitchClass: p.pitchClass,
+        midi: p.midi,
+        inKey: this.keySet.has(p.pitchClass),
+        audioTime: p.audioTime,
+      });
+    });
+
     this.keyHandler = (e: KeyboardEvent) => {
       if (e.repeat) return;
       const midi = KEY_TO_MIDI[e.code];
@@ -198,6 +224,7 @@ export class InfiniteEddieState implements GameState {
     this.offPhase?.();
     this.offScore?.();
     this.offTotal?.();
+    this.offNote?.();
 
     this.scorer?.detach();
     this.resolver?.detach();

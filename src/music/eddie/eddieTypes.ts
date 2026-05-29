@@ -120,4 +120,20 @@ export type EddieJuiceEvents = {
   eddieBeatPulse: { beatInMeasure: number; downbeat: boolean; audioTime: number };
   /** The score number should visually increment to `total`. */
   eddieScorePop: { total: number; delta: number; audioTime: number };
+  /** A played note, for the grid to PLOT inside the measure cell it lands in.
+   *  The grid cells are note timelines (AGENTS.md Infinite Eddie rule #1): the
+   *  notes the player plays render here, never text labels.
+   *  - measure: scored measure 0..15, or intro row as -1..-4 (same convention as
+   *    setActiveMeasure).
+   *  - beatFraction: 0..1 horizontal position across the measure.
+   *  - pitchClass/midi: for vertical placement + labeling.
+   *  - inKey: whether the note is in the selected key (color in vs out of key). */
+  eddieNote: {
+    measure: number;
+    beatFraction: number;
+    pitchClass: PitchClass;
+    midi: number;
+    inKey: boolean;
+    audioTime: number;
+  };
 };

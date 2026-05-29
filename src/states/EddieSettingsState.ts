@@ -31,6 +31,7 @@ import {
 } from "../eddie/art/EddiePlayButton";
 import { InfiniteEddieState } from "./InfiniteEddieState";
 import { LevelState } from "./LevelState";
+import "../eddie/art/settings-themes.css";
 
 const PLAY_BUTTON_VARIANT = "option-1" as const;
 const AUDIO_VARIANT = "option-1" as const;
@@ -240,6 +241,13 @@ export class EddieSettingsState implements GameState {
   private buildDom() {
     const overlay = document.createElement("div");
     overlay.className = "outrun-levelselect eddie-settings";
+    // 80s theme selection for review: ?eddie=1&theme=N (N=1..4) applies one of
+    // the settings-themes.css designs. No param = current baseline styling.
+    const themeN = parseInt(
+      new URLSearchParams(location.search).get("theme") ?? "0",
+      10,
+    );
+    if (themeN >= 1 && themeN <= 4) overlay.classList.add(`eddie-theme-${themeN}`);
 
     overlay.innerHTML = `
       <div class="levelselect-inner">
