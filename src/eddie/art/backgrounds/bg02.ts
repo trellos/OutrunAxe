@@ -8,8 +8,14 @@
 // boat in a tempest. At morph 1 it is a raging storm: towering chaotic waves,
 // near-constant lightning, blood-red sky, waterspouts.
 //
+// Pixely neon DOLPHINS leap out of the swell in parabolic arcs (chunky pixel
+// silhouettes with a neon rim + a little splash). They surface occasionally in
+// calm and leap more often, bigger, and in larger pods on the beat as intensity
+// rises. The dolphin sprites are pooled/recycled — no per-leap allocation.
+//
 // Juice contract (all three events handled):
-//  - eddieBeatPulse  -> wave surge + a lightning strike (more likely w/ morph).
+//  - eddieBeatPulse  -> wave surge + lightning strike + a dolphin pod leap
+//    (chance + pod size grow with morph; downbeats stronger).
 //  - eddieShake      -> camera jolt that decays.
 //  - eddieIntensity  -> target morph; eased each frame (never snapped).
 //
@@ -50,6 +56,21 @@ interface Lightning {
   branchAt: number; // row index where a branch forks
 }
 
+// A pixely neon dolphin doing a parabolic leap out of the swell. Pooled: when
+// `active` is false the slot is free for reuse (no per-leap allocation).
+interface Dolphin {
+  active: boolean;
+  x: number; // canvas-x of the arc center (entry/exit point)
+  surfaceY: number; // canvas-y of the water surface it leaps from
+  t: number; // 0..1 progress through the arc
+  dur: number; // seconds for the full leap
+  span: number; // horizontal travel across the arc (px)
+  height: number; // peak leap height (px)
+  dir: number; // +1 leaping right, -1 leaping left
+  hue: number; // 0..1 neon hue mix (cyan..magenta)
+  splash: number; // splash flash on entry, decays
+}
+
 class Bg02 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
   private group = new THREE.Group();
@@ -78,6 +99,11 @@ class Bg02 implements EddieBackgroundVariant {
   private bolts: Lightning[] = [];
   private flash = 0; // full-screen lightning flash, decays
 
+  // Dolphin pool (fixed-size, recycled). `dolphinTimer` gates ambient leaps;
+  // beats can also trigger leaps directly (a pod at high energy).
+  private dolphins: Dolphin[] = [];
+  private dolphinTimer = 0; // counts down to the next ambient leap
+
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
@@ -90,6 +116,23 @@ class Bg02 implements EddieBackgroundVariant {
     this.canvas.height = SEA_H;
     this.c2d = this.canvas.getContext("2d")!;
     this.c2d.imageSmoothingEnabled = false;
+
+    // Pre-allocate the dolphin pool once (max simultaneous leapers).
+    for (let i = 0; i < 8; i++) {
+      this.dolphins.push({
+        active: false,
+        x: 0,
+        surfaceY: 0,
+        t: 0,
+        dur: 1,
+        span: 0,
+        height: 0,
+        dir: 1,
+        hue: 0,
+        splash: 0,
+      });
+    }
+    this.dolphinTimer = 1.5 + Math.random() * 2;
 
     this.paint();
     this.tex = new THREE.CanvasTexture(this.canvas);
@@ -121,6 +164,14 @@ class Bg02 implements EddieBackgroundVariant {
       // Lightning chance scales with morph; downbeats strike reliably past mid morph.
       const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
       if (Math.random() < chance) this.strike(e.downbeat);
+
+      // Dolphins leap ON THE BEAT: chance + pod size grow with morph + downbeat.
+      // Calm baseline still gets the occasional single downbeat leap.
+      const leapChance = (e.downbeat ? 0.5 : 0.18) + this.morph * 0.5;
+      if (Math.random() < leapChance) {
+        const pod = 1 + Math.floor(this.morph * 3) + (e.downbeat ? 1 : 0);
+        this.launchPod(pod, e.downbeat);
+      }
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
@@ -146,6 +197,51 @@ class Bg02 implements EddieBackgroundVariant {
     });
     this.flash = Math.max(this.flash, downbeat ? 1 : 0.7);
     if (this.bolts.length > 6) this.bolts.shift();
+  }
+
+  /** Canvas-y of the water surface at canvas-x `x`, near the camera (where the
+   *  dolphins play). Mirrors the near-row swell amplitude used in paint() so the
+   *  leaps enter/exit on the actual moving surface. */
+  private surfaceYAt(x: number): number {
+    const horizon = Math.floor(SEA_H * 0.42);
+    const playRow = SEA_H - horizon - 12; // a near-ish band, not the very bottom
+    const y = horizon + playRow;
+    const depth = playRow / (SEA_H - horizon);
+    const amp = this.lerp(2.5, 16, this.morph) * (1 + this.pulse * 0.6);
+    const chop = this.lerp(0.6, 2.4, this.morph);
+    const phase = this.t * (1.2 + depth * 2) + playRow * 0.5;
+    const w =
+      Math.sin(x * 0.06 * chop + phase) * amp * (0.4 + depth) +
+      Math.sin(x * 0.17 * chop + phase * 1.7) * amp * 0.4 * depth;
+    return y + w * 0.15;
+  }
+
+  /** Launch up to `n` dolphins as a clustered pod from free pool slots. */
+  private launchPod(n: number, big: boolean): void {
+    const cx = 20 + Math.random() * (SEA_W - 40);
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    let launched = 0;
+    for (const d of this.dolphins) {
+      if (d.active) continue;
+      // Cluster pod members near cx with slight stagger so they arc together.
+      const jitterX = (launched - (n - 1) / 2) * (6 + Math.random() * 4);
+      this.spawnDolphin(d, cx + jitterX, dir, big, launched * 0.04);
+      if (++launched >= n) break;
+    }
+  }
+
+  /** Configure a pooled dolphin slot for a leap. Bigger/faster with morph. */
+  private spawnDolphin(d: Dolphin, x: number, dir: number, big: boolean, delay: number): void {
+    d.active = true;
+    d.x = x;
+    d.surfaceY = this.surfaceYAt(x);
+    d.t = -delay; // start slightly before 0 so pod members lag/stagger their arcs
+    d.dir = dir;
+    d.span = (10 + Math.random() * 10 + this.morph * 10) * dir;
+    d.height = (10 + Math.random() * 6 + this.morph * 14) * (big ? 1.25 : 1);
+    d.dur = 0.7 + Math.random() * 0.25 - this.morph * 0.15; // snappier at high energy
+    d.hue = Math.random();
+    d.splash = 0;
   }
 
   private lerp(a: number, b: number, t: number): number {
@@ -268,6 +364,9 @@ class Bg02 implements EddieBackgroundVariant {
       ctx.globalAlpha = 1;
     }
 
+    // --- Dolphins: pixely neon leapers arcing over the swell.
+    this.drawDolphins();
+
     // --- Lightning bolts (drawn over the sky).
     for (const bolt of this.bolts) {
       const a = Math.min(1, bolt.life * 6);
@@ -299,6 +398,111 @@ class Bg02 implements EddieBackgroundVariant {
     }
   }
 
+  /** Advance dolphin arcs, fire ambient leaps on a timer, decay splashes, and
+   *  recycle finished slots. Splash pops fire as a dolphin crosses the surface
+   *  on the way up (exit) and back down (entry). */
+  private updateDolphins(dt: number): void {
+    // Ambient leaps: occasional in calm, more frequent as morph rises.
+    this.dolphinTimer -= dt;
+    if (this.dolphinTimer <= 0) {
+      const pod = 1 + Math.floor(this.morph * 2);
+      this.launchPod(pod, false);
+      // Interval shrinks with morph (calm ~3s, storm ~0.8s) + jitter.
+      this.dolphinTimer = this.lerp(3.2, 0.8, this.morph) * (0.6 + Math.random() * 0.8);
+    }
+
+    for (const d of this.dolphins) {
+      if (!d.active) continue;
+      if (d.splash > 0) d.splash = Math.max(0, d.splash - dt * 4);
+
+      const prev = d.t;
+      d.t += dt / d.dur;
+
+      // Splash on exit (crossing 0 upward) and on entry (crossing 1).
+      if (prev < 0 && d.t >= 0) d.splash = Math.max(d.splash, 1);
+      if (prev < 1 && d.t >= 1) {
+        d.splash = Math.max(d.splash, 1);
+        d.surfaceY = this.surfaceYAt(d.x + d.span * 0.5); // splash at the entry point
+      }
+
+      // Retire once the arc is done AND its splash has faded.
+      if (d.t > 1 && d.splash <= 0.01) d.active = false;
+    }
+  }
+
+  /** Draw all active dolphins for this frame (called from paint()). Each is a
+   *  chunky pixel silhouette with a neon rim, following its parabolic arc; a
+   *  little splash pops at entry/exit. */
+  private drawDolphins(): void {
+    const ctx = this.c2d;
+    for (const d of this.dolphins) {
+      if (!d.active) continue;
+
+      // Splash bursts (entry + exit) draw even outside the airborne window.
+      if (d.splash > 0.01) {
+        ctx.globalAlpha = Math.min(1, d.splash);
+        ctx.fillStyle = "#ffffff";
+        const sn = 3 + Math.floor(d.splash * 6);
+        for (let i = 0; i < sn; i++) {
+          const ax = d.x + (Math.random() - 0.5) * 12;
+          const ay = d.surfaceY - Math.random() * 6 * d.splash;
+          ctx.fillRect(Math.round(ax), Math.round(ay), 1, 1);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // Only draw the body while airborne (t in 0..1).
+      if (d.t < 0 || d.t > 1) continue;
+      const p = d.t;
+      // Parabolic height: peaks at p=0.5.
+      const arc = 4 * p * (1 - p); // 0..1..0
+      const cx = d.x + d.span * (p - 0.5);
+      const cy = d.surfaceY - arc * d.height;
+      // Body tilts with the arc velocity (up on the way out, down on entry).
+      const tilt = (0.5 - p) * 1.4; // + nose-up early, - nose-down late
+      // Neon rim color: cyan..magenta by hue, brightened toward storm-red.
+      const r = Math.round(this.lerp(0, 255, d.hue) + this.morph * 120);
+      const g = Math.round(this.lerp(220, 60, d.hue) * (1 - this.morph * 0.3));
+      const b = Math.round(this.lerp(255, 214, d.hue));
+      const rim = `rgb(${Math.min(255, r)},${Math.max(0, g)},${b})`;
+
+      // A compact pixel dolphin: a curved body + dorsal fin + tail fluke. We
+      // sample a short spine and stamp 2px-thick segments, with a 1px brighter
+      // rim on the upper edge.
+      const len = 9 + Math.floor(d.height * 0.18);
+      const dir = Math.sign(d.span) || 1;
+      ctx.save();
+      for (let s = 0; s < len; s++) {
+        const u = s / (len - 1); // 0 tail .. 1 nose
+        // Body centerline: a gentle banana curve, oriented by dir + tilt.
+        const along = (u - 0.5) * len;
+        const bend = Math.sin(u * Math.PI) * 2.2; // belly curve
+        const bx = cx + dir * along * Math.cos(tilt) - bend * Math.sin(tilt);
+        const by = cy + along * Math.sin(tilt) - bend * Math.cos(tilt) * 0.6;
+        // Body thickness tapers toward nose + tail.
+        const thick = Math.max(1, Math.round(Math.sin(u * Math.PI) * 2.4));
+        ctx.fillStyle = "#0b0a18"; // dark silhouette
+        ctx.fillRect(Math.round(bx), Math.round(by), 2, thick + 1);
+        // Neon rim along the top edge.
+        ctx.fillStyle = rim;
+        ctx.globalAlpha = 0.9;
+        ctx.fillRect(Math.round(bx), Math.round(by), 2, 1);
+        ctx.globalAlpha = 1;
+        // Dorsal fin near mid-body (u ~ 0.55).
+        if (s === Math.floor(len * 0.55)) {
+          ctx.fillStyle = rim;
+          ctx.fillRect(Math.round(bx), Math.round(by - 3), 1, 3);
+        }
+        // Tail fluke at the tail end (u ~ 0).
+        if (s === 0) {
+          ctx.fillStyle = rim;
+          ctx.fillRect(Math.round(bx - dir), Math.round(by - 2), 1, 5);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
@@ -311,6 +515,8 @@ class Bg02 implements EddieBackgroundVariant {
       for (const b of this.bolts) b.life -= dt;
       this.bolts = this.bolts.filter((b) => b.life > 0);
     }
+
+    this.updateDolphins(dt);
 
     this.paint();
     this.tex.needsUpdate = true;
@@ -362,6 +568,7 @@ class Bg02 implements EddieBackgroundVariant {
     this.quadMat.dispose();
     this.tex.dispose();
     this.bolts = [];
+    this.dolphins = [];
     this.camera = null;
   }
 }
@@ -369,7 +576,7 @@ class Bg02 implements EddieBackgroundVariant {
 const def: EddieBackgroundDef = {
   id: "bg02",
   label: "Neon Sea → Storm",
-  blurb: "A calm neon synthwave ocean under a banded moon that morphs into a raging tempest as you heat up — swelling waves, whitecaps, waterspouts and beat-timed lightning, with the camera pitching like a boat.",
+  blurb: "A calm neon synthwave ocean under a banded moon that morphs into a raging tempest as you heat up — swelling waves, whitecaps, waterspouts, beat-timed lightning and leaping neon dolphins, with the camera pitching like a boat.",
   create: () => new Bg02(),
 };
 

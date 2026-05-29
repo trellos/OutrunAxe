@@ -1,19 +1,22 @@
-// bg06 — "Desert Neon Highway -> Volcanic" — flying down a neon-lined desert
-// highway at dusk that erupts into a volcanic hellscape as performance intensity
+// bg06 — "Desert Drive -> Rainstorm" — flying forward through a pixel desert at
+// dusk that builds into an intense desert RAINSTORM as performance intensity
 // climbs. Three.js scene decoration (visuals only, GDD §8).
 //
-// The road is a single low-res CanvasTexture (NearestFilter, pixely) scrolling
-// toward the camera so dashes stream past; distant mesas are chunky pixel
-// silhouettes; the sky is a gradient quad. An eased `morph` (0..1) drives the
-// whole transformation:
-//   morph 0  -> calm dusk highway, cyan/magenta neon edge lines, amber sky.
-//   morph ~  -> ground cracks open, lava seams glow between the asphalt, sky reddens.
-//   morph 1  -> full VOLCANIC eruption: lava floods the road, fireballs arc and
-//               pulse on the beat, ash drifts, everything chaotic and red-hot.
+// The camera flies forward down the desert floor; saguaro cactuses and chunky
+// pixel ROCK MONUMENTS (mesas / buttes / arches) stream past on both sides and
+// recycle front->back so the drive is endless. A gradient desert sky sits behind
+// a distant horizon. An eased `morph` (0..1) drives the whole transformation:
+//   morph 0  -> calm dusk desert: warm amber/violet sky, dry ground, scenery
+//               streaming past, no rain.
+//   morph ~  -> storm clouds roll in and darken the sky, rain begins (sparse
+//               pixel streaks), the ground turns wet and reflective, wind tilts
+//               the rain, occasional lightning on the beat.
+//   morph 1  -> torrential chaotic downpour: dense slanted rain, dark roiling
+//               sky, frequent lightning bolts on the beat, camera buffeting.
 //
 // Juice (all three required):
-//   eddieBeatPulse  -> beat pump (fireball burst + lava surge; downbeat stronger),
-//                      scaled by morph so beats only erupt as intensity rises.
+//   eddieBeatPulse  -> rain surge + lightning. Lightning fires on the beat, more
+//                      reliably at higher morph (downbeat stronger).
 //   eddieShake      -> camera jolt that decays.
 //   eddieIntensity  -> stored as target; `morph` eases toward it every frame.
 //
@@ -26,26 +29,17 @@ import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const ROAD_W = 96; // road CanvasTexture resolution
-const ROAD_H = 160;
-const MESA_W = 192;
-const MESA_H = 64;
-const FIREBALL_COUNT = 14;
-const ASH_COUNT = 90;
+const SKY_H = 96; // sky gradient canvas resolution (vertical)
+const RAIN_COUNT = 700; // max rain streaks (scaled visible by morph)
+const SCENERY_COUNT = 22; // cactus + rock props streaming past
+const FAR_Z = -260; // recycle horizon (props spawn here)
+const NEAR_Z = 30; // props recycle once they pass this (behind camera)
 
-interface Fireball {
+type PropKind = "cactus" | "mesa" | "butte" | "arch";
+
+interface Prop {
   mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
-  // Parabolic arc params (recomputed when relaunched on a beat).
-  x0: number;
-  z0: number;
-  vx: number;
-  vy: number;
-  vz: number;
-  y: number;
-  t: number;
-  life: number;
-  active: boolean;
+  side: number; // -1 left, +1 right
   baseScale: number;
 }
 
@@ -55,14 +49,6 @@ class Bg06 implements EddieBackgroundVariant {
   private prevBackground: THREE.Scene["background"] = null;
   private prevFog: THREE.Scene["fog"] = null;
 
-  // Road (scrolling pixel canvas).
-  private roadCanvas!: HTMLCanvasElement;
-  private roadCtx!: CanvasRenderingContext2D;
-  private roadTex!: THREE.CanvasTexture;
-  private roadMat!: THREE.MeshBasicMaterial;
-  private roadMesh!: THREE.Mesh;
-  private scroll = 0;
-
   // Sky gradient.
   private skyCanvas!: HTMLCanvasElement;
   private skyCtx!: CanvasRenderingContext2D;
@@ -70,18 +56,37 @@ class Bg06 implements EddieBackgroundVariant {
   private skyMat!: THREE.MeshBasicMaterial;
   private skyMesh!: THREE.Mesh;
 
-  // Distant mesa silhouette.
-  private mesaTex!: THREE.CanvasTexture;
-  private mesaMat!: THREE.MeshBasicMaterial;
-  private mesaMesh!: THREE.Mesh;
+  // Ground plane (dry -> wet/reflective).
+  private groundMat!: THREE.MeshBasicMaterial;
+  private groundMesh!: THREE.Mesh;
+  private groundCanvas!: HTMLCanvasElement;
+  private groundCtx!: CanvasRenderingContext2D;
+  private groundTex!: THREE.CanvasTexture;
+  private groundScroll = 0;
 
-  // Fireballs + ash (volcanic, high morph).
-  private fireballs: Fireball[] = [];
-  private fireGeo!: THREE.SphereGeometry;
-  private ash!: THREE.Points;
-  private ashGeo!: THREE.BufferGeometry;
-  private ashMat!: THREE.PointsMaterial;
-  private ashVel!: Float32Array;
+  // Scenery props (cactus + rock monuments). Shared geometries, disposed once.
+  private props: Prop[] = [];
+  private cactusTex!: THREE.CanvasTexture;
+  private rockTex!: THREE.CanvasTexture;
+  private cactusMat!: THREE.MeshBasicMaterial;
+  private rockMat!: THREE.MeshBasicMaterial;
+  private propGeos: THREE.PlaneGeometry[] = [];
+
+  // Rain (additive line segments via a single LineSegments mesh).
+  private rain!: THREE.LineSegments;
+  private rainGeo!: THREE.BufferGeometry;
+  private rainMat!: THREE.LineBasicMaterial;
+  private rainPos!: Float32Array; // 2 verts per streak (head+tail)
+  private rainVel!: Float32Array; // per-streak fall velocity (x,y,z)
+
+  // Lightning: a full-screen flash quad + a few jagged bolt line meshes.
+  private flashMat!: THREE.MeshBasicMaterial;
+  private flashMesh!: THREE.Mesh;
+  private flash = 0;
+  private boltGeo!: THREE.BufferGeometry;
+  private boltMat!: THREE.LineBasicMaterial;
+  private bolt!: THREE.LineSegments;
+  private boltLife = 0;
 
   private camera: THREE.PerspectiveCamera | null = null;
   private camBaseY = 14;
@@ -97,8 +102,8 @@ class Bg06 implements EddieBackgroundVariant {
   private beatDecay = 4;
   private shake = 0;
   private t = 0;
-
-  private bgColor = new THREE.Color();
+  private flySpeed = 60; // world units/sec the scenery streams toward camera
+  private rngState = 0x1234abcd >>> 0;
 
   mount(ctx: {
     scene: THREE.Scene;
@@ -108,41 +113,13 @@ class Bg06 implements EddieBackgroundVariant {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
-    ctx.scene.background = new THREE.Color(0x2a1830);
-    // Fog tints distance; color is morph-driven each frame.
-    ctx.scene.fog = new THREE.Fog(0x2a1830, 40, 180);
-
-    // --- Road -------------------------------------------------------------
-    this.roadCanvas = document.createElement("canvas");
-    this.roadCanvas.width = ROAD_W;
-    this.roadCanvas.height = ROAD_H;
-    this.roadCtx = this.roadCanvas.getContext("2d")!;
-    this.roadCtx.imageSmoothingEnabled = false;
-    this.roadTex = new THREE.CanvasTexture(this.roadCanvas);
-    this.roadTex.colorSpace = THREE.SRGBColorSpace;
-    this.roadTex.magFilter = THREE.NearestFilter;
-    this.roadTex.minFilter = THREE.NearestFilter;
-    this.roadTex.generateMipmaps = false;
-    this.roadTex.wrapS = THREE.ClampToEdgeWrapping;
-    this.roadTex.wrapT = THREE.RepeatWrapping;
-    this.roadMat = new THREE.MeshBasicMaterial({
-      map: this.roadTex,
-      depthWrite: false,
-      transparent: true,
-      fog: true,
-    });
-    // Lay the road flat, receding from under the camera to the horizon.
-    this.roadMesh = new THREE.Mesh(new THREE.PlaneGeometry(120, 320), this.roadMat);
-    this.roadMesh.rotation.x = -Math.PI / 2;
-    this.roadMesh.position.set(0, 0, -110);
-    this.roadMesh.renderOrder = -10;
-    this.roadMesh.frustumCulled = false;
-    this.group.add(this.roadMesh);
+    ctx.scene.background = new THREE.Color(0x3a2436);
+    ctx.scene.fog = new THREE.Fog(0x3a2436, 60, 240);
 
     // --- Sky --------------------------------------------------------------
     this.skyCanvas = document.createElement("canvas");
     this.skyCanvas.width = 8;
-    this.skyCanvas.height = 64;
+    this.skyCanvas.height = SKY_H;
     this.skyCtx = this.skyCanvas.getContext("2d")!;
     this.skyTex = new THREE.CanvasTexture(this.skyCanvas);
     this.skyTex.colorSpace = THREE.SRGBColorSpace;
@@ -155,84 +132,130 @@ class Bg06 implements EddieBackgroundVariant {
       depthTest: false,
       fog: false,
     });
-    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(640, 260), this.skyMat);
-    this.skyMesh.position.set(0, 70, -260);
+    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(680, 300), this.skyMat);
+    this.skyMesh.position.set(0, 80, -280);
     this.skyMesh.renderOrder = -30;
     this.skyMesh.frustumCulled = false;
     this.group.add(this.skyMesh);
 
-    // --- Mesas ------------------------------------------------------------
-    this.mesaTex = this.buildMesaTexture();
-    this.mesaMat = new THREE.MeshBasicMaterial({
-      map: this.mesaTex,
-      transparent: true,
-      depthWrite: false,
-      fog: false,
+    // --- Ground -----------------------------------------------------------
+    this.groundCanvas = document.createElement("canvas");
+    this.groundCanvas.width = 64;
+    this.groundCanvas.height = 64;
+    this.groundCtx = this.groundCanvas.getContext("2d")!;
+    this.groundCtx.imageSmoothingEnabled = false;
+    this.groundTex = new THREE.CanvasTexture(this.groundCanvas);
+    this.groundTex.colorSpace = THREE.SRGBColorSpace;
+    this.groundTex.magFilter = THREE.NearestFilter;
+    this.groundTex.minFilter = THREE.NearestFilter;
+    this.groundTex.generateMipmaps = false;
+    this.groundTex.wrapS = THREE.RepeatWrapping;
+    this.groundTex.wrapT = THREE.RepeatWrapping;
+    this.groundTex.repeat.set(8, 12);
+    this.groundMat = new THREE.MeshBasicMaterial({
+      map: this.groundTex,
+      depthWrite: true,
+      fog: true,
     });
-    this.mesaMesh = new THREE.Mesh(new THREE.PlaneGeometry(560, 120), this.mesaMat);
-    this.mesaMesh.position.set(0, 24, -240);
-    this.mesaMesh.renderOrder = -25;
-    this.mesaMesh.frustumCulled = false;
-    this.group.add(this.mesaMesh);
+    this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(400, 420), this.groundMat);
+    this.groundMesh.rotation.x = -Math.PI / 2;
+    this.groundMesh.position.set(0, 0, -120);
+    this.groundMesh.renderOrder = -25;
+    this.groundMesh.frustumCulled = false;
+    this.group.add(this.groundMesh);
 
-    // --- Fireballs --------------------------------------------------------
-    this.fireGeo = new THREE.SphereGeometry(2.4, 10, 8);
-    for (let i = 0; i < FIREBALL_COUNT; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xff6a1a,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        fog: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const mesh = new THREE.Mesh(this.fireGeo, mat);
+    // --- Scenery textures + materials ------------------------------------
+    this.cactusTex = this.buildCactusTexture();
+    this.rockTex = this.buildRockTexture();
+    this.cactusMat = new THREE.MeshBasicMaterial({
+      map: this.cactusTex,
+      transparent: true,
+      alphaTest: 0.5,
+      depthWrite: true,
+      fog: true,
+    });
+    this.rockMat = new THREE.MeshBasicMaterial({
+      map: this.rockTex,
+      transparent: true,
+      alphaTest: 0.5,
+      depthWrite: true,
+      fog: true,
+    });
+
+    // A few shared plane geometries (different aspect ratios for the prop kinds).
+    const cactusGeo = new THREE.PlaneGeometry(14, 28);
+    const mesaGeo = new THREE.PlaneGeometry(46, 30);
+    const butteGeo = new THREE.PlaneGeometry(26, 40);
+    const archGeo = new THREE.PlaneGeometry(40, 28);
+    this.propGeos = [cactusGeo, mesaGeo, butteGeo, archGeo];
+
+    for (let i = 0; i < SCENERY_COUNT; i++) {
+      const side = i % 2 === 0 ? -1 : 1;
+      const kind = this.pickKind();
+      const geo = this.geoFor(kind);
+      const mat = kind === "cactus" ? this.cactusMat : this.rockMat;
+      const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
-      mesh.visible = false;
+      const p: Prop = { mesh, side, baseScale: 0.8 + this.rng() * 1.6 };
+      this.placeProp(p, FAR_Z + this.rng() * (NEAR_Z - FAR_Z));
       this.group.add(mesh);
-      this.fireballs.push({
-        mesh,
-        mat,
-        x0: 0,
-        z0: 0,
-        vx: 0,
-        vy: 0,
-        vz: 0,
-        y: 0,
-        t: 0,
-        life: 1,
-        active: false,
-        baseScale: 1,
-      });
+      this.props.push(p);
     }
 
-    // --- Ash --------------------------------------------------------------
-    this.ashGeo = new THREE.BufferGeometry();
-    const pos = new Float32Array(ASH_COUNT * 3);
-    this.ashVel = new Float32Array(ASH_COUNT * 3);
-    for (let i = 0; i < ASH_COUNT; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 160;
-      pos[i * 3 + 1] = Math.random() * 90;
-      pos[i * 3 + 2] = -40 - Math.random() * 180;
-      this.ashVel[i * 3] = (Math.random() - 0.5) * 2;
-      this.ashVel[i * 3 + 1] = -2 - Math.random() * 4;
-      this.ashVel[i * 3 + 2] = 4 + Math.random() * 8;
+    // --- Rain -------------------------------------------------------------
+    this.rainGeo = new THREE.BufferGeometry();
+    this.rainPos = new Float32Array(RAIN_COUNT * 2 * 3);
+    this.rainVel = new Float32Array(RAIN_COUNT * 3);
+    for (let i = 0; i < RAIN_COUNT; i++) {
+      this.respawnRain(i, true);
     }
-    this.ashGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    this.ashMat = new THREE.PointsMaterial({
-      color: 0x554a44,
-      size: 1.6,
+    this.rainGeo.setAttribute("position", new THREE.BufferAttribute(this.rainPos, 3));
+    this.rainGeo.setDrawRange(0, 0); // nothing visible until morph rises
+    this.rainMat = new THREE.LineBasicMaterial({
+      color: 0xaecbe6,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      fog: true,
+      blending: THREE.AdditiveBlending,
+    });
+    this.rain = new THREE.LineSegments(this.rainGeo, this.rainMat);
+    this.rain.frustumCulled = false;
+    this.group.add(this.rain);
+
+    // --- Lightning --------------------------------------------------------
+    this.flashMat = new THREE.MeshBasicMaterial({
+      color: 0xdfe8ff,
       transparent: true,
       opacity: 0,
       depthWrite: false,
-      fog: true,
-      sizeAttenuation: true,
+      depthTest: false,
+      fog: false,
+      blending: THREE.AdditiveBlending,
     });
-    this.ash = new THREE.Points(this.ashGeo, this.ashMat);
-    this.ash.frustumCulled = false;
-    this.group.add(this.ash);
+    this.flashMesh = new THREE.Mesh(new THREE.PlaneGeometry(800, 400), this.flashMat);
+    this.flashMesh.position.set(0, 60, -120);
+    this.flashMesh.renderOrder = -5;
+    this.flashMesh.frustumCulled = false;
+    this.group.add(this.flashMesh);
 
-    ctx.scene.add(this.group);
+    this.boltGeo = new THREE.BufferGeometry();
+    // Up to 16 jagged segments (2 verts each).
+    this.boltGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(16 * 2 * 3), 3));
+    this.boltGeo.setDrawRange(0, 0);
+    this.boltMat = new THREE.LineBasicMaterial({
+      color: 0xf2f6ff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.bolt = new THREE.LineSegments(this.boltGeo, this.boltMat);
+    this.bolt.frustumCulled = false;
+    this.group.add(this.bolt);
+
+    this.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
@@ -240,17 +263,15 @@ class Bg06 implements EddieBackgroundVariant {
       this.camera.lookAt(0, 8, -120);
     }
 
-    this.paintRoad();
     this.paintSky();
+    this.paintGround();
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
       this.beat = Math.max(this.beat, e.downbeat ? 1 : 0.55);
-      this.beatDecay = e.downbeat ? 1 / 0.28 : 1 / 0.18;
-      // Volcanic beat reaction scales with morph: launch fireballs + lava surge.
-      if (this.morph > 0.45) {
-        const launches = e.downbeat ? 3 + Math.floor(this.morph * 4) : 1 + Math.floor(this.morph * 2);
-        for (let i = 0; i < launches; i++) this.launchFireball();
-      }
+      this.beatDecay = e.downbeat ? 1 / 0.3 : 1 / 0.18;
+      // Lightning on the beat: probability climbs with morph; downbeats reliable.
+      const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
+      if (this.morph > 0.25 && this.rng() < chance) this.strikeLightning(e.downbeat);
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
       this.shake = Math.max(this.shake, e.magnitude);
@@ -260,114 +281,210 @@ class Bg06 implements EddieBackgroundVariant {
     });
   }
 
-  private launchFireball(): void {
-    const f = this.fireballs.find((x) => !x.active);
-    if (!f) return;
-    f.active = true;
-    f.mesh.visible = true;
-    f.t = 0;
-    f.life = 0.7 + Math.random() * 0.6;
-    f.x0 = (Math.random() - 0.5) * 70;
-    f.z0 = -60 - Math.random() * 90;
-    f.y = 0;
-    f.vx = (Math.random() - 0.5) * 24;
-    f.vy = 40 + Math.random() * 40 + this.morph * 30; // higher arcs at full eruption
-    f.vz = 10 + Math.random() * 24;
-    f.baseScale = 0.8 + Math.random() * 1.4;
+  /** Deterministic xorshift so the scenery layout is stable per mount. */
+  private rng(): number {
+    let s = this.rngState;
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    this.rngState = s >>> 0;
+    return (this.rngState % 100000) / 100000;
   }
 
-  /** Pixel road: asphalt + neon edge lines + center dashes; lava seams at morph. */
-  private paintRoad(): void {
-    const ctx = this.roadCtx;
-    const m = this.morph;
-    ctx.clearRect(0, 0, ROAD_W, ROAD_H);
-
-    // Asphalt base — darkens and reddens with morph.
-    const baseR = Math.floor(18 + m * 60);
-    const baseG = Math.floor(16 - m * 8);
-    const baseB = Math.floor(26 - m * 18);
-    ctx.fillStyle = `rgb(${baseR},${Math.max(0, baseG)},${Math.max(0, baseB)})`;
-    ctx.fillRect(0, 0, ROAD_W, ROAD_H);
-
-    // Lava seams between "asphalt slabs": horizontal cracks that glow with morph.
-    if (m > 0.12) {
-      const glow = Math.min(1, (m - 0.12) / 0.5);
-      for (let y = 0; y < ROAD_H; y += 10) {
-        const jitter = ((y * 73) % 7) - 3;
-        const lr = Math.floor(160 + 95 * glow);
-        const lg = Math.floor(40 + 80 * glow * (0.4 + 0.6 * Math.random()));
-        ctx.fillStyle = `rgba(${lr},${lg},20,${0.25 + 0.75 * glow})`;
-        ctx.fillRect(0, y + jitter, ROAD_W, 1 + Math.round(glow * 2));
-      }
-      // Longitudinal cracks for a shattered-ground feel at high morph.
-      if (m > 0.55) {
-        const cracks = Math.floor((m - 0.55) * 10);
-        for (let i = 0; i < cracks; i++) {
-          const cx = (i * 29 + 7) % ROAD_W;
-          ctx.fillStyle = `rgba(255,${100 + Math.floor(Math.random() * 80)},20,${0.5 + 0.5 * Math.random()})`;
-          ctx.fillRect(cx, 0, 1 + Math.round(m), ROAD_H);
-        }
-      }
-    }
-
-    // Neon edge lines (cyan left, magenta right) fade out as lava takes over.
-    const edgeFade = Math.max(0, 1 - m * 1.1);
-    if (edgeFade > 0.02) {
-      ctx.fillStyle = `rgba(0,240,255,${edgeFade})`;
-      ctx.fillRect(8, 0, 3, ROAD_H);
-      ctx.fillStyle = `rgba(255,43,214,${edgeFade})`;
-      ctx.fillRect(ROAD_W - 11, 0, 3, ROAD_H);
-    }
-
-    // Center dashes — amber, become molten orange with morph.
-    const dr = 255;
-    const dg = Math.floor(200 - m * 90);
-    const db = Math.floor(40 - m * 40);
-    ctx.fillStyle = `rgb(${dr},${Math.max(0, dg)},${Math.max(0, db)})`;
-    for (let y = 0; y < ROAD_H; y += 16) {
-      ctx.fillRect(ROAD_W / 2 - 2, y, 4, 8);
-    }
-
-    this.roadTex.needsUpdate = true;
+  private pickKind(): PropKind {
+    const r = this.rng();
+    if (r < 0.45) return "cactus";
+    if (r < 0.7) return "mesa";
+    if (r < 0.88) return "butte";
+    return "arch";
   }
 
-  /** Vertical gradient sky: dusk amber/purple at morph 0 -> blood red at morph 1. */
+  private geoFor(kind: PropKind): THREE.PlaneGeometry {
+    switch (kind) {
+      case "cactus":
+        return this.propGeos[0];
+      case "mesa":
+        return this.propGeos[1];
+      case "butte":
+        return this.propGeos[2];
+      case "arch":
+        return this.propGeos[3];
+    }
+  }
+
+  /** Position a prop at depth z along its side of the road, sitting on ground. */
+  private placeProp(p: Prop, z: number): void {
+    const lateral = 26 + this.rng() * 60;
+    const geo = p.mesh.geometry as THREE.PlaneGeometry;
+    const h = (geo.parameters.height ?? 28) * p.baseScale;
+    p.mesh.scale.setScalar(p.baseScale);
+    p.mesh.position.set(p.side * lateral, h / 2, z);
+    // Billboards face the camera (down +Z), so leave rotation at identity.
+    p.mesh.rotation.set(0, 0, 0);
+  }
+
+  private respawnRain(i: number, scatter: boolean): void {
+    const o = i * 2 * 3;
+    const x = (this.rng() - 0.5) * 220;
+    const y = scatter ? this.rng() * 140 : 90 + this.rng() * 50;
+    const z = -10 - this.rng() * 220;
+    // Streak length grows with intent; tail is above the head.
+    const len = 6 + this.rng() * 6;
+    this.rainPos[o] = x;
+    this.rainPos[o + 1] = y;
+    this.rainPos[o + 2] = z;
+    this.rainPos[o + 3] = x;
+    this.rainPos[o + 4] = y + len;
+    this.rainPos[o + 5] = z;
+    this.rainVel[i * 3] = 0;
+    this.rainVel[i * 3 + 1] = -(160 + this.rng() * 120);
+    this.rainVel[i * 3 + 2] = 0;
+  }
+
+  private strikeLightning(strong: boolean): void {
+    this.flash = strong ? 1 : 0.6;
+    this.boltLife = 0.14;
+    // Build a jagged vertical bolt from a random sky x down to the horizon.
+    const pos = this.boltGeo.getAttribute("position") as THREE.BufferAttribute;
+    const arr = pos.array as Float32Array;
+    const segs = 10 + Math.floor(this.rng() * 6);
+    let x = (this.rng() - 0.5) * 160;
+    let y = 130;
+    const z = -150 - this.rng() * 60;
+    const stepY = 130 / segs;
+    let v = 0;
+    for (let s = 0; s < segs; s++) {
+      const nx = x + (this.rng() - 0.5) * 22;
+      const ny = y - stepY;
+      arr[v++] = x;
+      arr[v++] = y;
+      arr[v++] = z;
+      arr[v++] = nx;
+      arr[v++] = ny;
+      arr[v++] = z;
+      x = nx;
+      y = ny;
+    }
+    pos.needsUpdate = true;
+    this.boltGeo.setDrawRange(0, segs * 2);
+    this.boltMat.opacity = 1;
+  }
+
+  /** Vertical gradient sky: warm dusk -> dark storm as morph rises. */
   private paintSky(): void {
     const ctx = this.skyCtx;
     const m = this.morph;
-    const grad = ctx.createLinearGradient(0, 0, 0, 64);
-    // Top.
-    const topR = Math.floor(40 + m * 70);
-    const topG = Math.floor(10 + m * 6);
-    const topB = Math.floor(60 - m * 50);
-    // Horizon.
-    const horR = Math.floor(255);
-    const horG = Math.floor(120 - m * 90);
-    const horB = Math.floor(40 - m * 35);
-    grad.addColorStop(0, `rgb(${topR},${topG},${Math.max(0, topB)})`);
-    grad.addColorStop(0.6, `rgb(${Math.floor(180 + m * 60)},${Math.floor(50 - m * 20)},${Math.max(0, Math.floor(60 - m * 50))})`);
-    grad.addColorStop(1, `rgb(${horR},${Math.max(0, horG)},${Math.max(0, horB)})`);
+    const grad = ctx.createLinearGradient(0, 0, 0, SKY_H);
+    // Top: deep violet (calm) -> near-black storm.
+    const topR = Math.floor(58 - m * 40);
+    const topG = Math.floor(30 - m * 22);
+    const topB = Math.floor(78 - m * 58);
+    // Mid: dusk magenta -> slate storm grey.
+    const midR = Math.floor(150 - m * 100);
+    const midG = Math.floor(60 - m * 20);
+    const midB = Math.floor(110 - m * 60);
+    // Horizon: warm amber (calm) -> dim grey-blue (storm).
+    const horR = Math.floor(255 - m * 180);
+    const horG = Math.floor(150 - m * 90);
+    const horB = Math.floor(70 + m * 30);
+    grad.addColorStop(0, `rgb(${Math.max(0, topR)},${Math.max(0, topG)},${Math.max(0, topB)})`);
+    grad.addColorStop(0.55, `rgb(${Math.max(0, midR)},${Math.max(0, midG)},${Math.max(0, midB)})`);
+    grad.addColorStop(1, `rgb(${Math.max(0, horR)},${Math.max(0, horG)},${Math.max(0, horB)})`);
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 8, 64);
+    ctx.fillRect(0, 0, 8, SKY_H);
+
+    // Storm clouds: chunky dark bands rolling across the upper sky with morph.
+    if (m > 0.12) {
+      const bands = Math.floor(m * 6);
+      for (let b = 0; b < bands; b++) {
+        const cy = (b * 11 + (this.t * 6) % 11) % (SKY_H * 0.5);
+        const shade = Math.floor(30 + b * 6);
+        ctx.fillStyle = `rgba(${shade},${shade + 4},${shade + 10},${0.25 + m * 0.5})`;
+        ctx.fillRect(0, cy, 8, 3 + Math.floor(m * 3));
+      }
+    }
     this.skyTex.needsUpdate = true;
   }
 
-  private buildMesaTexture(): THREE.CanvasTexture {
+  /** Desert floor: dry sandy pixels (calm) -> dark wet/reflective sheen (storm). */
+  private paintGround(): void {
+    const ctx = this.groundCtx;
+    const m = this.morph;
+    // Base sand -> wet mud.
+    const baseR = Math.floor(150 - m * 110);
+    const baseG = Math.floor(110 - m * 80);
+    const baseB = Math.floor(70 - m * 30);
+    ctx.fillStyle = `rgb(${Math.max(0, baseR)},${Math.max(0, baseG)},${Math.max(0, baseB)})`;
+    ctx.fillRect(0, 0, 64, 64);
+    // Speckle the sand with pixel grit (fades as it wets down).
+    const grit = Math.max(0, 1 - m);
+    for (let i = 0; i < 120; i++) {
+      const gx = Math.floor(this.rng() * 64);
+      const gy = Math.floor(this.rng() * 64);
+      const d = this.rng() < 0.5 ? 30 : -25;
+      ctx.fillStyle = `rgba(${Math.max(0, baseR + d)},${Math.max(0, baseG + d)},${Math.max(0, baseB + d)},${grit})`;
+      ctx.fillRect(gx, gy, 1, 1);
+    }
+    // Wet reflective highlights: bright cool specks once it's raining.
+    if (m > 0.3) {
+      const wet = (m - 0.3) / 0.7;
+      for (let i = 0; i < 70; i++) {
+        const gx = Math.floor(this.rng() * 64);
+        const gy = Math.floor(this.rng() * 64);
+        ctx.fillStyle = `rgba(140,170,200,${0.15 + wet * 0.5})`;
+        ctx.fillRect(gx, gy, 1, 1);
+      }
+    }
+    this.groundTex.needsUpdate = true;
+  }
+
+  private buildCactusTexture(): THREE.CanvasTexture {
     const c = document.createElement("canvas");
-    c.width = MESA_W;
-    c.height = MESA_H;
+    c.width = 16;
+    c.height = 32;
     const g = c.getContext("2d")!;
     g.imageSmoothingEnabled = false;
-    g.clearRect(0, 0, MESA_W, MESA_H);
-    // Chunky pixel mesa silhouettes along the bottom.
-    g.fillStyle = "#1a0e1e";
-    let x = 0;
-    while (x < MESA_W) {
-      const w = 12 + Math.floor(Math.random() * 30);
-      const h = 14 + Math.floor(Math.random() * 36);
-      g.fillRect(x, MESA_H - h, w, h);
-      x += w + Math.floor(Math.random() * 8);
-    }
+    g.clearRect(0, 0, 16, 32);
+    g.fillStyle = "#2f7a3a";
+    // Trunk.
+    g.fillRect(6, 4, 4, 28);
+    // Left arm.
+    g.fillRect(2, 14, 2, 8);
+    g.fillRect(2, 12, 4, 2);
+    // Right arm.
+    g.fillRect(12, 18, 2, 8);
+    g.fillRect(10, 16, 4, 2);
+    // Shading column.
+    g.fillStyle = "#236030";
+    g.fillRect(8, 4, 2, 28);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  }
+
+  private buildRockTexture(): THREE.CanvasTexture {
+    // A blocky mesa/butte/arch-ish silhouette with banded strata. Used for all
+    // rock kinds — the plane aspect ratio differentiates the shapes.
+    const c = document.createElement("canvas");
+    c.width = 32;
+    c.height = 32;
+    const g = c.getContext("2d")!;
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, 32, 32);
+    // Body.
+    g.fillStyle = "#a8543a";
+    g.fillRect(3, 6, 26, 26);
+    // Flat top notch (mesa cap).
+    g.fillStyle = "#bd6748";
+    g.fillRect(3, 6, 26, 4);
+    // Strata bands.
+    g.fillStyle = "#8c4330";
+    for (let y = 12; y < 32; y += 5) g.fillRect(3, y, 26, 2);
+    // Arch hole (only reads when the plane is wide — harmless otherwise).
+    g.clearRect(13, 16, 6, 16);
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.magFilter = THREE.NearestFilter;
@@ -385,79 +502,85 @@ class Bg06 implements EddieBackgroundVariant {
 
     if (this.beat > 0) this.beat = Math.max(0, this.beat - dt * this.beatDecay);
 
-    // Scroll the road toward the camera; speed pumps on the beat (scaled by morph).
-    const speed = 0.4 + 0.5 * m + this.beat * (0.4 + m * 0.8);
-    this.scroll = (this.scroll + dt * speed) % 1;
-    this.roadTex.offset.y = -this.scroll;
+    // Fly forward: scenery streams toward camera; speed picks up with storm wind.
+    const speed = this.flySpeed * (1 + m * 0.6) + this.beat * 30;
+    for (const p of this.props) {
+      p.mesh.position.z += speed * dt;
+      if (p.mesh.position.z > NEAR_Z) {
+        // Recycle to the far horizon as a fresh prop.
+        p.baseScale = 0.8 + this.rng() * 1.6;
+        this.placeProp(p, FAR_Z - this.rng() * 40);
+      }
+      // Wind sway grows with morph (rock monuments barely move; cactuses lean).
+      const sway = Math.sin(this.t * 3 + p.mesh.position.z * 0.05) * m * 0.12;
+      p.mesh.rotation.z = sway * (p.mesh.material === this.cactusMat ? 1 : 0.25);
+    }
+
+    // Ground scrolls toward the camera to sell forward motion.
+    this.groundScroll = (this.groundScroll + dt * speed * 0.02) % 1;
+    this.groundTex.offset.y = -this.groundScroll;
 
     // Repaint pixel canvases (cheap at this resolution); morph drives their look.
-    this.paintRoad();
     this.paintSky();
+    this.paintGround();
+    this.groundMat.color.setRGB(1 - m * 0.2, 1 - m * 0.2, 1 - m * 0.1);
 
-    // Mesa silhouette reddens and brightens slightly with morph + beat.
-    this.mesaMat.color.setRGB(1, 0.6 - m * 0.4, 0.6 - m * 0.5);
-    this.mesaMat.opacity = 1;
+    // --- Rain ----------------------------------------------------------------
+    const rainAmt = Math.max(0, (m - 0.18) / 0.82); // starts ~morph 0.18
+    const visible = Math.floor(rainAmt * RAIN_COUNT);
+    this.rainGeo.setDrawRange(0, visible * 2);
+    this.rainMat.opacity = 0.15 + rainAmt * 0.6;
+    if (visible > 0) {
+      const windX = m * 90 + this.beat * 40; // slant grows with storm + beat
+      for (let i = 0; i < visible; i++) {
+        const o = i * 2 * 3;
+        const vy = this.rainVel[i * 3 + 1] * (1 + this.beat * 0.5);
+        // Head.
+        this.rainPos[o] += windX * dt;
+        this.rainPos[o + 1] += vy * dt;
+        // Tail (trails behind by the slant + length).
+        this.rainPos[o + 3] += windX * dt;
+        this.rainPos[o + 4] += vy * dt;
+        if (this.rainPos[o + 1] < 0) this.respawnRain(i, false);
+      }
+      (this.rainGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    }
 
-    // Scene background + fog track the sky mood.
-    const bgT = 0.16 + m * 0.12 + this.beat * 0.05;
-    this.bgColor.setRGB(0.16 + m * 0.5, 0.09 - m * 0.05, 0.19 - m * 0.16);
-    if (this.bgColor.g < 0) this.bgColor.g = 0;
-    if (this.bgColor.b < 0) this.bgColor.b = 0;
-    if (this.scene && this.scene.background instanceof THREE.Color) {
-      this.scene.background.copy(this.bgColor).multiplyScalar(1 + bgT * 0.5);
+    // --- Lightning -----------------------------------------------------------
+    if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 5);
+    this.flashMat.opacity = this.flash * 0.55;
+    if (this.boltLife > 0) {
+      this.boltLife = Math.max(0, this.boltLife - dt);
+      this.boltMat.opacity = this.boltLife > 0 ? Math.min(1, this.boltLife / 0.14) : 0;
+      if (this.boltLife === 0) this.boltGeo.setDrawRange(0, 0);
+    }
+
+    // Scene background + fog track the sky mood (dusk warm -> storm dark).
+    const bg = this.scene && this.scene.background instanceof THREE.Color ? this.scene.background : null;
+    if (bg) {
+      bg.setRGB(
+        0.23 - m * 0.17 + this.flash * 0.4,
+        0.14 - m * 0.09 + this.flash * 0.42,
+        0.21 - m * 0.12 + this.flash * 0.45,
+      );
+      if (bg.r < 0) bg.r = 0;
+      if (bg.g < 0) bg.g = 0;
+      if (bg.b < 0) bg.b = 0;
     }
     if (this.scene && this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.color.copy(this.bgColor);
-      this.scene.fog.near = 40 - m * 18;
-      this.scene.fog.far = 180 - m * 60;
+      this.scene.fog.color.setRGB(0.23 - m * 0.17, 0.14 - m * 0.09, 0.21 - m * 0.1);
+      if (this.scene.fog.color.r < 0) this.scene.fog.color.r = 0;
+      if (this.scene.fog.color.g < 0) this.scene.fog.color.g = 0;
+      if (this.scene.fog.color.b < 0) this.scene.fog.color.b = 0;
+      this.scene.fog.near = 60 - m * 30;
+      this.scene.fog.far = 240 - m * 90;
     }
 
-    // Fireballs: parabolic arc, glow + pulse on the beat, fade on landing.
-    for (const f of this.fireballs) {
-      if (!f.active) continue;
-      f.t += dt;
-      const k = f.t / f.life;
-      if (k >= 1) {
-        f.active = false;
-        f.mesh.visible = false;
-        f.mat.opacity = 0;
-        continue;
-      }
-      const x = f.x0 + f.vx * f.t;
-      const y = Math.max(0, f.vy * f.t - 0.5 * 90 * f.t * f.t);
-      const z = f.z0 + f.vz * f.t;
-      f.mesh.position.set(x, y, z);
-      const pulse = 1 + this.beat * 0.6;
-      const s = f.baseScale * pulse * (0.6 + 0.4 * Math.sin(k * Math.PI));
-      f.mesh.scale.setScalar(s);
-      // Color ramps hotter at the apex.
-      const heat = 0.5 + 0.5 * Math.sin(k * Math.PI);
-      f.mat.color.setRGB(1, 0.35 + heat * 0.35, heat * 0.15);
-      f.mat.opacity = Math.sin(k * Math.PI) * (0.7 + 0.3 * this.beat);
-    }
-
-    // Ash: visible only at high morph, drifting toward the camera.
-    this.ashMat.opacity = Math.max(0, (m - 0.5) / 0.5) * 0.6;
-    if (this.ashMat.opacity > 0.01) {
-      const pos = this.ashGeo.getAttribute("position") as THREE.BufferAttribute;
-      const arr = pos.array as Float32Array;
-      for (let i = 0; i < ASH_COUNT; i++) {
-        arr[i * 3] += this.ashVel[i * 3] * dt;
-        arr[i * 3 + 1] += this.ashVel[i * 3 + 1] * dt;
-        arr[i * 3 + 2] += this.ashVel[i * 3 + 2] * dt * (1 + m);
-        if (arr[i * 3 + 2] > 40 || arr[i * 3 + 1] < -4) {
-          arr[i * 3] = (Math.random() - 0.5) * 160;
-          arr[i * 3 + 1] = 70 + Math.random() * 30;
-          arr[i * 3 + 2] = -120 - Math.random() * 120;
-        }
-      }
-      pos.needsUpdate = true;
-    }
-
-    // Camera: parked, with beat bob + decaying shake.
+    // Camera: parked, with forward bob, storm buffeting, and decaying shake.
     if (this.camera) {
-      const bob = Math.sin(this.t * 6) * (0.3 + m * 0.6) + this.beat * 1.2;
-      let px = 0;
+      const bob = Math.sin(this.t * 5) * (0.3 + m * 0.5) + this.beat * 1.0;
+      const buffet = m * (Math.sin(this.t * 13.0) + Math.sin(this.t * 7.3)) * 1.4;
+      let px = buffet;
       let py = this.camBaseY + bob;
       let pz = this.camBaseZ;
       if (this.shake > 0) {
@@ -487,28 +610,38 @@ class Bg06 implements EddieBackgroundVariant {
     }
     this.scene = null;
 
-    this.roadMesh.geometry.dispose();
-    this.roadMat.dispose();
-    this.roadTex.dispose();
     this.skyMesh.geometry.dispose();
     this.skyMat.dispose();
     this.skyTex.dispose();
-    this.mesaMesh.geometry.dispose();
-    this.mesaMat.dispose();
-    this.mesaTex.dispose();
-    this.fireGeo.dispose();
-    for (const f of this.fireballs) f.mat.dispose();
-    this.fireballs = [];
-    this.ashGeo.dispose();
-    this.ashMat.dispose();
+
+    this.groundMesh.geometry.dispose();
+    this.groundMat.dispose();
+    this.groundTex.dispose();
+
+    for (const geo of this.propGeos) geo.dispose();
+    this.propGeos = [];
+    this.cactusMat.dispose();
+    this.rockMat.dispose();
+    this.cactusTex.dispose();
+    this.rockTex.dispose();
+    this.props = [];
+
+    this.rainGeo.dispose();
+    this.rainMat.dispose();
+
+    this.flashMesh.geometry.dispose();
+    this.flashMat.dispose();
+    this.boltGeo.dispose();
+    this.boltMat.dispose();
+
     this.camera = null;
   }
 }
 
 const def: EddieBackgroundDef = {
   id: "bg06",
-  label: "Desert Highway -> Volcanic",
-  blurb: "A neon-lined dusk desert highway streams past; rising intensity cracks the ground, floods lava between the asphalt, and erupts fireballs that pulse on the beat under a blood-red sky.",
+  label: "Desert Drive -> Rainstorm",
+  blurb: "Flying through a pixel desert at dusk past saguaros and rock monuments; rising intensity rolls in storm clouds, pours slanting rain on the wet reflective ground, and cracks lightning on the beat into a torrential downpour.",
   create: () => new Bg06(),
 };
 
