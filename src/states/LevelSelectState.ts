@@ -5,6 +5,7 @@ import { level1 } from "../levels/level1";
 import { level2 } from "../levels/level2";
 import { level3 } from "../levels/level3";
 import { MenuPulse } from "../hud/MenuPulse";
+import { EddieSettingsState } from "./EddieSettingsState";
 
 interface LevelEntry {
   level: LevelConfig;
@@ -112,6 +113,7 @@ export class LevelSelectState implements GameState {
       '<div class="levelselect-cards">' +
       cardsHtml +
       "</div>" +
+      '<button class="levelselect-eddie" data-eddie="1">INFINITE EDDIE</button>' +
       "</div>";
 
     this.hudParent.appendChild(this.overlay);
@@ -125,6 +127,13 @@ export class LevelSelectState implements GameState {
         const entry = this.entries.find((e) => e.number === num);
         if (entry) this.onPick(entry.level);
       });
+    });
+
+    const eddieBtn = this.overlay.querySelector(
+      ".levelselect-eddie",
+    ) as HTMLButtonElement | null;
+    eddieBtn?.addEventListener("click", () => {
+      this.game.setState(new EddieSettingsState(this.hudParent));
     });
 
     this.pulse = new MenuPulse(this.hudParent);
