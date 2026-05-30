@@ -37,10 +37,9 @@ import {
 const ART_VARIANT = "option-1" as const;
 const AUDIO_VARIANT = "option-1" as const;
 
-// Production-default art variants chosen from the registries (review via the
-// ?eddieart=1 gallery): bg-1 "Chroma Crash" = index 0; fx-5 "Phosphor Comets" =
-// index 4. Fire default is option-3 (set in the EddieFire source).
-const BG_INDEX = 0;
+// Production picks a RANDOM background per run from the registry (the picker menu
+// can still force a specific one via opts.bgIndex). Particles default to fx-5
+// "Phosphor Comets" = index 4; fire default is option-3 (set in EddieFire).
 const FX_INDEX = 4;
 
 // Conductor sizing for Eddie (GDD §3): 4-measure intro + 16 scored measures.
@@ -102,8 +101,9 @@ export class InfiniteEddieState implements GameState {
   private finishedAt = 0;
   private exited = false;
 
-  /** Which background variant to mount (registry index). Menu can override. */
-  private bgIndex = BG_INDEX;
+  /** Which background variant to mount (registry index). Random in production;
+   *  the picker menu can override via opts.bgIndex. */
+  private bgIndex = 0;
   /** Demo mode (launched from the background menu): auto-ramps intensity so the
    *  full morph is visible, shows a HUD, and Esc returns to the menu. */
   private demo = false;
@@ -124,7 +124,10 @@ export class InfiniteEddieState implements GameState {
     this.hudParent = hudParent;
     this.config = config;
     this.onExit = onExit;
-    if (opts?.bgIndex !== undefined) this.bgIndex = opts.bgIndex;
+    this.bgIndex =
+      opts?.bgIndex !== undefined
+        ? opts.bgIndex
+        : Math.floor(Math.random() * BACKGROUNDS.length);
     this.demo = opts?.demo ?? false;
   }
 
