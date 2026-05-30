@@ -45,6 +45,9 @@ const PROP_COUNT = 12; // sparse near props beside the road
 const FAR_Z = -300; // recycle horizon (props spawn here)
 const NEAR_Z = 30; // props recycle once they pass this (behind camera)
 const ROAD_HALF_W = 11; // road half-width in world units (at the surface)
+// Lift roadside billboards' base clear of the ground plane so their vertical
+// quad never intersects (and z-fights) the horizontal ground/road planes.
+const PROP_BASE_LIFT = 0.5;
 // Rare roadside vignette (guitar + cowboy boots leaning on a huge boulder):
 // re-appears only after this much travelled distance, so it's a treat not a fixture.
 const VIGNETTE_GAP = 900;
@@ -234,17 +237,24 @@ class Bg06 implements EddieBackgroundVariant {
     this.roadTex.generateMipmaps = false;
     this.roadTex.wrapS = THREE.ClampToEdgeWrapping;
     this.roadTex.wrapT = THREE.RepeatWrapping;
+    // depthWrite ON + polygonOffset pulls the road toward the camera in depth so
+    // it draws cleanly on top of the coplanar ground with no z-fighting; the
+    // mesh also sits at a small +y lift (see ROAD_Y below) as a second guard.
     this.roadMat = new THREE.MeshBasicMaterial({
       map: this.roadTex,
       transparent: true,
-      depthWrite: false,
+      depthWrite: true,
       fog: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -4,
     });
     const ROAD_ROWS = 64;
+    const ROAD_Y = 0.35; // lift above the ground plane (which sits at y=-0.05)
     this.roadGeo = new THREE.PlaneGeometry(1, 1, 1, ROAD_ROWS);
     this.roadMesh = new THREE.Mesh(this.roadGeo, this.roadMat);
     this.roadMesh.rotation.x = -Math.PI / 2;
-    this.roadMesh.position.set(0, 0, 0);
+    this.roadMesh.position.set(0, ROAD_Y, 0);
     this.roadMesh.renderOrder = -24;
     this.roadMesh.frustumCulled = false;
     this.group.add(this.roadMesh);
@@ -257,19 +267,31 @@ class Bg06 implements EddieBackgroundVariant {
     // --- Props (sparse, beside the road) ----------------------------------
     this.cactusTex = this.buildCactusTexture();
     this.smallRockTex = this.buildSmallRockTexture();
+    // alphaTest cutout (NOT blended transparency) so the billboards are opaque
+    // where drawn and write depth cleanly — no transparent sort flicker. They are
+    // also lifted clear of the ground (see PROP_BASE_LIFT) and polygon-offset so
+    // the vertical billboard never z-fights the horizontal ground/road planes.
     this.cactusMat = new THREE.MeshBasicMaterial({
       map: this.cactusTex,
-      transparent: true,
+      transparent: false,
       alphaTest: 0.5,
       depthWrite: true,
+      side: THREE.DoubleSide,
       fog: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
     });
     this.smallRockMat = new THREE.MeshBasicMaterial({
       map: this.smallRockTex,
-      transparent: true,
+      transparent: false,
       alphaTest: 0.5,
       depthWrite: true,
+      side: THREE.DoubleSide,
       fog: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
     });
     this.cactusGeo = new THREE.PlaneGeometry(13, 26);
     this.rockGeo = new THREE.PlaneGeometry(16, 11);
@@ -296,10 +318,14 @@ class Bg06 implements EddieBackgroundVariant {
     this.vignetteTex = this.buildVignetteTexture();
     this.vignetteMat = new THREE.MeshBasicMaterial({
       map: this.vignetteTex,
-      transparent: true,
+      transparent: false,
       alphaTest: 0.5,
       depthWrite: true,
+      side: THREE.DoubleSide,
       fog: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
     });
     this.vignetteGeo = new THREE.PlaneGeometry(34, 28);
     this.vignetteMesh = new THREE.Mesh(this.vignetteGeo, this.vignetteMat);
@@ -407,7 +433,8 @@ class Bg06 implements EddieBackgroundVariant {
     const geo = p.mesh.geometry as THREE.PlaneGeometry;
     const h = (geo.parameters.height ?? 26) * p.baseScale;
     p.mesh.scale.setScalar(p.baseScale);
-    p.mesh.position.set(cx + p.side * (ROAD_HALF_W + p.offset), h / 2, z);
+    // Base lifted clear of the ground so the standing billboard doesn't cross it.
+    p.mesh.position.set(cx + p.side * (ROAD_HALF_W + p.offset), PROP_BASE_LIFT + h / 2, z);
     p.mesh.rotation.set(0, 0, 0);
   }
 
@@ -415,8 +442,9 @@ class Bg06 implements EddieBackgroundVariant {
   private placeVignette(z: number): void {
     const cx = this.roadCurve(z);
     const h = this.vignetteGeo.parameters.height ?? 28;
-    // Sits a bit further off the road than ordinary props (it's big).
-    this.vignetteMesh.position.set(cx + this.vignetteSide * (ROAD_HALF_W + 20), h / 2, z);
+    // Sits a bit further off the road than ordinary props (it's big), base lifted
+    // clear of the ground so the standing billboard doesn't z-fight it.
+    this.vignetteMesh.position.set(cx + this.vignetteSide * (ROAD_HALF_W + 20), PROP_BASE_LIFT + h / 2, z);
     this.vignetteMesh.rotation.set(0, 0, 0);
   }
 

@@ -22,8 +22,12 @@
 // pixely) on a FLAT quad with the camera looking straight down. An eased `morph`
 // (0..1) cross-fades every element between circuit and city — it NEVER snaps
 // (morph += (target-morph)*dt*1.5):
-//   morph 0 -> CIRCUIT: green substrate, dense neon traces with DATA PULSES, and
-//              many components — ICs/chips with pins, caps, resistors, LEDs, pads.
+//   morph 0 -> CIRCUIT: an authentic green solder-mask board, busy with real
+//              parts — DIP ICs (silver pin rows + orientation notch/pin-1 dot),
+//              RESISTORS (tan bodies with colour bands + leads), ELECTROLYTIC
+//              CAPS (polarity-striped cans) + ceramic caps, DIODES (cathode
+//              band), solder PADS, ringed VIAS, copper TRACES with DATA PULSES
+//              travelling along them, and white silkscreen labels (R1, C3, U2…).
 //   mid     -> dissolve: traces widen into roads, the BLOCKS between them fill in
 //              with buildings, chip pins fade into windows, arcs jump between pads.
 //   morph 1 -> SPY-HUNTER PIXEL CITY: a full top-down city map — every block
@@ -53,11 +57,39 @@ import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 const TEX_W = 384;
 const TEX_H = 240;
 
-const COMP_COUNT = 16; // landmark feature buildings (on top of the dense fill)
-const PAD_COUNT = 16; // solder pads / plazas
+const COMP_COUNT = 40; // PCB parts (chips/resistors/caps/diodes); chips also
+//                        become the city-form landmark buildings
+const PAD_COUNT = 26; // solder pads + vias
 const PULSE_COUNT = 56; // data pulses (circuit era)
 const CAR_COUNT = 34; // cars (city era) — bound to roads
 const PED_COUNT = 56; // pixel people (city era)
+
+// 3x5 pixel silkscreen glyphs (rows top→bottom, each a 3-bit mask) for the
+// ref-designator letters R/C/U/D and digits 0-9 used by component labels.
+const GLYPHS: Record<string, number[]> = {
+  R: [0b110, 0b101, 0b110, 0b101, 0b101],
+  C: [0b111, 0b100, 0b100, 0b100, 0b111],
+  U: [0b101, 0b101, 0b101, 0b101, 0b111],
+  D: [0b110, 0b101, 0b101, 0b101, 0b110],
+  "0": [0b111, 0b101, 0b101, 0b101, 0b111],
+  "1": [0b010, 0b110, 0b010, 0b010, 0b111],
+  "2": [0b111, 0b001, 0b111, 0b100, 0b111],
+  "3": [0b111, 0b001, 0b111, 0b001, 0b111],
+  "4": [0b101, 0b101, 0b111, 0b001, 0b001],
+  "5": [0b111, 0b100, 0b111, 0b001, 0b111],
+  "6": [0b111, 0b100, 0b111, 0b101, 0b111],
+  "7": [0b111, 0b001, 0b010, 0b010, 0b010],
+  "8": [0b111, 0b101, 0b111, 0b101, 0b111],
+  "9": [0b111, 0b101, 0b111, 0b001, 0b111],
+};
+
+// Resistor 4-band colour code-ish stripe sets (just for the authentic look).
+const RESISTOR_BANDS = [
+  ["#3a2a14", "#000000", "#a52a2a", "#d4af37"], // brown black red gold
+  ["#d4af37", "#7b3f00", "#ff0000", "#d4af37"], // yellow-ish orange red gold
+  ["#1e7a1e", "#0000cc", "#7b3f00", "#c0c0c0"], // green blue orange silver
+  ["#cc0000", "#7b3f00", "#000000", "#d4af37"], // red orange black gold
+];
 
 // Road lattice: evenly spaced avenues, a few jittered, defining the city blocks.
 const COL_ROADS = 7; // vertical avenues
@@ -103,14 +135,22 @@ interface Building {
   lot: number; // 0 building, 1 parking lot, 2 greenery/park
 }
 
+// A through-hole PCB part at the calm (circuit) state; chips double as the
+// city-form landmark buildings as the board morphs.
+type CompKind = 0 | 1 | 2 | 3 | 4; // 0 chip/IC, 1 resistor, 2 electrolytic cap,
+//                                    3 ceramic cap, 4 diode
 interface Comp {
   x: number;
   y: number;
   w: number;
   h: number;
-  chip: boolean;
+  chip: boolean; // kind === 0 (kept for the city-form landmark path)
+  kind: CompKind;
   pins: number;
+  horiz: boolean; // axial parts (resistor/diode) lie along this axis
   hue: number;
+  seed: number; // per-part variance for colour bands / polarity side
+  label: string; // silkscreen ref-designator (R1, C3, U2, D4 …)
   blink: number;
   blinkRate: number;
 }
@@ -119,6 +159,7 @@ interface Pad {
   x: number;
   y: number;
   r: number;
+  via: boolean; // ringed plated-through hole (vs a solid solder pad)
   blink: number;
   blinkRate: number;
 }
@@ -310,30 +351,66 @@ class Bg07 implements EddieBackgroundVariant {
     //     column of buildings, parking lots and greenery. -----------------------
     this.fillBlocks();
 
-    // --- Landmark feature buildings / chips layered over the fill. ------------
+    // --- PCB parts: DIP chips (also city landmarks) + resistors, caps, diodes.
+    let rN = 1;
+    let cN = 1;
+    let uN = 1;
+    let dN = 1;
     for (let i = 0; i < COMP_COUNT; i++) {
-      const chip = this.rng() < 0.5;
-      const w = chip ? 16 + Math.floor(this.rng() * 22) : 8 + Math.floor(this.rng() * 10);
-      const h = chip ? 14 + Math.floor(this.rng() * 20) : 6 + Math.floor(this.rng() * 9);
+      // ~30% chips (big), the rest small through-hole parts so the board is busy.
+      const roll = this.rng();
+      const kind: CompKind =
+        roll < 0.3 ? 0 : roll < 0.55 ? 1 : roll < 0.72 ? 2 : roll < 0.88 ? 3 : 4;
+      const horiz = this.rng() < 0.5;
+      let w: number;
+      let h: number;
+      if (kind === 0) {
+        // DIP chip / IC.
+        w = 16 + Math.floor(this.rng() * 22);
+        h = 12 + Math.floor(this.rng() * 18);
+      } else if (kind === 1 || kind === 4) {
+        // Resistor / diode: small axial body with leads (lies horiz or vert).
+        const long = (kind === 1 ? 7 : 5) + Math.floor(this.rng() * 3);
+        const thick = 3;
+        w = horiz ? long : thick;
+        h = horiz ? thick : long;
+      } else if (kind === 2) {
+        // Electrolytic can (square-ish footprint, top-down circle).
+        const d = 7 + Math.floor(this.rng() * 5);
+        w = d;
+        h = d;
+      } else {
+        // Ceramic cap (small blob).
+        const d = 4 + Math.floor(this.rng() * 2);
+        w = d;
+        h = d;
+      }
+      const label =
+        kind === 0 ? `U${uN++}` : kind === 1 ? `R${rN++}` : kind === 4 ? `D${dN++}` : `C${cN++}`;
       this.comps.push({
-        x: 6 + Math.floor(this.rng() * (TEX_W - w - 12)),
-        y: 6 + Math.floor(this.rng() * (TEX_H - h - 12)),
+        x: 4 + Math.floor(this.rng() * (TEX_W - w - 8)),
+        y: 4 + Math.floor(this.rng() * (TEX_H - h - 8)),
         w,
         h,
-        chip,
+        chip: kind === 0,
+        kind,
+        horiz,
         pins: 3 + Math.floor(this.rng() * 5),
         hue: this.rng(),
+        seed: Math.floor(this.rng() * 4),
+        label,
         blink: this.rng() * Math.PI * 2,
         blinkRate: 1.2 + this.rng() * 3.5,
       });
     }
 
-    // --- Pads -> plazas. ------------------------------------------------------
+    // --- Pads + vias -> plazas. About half are ringed vias (plated holes). ----
     for (let i = 0; i < PAD_COUNT; i++) {
       this.pads.push({
         x: 10 + Math.floor(this.rng() * (TEX_W - 20)),
         y: 10 + Math.floor(this.rng() * (TEX_H - 20)),
         r: 3 + Math.floor(this.rng() * 4),
+        via: this.rng() < 0.45,
         blink: this.rng() * Math.PI * 2,
         blinkRate: 1.5 + this.rng() * 4,
       });
@@ -567,9 +644,14 @@ class Bg07 implements EddieBackgroundVariant {
     const tr = Math.floor(this.lerp(40, 70, city));
     const tg = Math.floor(this.lerp(220, 80, city) + beat * 25);
     const tb = Math.floor(this.lerp(200, 90, city));
-    const wireCol = `rgb(${tr},${Math.max(0, Math.min(255, tg))},${tb})`;
+    const busCol = `rgb(${tr},${Math.max(0, Math.min(255, tg))},${tb})`;
+    // Copper trace tint for the non-bus "alley" traces at calm (fades with city).
+    const copR = Math.floor(this.lerp(196, tr, city));
+    const copG = Math.floor(this.lerp(120, Math.max(0, Math.min(255, tg)), city));
+    const copB = Math.floor(this.lerp(40, tb, city));
 
     for (const t of this.traces) {
+      const wireCol = t.road ? busCol : `rgb(${copR},${copG},${copB})`;
       // Non-lattice "alley" traces stay thin wires/paths.
       const maxW = t.road ? this.roadW : 2;
       const width = Math.max(1, Math.round(this.lerp(1, maxW, city)));
@@ -596,7 +678,10 @@ class Bg07 implements EddieBackgroundVariant {
       }
 
       if (city < 0.85) {
-        ctx.fillStyle = `rgba(${tr},${Math.max(0, Math.min(255, tg))},${tb},${1 - city * 0.9})`;
+        const core = t.road
+          ? `${tr},${Math.max(0, Math.min(255, tg))},${tb}`
+          : `${copR},${copG},${copB}`;
+        ctx.fillStyle = `rgba(${core},${1 - city * 0.9})`;
         if (t.dir === 0) ctx.fillRect(t.x, t.y, t.len, 1);
         else ctx.fillRect(t.x, t.y, 1, t.len);
       }
@@ -625,55 +710,166 @@ class Bg07 implements EddieBackgroundVariant {
     }
   }
 
-  /** Landmark feature buildings / chips layered over the dense fill. */
+  /** Components. At calm (low morph) every part is drawn as an authentic
+   *  through-hole PCB part (chip/resistor/cap/diode); as the board morphs the
+   *  circuit detail fades out and chips become city landmark buildings. */
   private paintComponents(ctx: CanvasRenderingContext2D, m: number, beat: number): void {
     const city = m;
-    const hgr = [HGR_BLUE, HGR_PURPLE, HGR_ORANGE, HGR_GREEN];
+    // Circuit-detail strength: full at calm, gone by ~0.7 morph.
+    const circ = Math.max(0, 1 - city / 0.7);
     for (const c of this.comps) {
-      const bl = 0.5 + 0.5 * Math.sin(c.blink);
-      const baseR = this.lerp(c.chip ? 18 : 60, 70 + c.hue * 50, city);
-      const baseG = this.lerp(c.chip ? 40 : 120, 76 + c.hue * 40, city);
-      const baseB = this.lerp(c.chip ? 30 : 70, 96 + c.hue * 50, city);
-      // Drop shadow for landmarks in city form so they pop above the fill.
-      if (city > 0.4) {
-        ctx.fillStyle = `rgba(0,0,0,${0.4 * (city - 0.4) * 2})`;
-        ctx.fillRect(c.x + 2, c.y + 2, c.w, c.h);
-      }
-      ctx.fillStyle = `rgb(${Math.floor(baseR)},${Math.floor(baseG)},${Math.floor(baseB)})`;
-      ctx.fillRect(c.x, c.y, c.w, c.h);
+      if (circ > 0.02) this.drawPart(ctx, c, circ);
+      // Chips also serve as city landmark buildings as the city forms.
+      if (c.chip && city > 0.3) this.drawLandmark(ctx, c, city, beat);
+    }
+  }
 
-      if (city < 0.7 && c.chip) {
-        ctx.fillStyle = `rgba(190,190,150,${(0.7 - city) * 1.4})`;
-        const gap = Math.max(2, Math.floor(c.w / (c.pins + 1)));
-        for (let p = 1; p <= c.pins; p++) {
-          const px = c.x + p * gap;
-          if (px < c.x + c.w) {
-            ctx.fillRect(px, c.y - 1, 1, 1);
-            ctx.fillRect(px, c.y + c.h, 1, 1);
+  /** Draw one through-hole part in its circuit form. `a` = circuit-detail alpha. */
+  private drawPart(ctx: CanvasRenderingContext2D, c: Comp, a: number): void {
+    ctx.globalAlpha = a;
+    const cxm = c.x + c.w / 2;
+    const cym = c.y + c.h / 2;
+
+    if (c.kind === 0) {
+      // DIP chip / IC: black body, silver pin rows down both long sides, a
+      // notch + pin-1 dot, and a silkscreen ref-designator.
+      ctx.fillStyle = "#0c0c10";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.fillStyle = "rgba(20,20,26,1)"; // top bevel sheen
+      ctx.fillRect(c.x, c.y, c.w, 1);
+      ctx.fillStyle = "#c8c8d0"; // silver leads
+      const gap = Math.max(2, Math.floor(c.w / (c.pins + 1)));
+      for (let p = 1; p <= c.pins; p++) {
+        const px = c.x + p * gap;
+        if (px < c.x + c.w) {
+          ctx.fillRect(px, c.y - 1, 1, 2);
+          ctx.fillRect(px, c.y + c.h - 1, 1, 2);
+        }
+      }
+      // Orientation notch (top centre) + pin-1 dot (top-left).
+      ctx.fillStyle = "#2a2a30";
+      ctx.fillRect(Math.round(cxm) - 1, c.y, 2, 1);
+      ctx.fillStyle = "#d8d8e0";
+      ctx.fillRect(c.x + 1, c.y + 1, 1, 1);
+      // White silkscreen label above the chip.
+      this.drawLabel(ctx, c.label, c.x, c.y - 5, a);
+    } else if (c.kind === 1) {
+      // Resistor: tan body with 4 colour bands + metal lead wires out both ends.
+      const bands = RESISTOR_BANDS[c.seed % RESISTOR_BANDS.length];
+      // Leads.
+      ctx.fillStyle = "#b9b9b9";
+      if (c.horiz) {
+        ctx.fillRect(c.x - 2, cym - 0.5, 2, 1);
+        ctx.fillRect(c.x + c.w, cym - 0.5, 2, 1);
+      } else {
+        ctx.fillRect(cxm - 0.5, c.y - 2, 1, 2);
+        ctx.fillRect(cxm - 0.5, c.y + c.h, 1, 2);
+      }
+      // Tan body.
+      ctx.fillStyle = "#caa46a";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      // Colour bands across the body.
+      for (let b = 0; b < bands.length; b++) {
+        ctx.fillStyle = bands[b];
+        if (c.horiz) ctx.fillRect(c.x + 1 + b * 2, c.y, 1, c.h);
+        else ctx.fillRect(c.x, c.y + 1 + b * 2, c.w, 1);
+      }
+      this.drawLabel(ctx, c.label, c.x, c.y - 5, a * 0.8);
+    } else if (c.kind === 2) {
+      // Electrolytic can: dark blue cylinder (top-down), bright polarity stripe
+      // on one side + a centre seam.
+      ctx.fillStyle = "#102a4a";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.fillStyle = "#1c4a7a"; // top rim highlight
+      ctx.fillRect(c.x, c.y, c.w, 1);
+      ctx.fillRect(c.x, c.y, 1, c.h);
+      // Polarity stripe (light) down the side indicated by seed parity.
+      ctx.fillStyle = "#d8e2ef";
+      if (c.seed & 1) ctx.fillRect(c.x + c.w - 1, c.y, 1, c.h);
+      else ctx.fillRect(c.x, c.y, 1, c.h);
+      // Vent cross on the top.
+      ctx.fillStyle = "#0a1d36";
+      ctx.fillRect(Math.round(cxm) - 1, c.y + 1, 2, c.h - 2);
+      ctx.fillRect(c.x + 1, Math.round(cym) - 1, c.w - 2, 2);
+      this.drawLabel(ctx, c.label, c.x, c.y - 5, a * 0.8);
+    } else if (c.kind === 3) {
+      // Ceramic cap: small ochre disc/blob with two short legs.
+      ctx.fillStyle = "#b97a1e";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.fillStyle = "#d89a3a";
+      ctx.fillRect(c.x, c.y, c.w, 1);
+      ctx.fillStyle = "#9a9a9a"; // legs
+      ctx.fillRect(c.x + 1, c.y + c.h, 1, 2);
+      ctx.fillRect(c.x + c.w - 2, c.y + c.h, 1, 2);
+    } else {
+      // Diode: small dark body with a bright CATHODE band at one end + leads.
+      ctx.fillStyle = "#9a9a9a";
+      if (c.horiz) {
+        ctx.fillRect(c.x - 2, cym - 0.5, 2, 1);
+        ctx.fillRect(c.x + c.w, cym - 0.5, 2, 1);
+      } else {
+        ctx.fillRect(cxm - 0.5, c.y - 2, 1, 2);
+        ctx.fillRect(cxm - 0.5, c.y + c.h, 1, 2);
+      }
+      ctx.fillStyle = "#101014";
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      // Cathode band (silver/white) at the seed-chosen end.
+      ctx.fillStyle = "#e6e6ee";
+      if (c.horiz) ctx.fillRect(c.seed & 1 ? c.x + c.w - 1 : c.x, c.y, 1, c.h);
+      else ctx.fillRect(c.x, c.seed & 1 ? c.y + c.h - 1 : c.y, c.w, 1);
+      this.drawLabel(ctx, c.label, c.x, c.y - 5, a * 0.8);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** Tiny pixel silkscreen text (white), ~3px tall, drawn left-to-right. Only
+   *  the few glyphs used by ref-designators (R/C/U/D + digits) are defined. */
+  private drawLabel(ctx: CanvasRenderingContext2D, s: string, x: number, y: number, a: number): void {
+    if (a < 0.35 || y < 0) return;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "rgba(235,235,245,1)";
+    let cx = x;
+    for (const ch of s) {
+      const g = GLYPHS[ch];
+      if (g) {
+        for (let r = 0; r < 5; r++) {
+          const row = g[r];
+          for (let col = 0; col < 3; col++) {
+            if (row & (1 << (2 - col))) ctx.fillRect(cx + col, y + r, 1, 1);
           }
         }
       }
-      if (city > 0.35) {
-        const wa = Math.min(1, (city - 0.35) * 1.5);
-        ctx.globalAlpha = wa;
-        ctx.fillStyle = hgr[(Math.floor(c.hue * 4)) % hgr.length];
-        ctx.fillRect(c.x, c.y, c.w, 1);
-        ctx.fillStyle = "rgba(150,150,160,1)";
-        ctx.fillRect(c.x + 2, c.y + 2, 2, 2);
-        ctx.fillStyle = `rgba(255,225,150,1)`;
-        for (let wy = c.y + 2; wy < c.y + c.h - 1; wy += 2) {
-          for (let wx = c.x + 2; wx < c.x + c.w - 1; wx += 2) {
-            const v = ((wx * 7 + wy * 13) % 5) / 5 + bl * 0.4 + beat * 0.3;
-            if (v > 0.85) ctx.fillRect(wx, wy, 1, 1);
-          }
-        }
-        ctx.globalAlpha = 1;
-      }
-      if (city < 0.5 && c.chip) {
-        ctx.fillStyle = `rgba(220,220,220,${(0.5 - city) * 2})`;
-        ctx.fillRect(c.x + 1, c.y + 1, 1, 1);
+      cx += 4;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** City-form landmark building grown from a chip footprint (fades in). */
+  private drawLandmark(ctx: CanvasRenderingContext2D, c: Comp, city: number, beat: number): void {
+    const wa = Math.min(1, (city - 0.3) / 0.4);
+    const bl = 0.5 + 0.5 * Math.sin(c.blink);
+    const hgr = [HGR_BLUE, HGR_PURPLE, HGR_ORANGE, HGR_GREEN];
+    ctx.globalAlpha = wa;
+    // Drop shadow so the landmark pops above the dense fill.
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(c.x + 2, c.y + 2, c.w, c.h);
+    // Body.
+    ctx.fillStyle = `rgb(${Math.floor(70 + c.hue * 50)},${Math.floor(76 + c.hue * 40)},${Math.floor(96 + c.hue * 50)})`;
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    // HGR roof accent + rooftop unit.
+    ctx.fillStyle = hgr[Math.floor(c.hue * 4) % hgr.length];
+    ctx.fillRect(c.x, c.y, c.w, 1);
+    ctx.fillStyle = "rgba(150,150,160,1)";
+    ctx.fillRect(c.x + 2, c.y + 2, 2, 2);
+    // Lit windows.
+    ctx.fillStyle = "rgba(255,225,150,1)";
+    for (let wy = c.y + 2; wy < c.y + c.h - 1; wy += 2) {
+      for (let wx = c.x + 2; wx < c.x + c.w - 1; wx += 2) {
+        const v = ((wx * 7 + wy * 13) % 5) / 5 + bl * 0.4 + beat * 0.3;
+        if (v > 0.85) ctx.fillRect(wx, wy, 1, 1);
       }
     }
+    ctx.globalAlpha = 1;
   }
 
   private paintPads(ctx: CanvasRenderingContext2D, m: number, beat: number): void {
@@ -686,6 +882,16 @@ class Bg07 implements EddieBackgroundVariant {
       const cb = Math.floor(this.lerp(120, 120, city) * (0.6 + bl * 0.4));
       ctx.fillStyle = `rgb(${Math.min(255, cr)},${Math.min(255, cg)},${Math.max(0, cb)})`;
       ctx.fillRect(pad.x - r, pad.y - r, r * 2, r * 2);
+      // VIA: a copper annular ring with a dark drilled centre (calm/circuit).
+      const circ = Math.max(0, 1 - city / 0.7);
+      if (pad.via && circ > 0.05) {
+        ctx.globalAlpha = circ;
+        ctx.fillStyle = "#b8721e"; // copper ring
+        ctx.fillRect(pad.x - r, pad.y - r, r * 2, r * 2);
+        ctx.fillStyle = "#0a0f0a"; // drilled hole
+        ctx.fillRect(pad.x - r + 1, pad.y - r + 1, r * 2 - 2, r * 2 - 2);
+        ctx.globalAlpha = 1;
+      }
       if (city > 0.5) {
         // Plaza paving + fountain (HGR blue).
         ctx.fillStyle = `rgba(180,180,190,${(city - 0.5) * 1.2})`;
