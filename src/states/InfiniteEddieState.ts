@@ -107,8 +107,14 @@ export class InfiniteEddieState implements GameState {
   /** Demo mode (launched from the background menu): auto-ramps intensity so the
    *  full morph is visible, shows a HUD, and Esc returns to the menu. */
   private demo = false;
-  /** Performance meter 0..1 → eddieIntensity in normal play. */
-  private perf = 0.25;
+  /** Performance meter 0..1 → eddieIntensity in normal play. Each scored quarter
+   *  adds 0.0315; each unscored quarter (out-of-key or silent) subtracts 0.0315;
+   *  clamped to [0,1]. Stepped at quarter boundaries in onBeat. */
+  private perf = 0;
+  /** Whether the currently-closing quarter earned points (set by onScore). */
+  private quarterScored = false;
+  /** True once the first playing quarter has opened (skips the phantom first beat). */
+  private sawPlayingQuarter = false;
   /** Demo auto-ramp phase. */
   private demoT = 0;
   /** Manual intensity override (>=0 active; -1 = off). Set by [ ] keys. */
@@ -195,6 +201,19 @@ export class InfiniteEddieState implements GameState {
           downbeat: info.beatInPhase === 0,
           audioTime: info.time,
         });
+        // Per-quarter intensity step. The scorer subscribed to onBeat before this
+        // state, so by now it has scored the just-ended quarter and set
+        // quarterScored via onScore: +0.0315 if it scored, -0.0315 otherwise
+        // (out-of-key OR silent). Skip the first playing beat (no prior quarter).
+        // Demo mode drives intensity itself.
+        if (!this.demo && this.sawPlayingQuarter) {
+          this.perf = Math.max(
+            0,
+            Math.min(1, this.perf + (this.quarterScored ? 0.0315 : -0.0315)),
+          );
+        }
+        this.quarterScored = false;
+        this.sawPlayingQuarter = true;
       }
     });
 
@@ -310,9 +329,9 @@ export class InfiniteEddieState implements GameState {
     if (this.demo) {
       this.demoT += dt;
       this.perf = 0.5 - 0.5 * Math.cos(this.demoT * 0.4); // 0 -> 1 -> 0 over ~16s
-    } else {
-      this.perf += (0.25 - this.perf) * dt * 0.2;
     }
+    // In normal play, perf changes only at quarter boundaries (onBeat) per the
+    // +/-0.0315 rule — no per-frame decay.
     const intensity = this.manualIntensity >= 0 ? this.manualIntensity : this.perf;
     this.juice.emit("eddieIntensity", { value: intensity, audioTime });
     if (this.demoHud) this.updateDemoHud(intensity);
@@ -347,13 +366,10 @@ export class InfiniteEddieState implements GameState {
       this.juice.emit("eddieFire", { measure: ev.measure, tier: 1, audioTime: ev.audioTime });
     }
 
-    // Performance meter feeds eddieIntensity: fat, multi-bonus quarters drive it
-    // up; out-of-key/silent quarters nudge it down (skipped in demo mode, which
-    // auto-ramps intensity itself).
-    if (!this.demo) {
-      if (ev.points > 0) this.perf = Math.min(1, this.perf + Math.min(ev.multiplier, 4) * 0.05);
-      else this.perf = Math.max(0, this.perf - 0.05);
-    }
+    // Record that this quarter scored (per-quarter events carry the "quarter"
+    // kind; measure-level tag-clears don't). onBeat applies the +/-0.0315
+    // intensity step at the quarter boundary using this flag.
+    if (ev.points > 0 && ev.kinds.includes("quarter")) this.quarterScored = true;
 
     // No points (out-of-key / silent) earns no shake or particles.
     if (ev.points <= 0) return;
