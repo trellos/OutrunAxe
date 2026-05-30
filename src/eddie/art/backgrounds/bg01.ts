@@ -1,15 +1,19 @@
 // bg01 — "Neon City -> Inferno" (the showcase background, GDD §8). A seeded,
-// pixelated neon GRID CITY the camera DRIVES through, taking corners: it travels
-// down a road then turns left/right at intersections onto cross-streets, winding
-// through city blocks forever. Buildings are pooled and recycled to the grid
-// cells around the moving route so the run is endless.
+// pixelated neon GRID CITY the camera DRIVES through, ON THE ROADS: it travels
+// down a road centerline then PIVOTS through intersections onto cross-streets,
+// winding through city blocks forever and NEVER passing through a building (the
+// route is constrained to road centerlines; buildings sit set back inside the
+// blocks). Buildings are pooled + recycled to the grid cells around the route so
+// the run is endless.
 //
 // Performance INTENSITY morphs the world calm->chaos using BIG PIXEL PARTICLE
 // fire (chunky square embers, orange->red->yellow, additive but luminance-
 // clamped so they read as FIRE, not a glow blob): clean city at morph 0, a few
 // fire sources creeping in on the sidewalks/corners as it rises, embers spitting
-// upward on the beat at mid, more fire than buildings higher up, and a screen-
-// filling ember storm at morph 1. Fire stays ORANGE/RED — never rainbow.
+// upward on the beat at mid, more fire than buildings higher up, and at morph ~1
+// a HELLISH GROUND FIRE PLANE — a screen-filling sea of molten ember fire — that
+// the buildings only poke their TOPS through. Fire stays ORANGE/RED — never
+// rainbow.
 //
 // Juice contract (all three events handled):
 //  - eddieBeatPulse (downbeat stronger) -> window gleam, building shake, fire
@@ -31,7 +35,6 @@ const ROAD_HALF = 7; // half-width of a road (buildings sit outside this)
 const CELL_VIEW = 3; // generate building cells within +-3 grid cells of camera
 const TOWER_POOL = (CELL_VIEW * 2 + 1) * (CELL_VIEW * 2 + 1); // one tower/cell
 const DRIVE_SPEED = 22; // base forward speed (units/s), eases up with morph
-const TURN_RATE = 2.4; // radians/sec while taking a corner
 
 const NEON_TINTS = [0xff2bd6, 0x00f0ff, 0xffd02b, 0xff5a8a, 0x7a3cff, 0x36e07a];
 
@@ -91,6 +94,16 @@ class Bg01 implements EddieBackgroundVariant {
   private skyTex!: THREE.CanvasTexture;
   private sky!: THREE.Mesh;
 
+  // Hellish ground fire plane (max-morph: a sea of molten ember fire the towers
+  // poke their tops through). A big-pixel ember-field canvas, scrolled + flicker-
+  // animated, on a large ground-hugging plane that rises in opacity with morph.
+  private firePlane!: THREE.Mesh;
+  private firePlaneMat!: THREE.MeshBasicMaterial;
+  private firePlaneTex!: THREE.CanvasTexture;
+  private firePlaneCv!: HTMLCanvasElement;
+  private firePlane2d!: CanvasRenderingContext2D;
+  private firePlaneRepaint = 0; // throttle the ember-field repaint
+
   private camera: THREE.PerspectiveCamera | null = null;
   private camBaseY = 5;
 
@@ -106,14 +119,27 @@ class Bg01 implements EddieBackgroundVariant {
   private t = 0;
   private rng = this.makeRng(0xc0ffee);
 
-  // --- Driving route state. The camera moves along grid roads, turning at
-  //     intersections. heading = current travel direction (radians, in XZ).
+  // --- Driving route state. The camera position is ALWAYS on a road centerline
+  //     (a grid line x=k*BLOCK or z=k*BLOCK). It drives in axis-aligned segments
+  //     between intersection nodes; at a node it either continues straight or
+  //     PIVOTS through a quarter-circle arc onto the cross-street so it never
+  //     cuts the corner into a building. dir is the unit travel direction.
   private posX = 0;
   private posZ = 0;
-  private heading = -Math.PI / 2; // start heading down -Z
-  private targetHeading = -Math.PI / 2;
+  private dirX = 0; // unit travel direction (axis-aligned when not turning)
+  private dirZ = -1; // start heading down -Z
+  private heading = -Math.PI / 2; // derived camera look heading (radians, XZ)
+  // The intersection node we are driving toward (always a grid corner).
+  private nodeX = 0;
+  private nodeZ = -BLOCK;
+  // Turn arc state: when turning we sweep around a pivot corner.
   private turning = false;
-  private distToNextNode = BLOCK; // distance until the next intersection
+  private turnFrom = 0; // start angle on the arc (radians)
+  private turnTo = 0; // end angle on the arc
+  private turnT = 0; // 0..1 progress along the arc
+  private turnPivotX = 0; // arc center
+  private turnPivotZ = 0;
+  private turnSign = 1; // +1 left, -1 right
   private emberCursor = 0; // round-robin index into the ember pool
   private spitQueued = 0; // beat-spit budget (extra embers to launch)
 
@@ -194,6 +220,37 @@ class Bg01 implements EddieBackgroundVariant {
     this.ground.rotation.x = -Math.PI / 2;
     this.group.add(this.ground);
 
+    // --- Hellish ground fire plane: a big-pixel ember field on a ground-hugging
+    //     plane, hidden at low morph, rising to a screen-filling sea of fire at
+    //     morph ~1 (buildings poke their tops through it).
+    this.firePlaneCv = document.createElement("canvas");
+    this.firePlaneCv.width = 96;
+    this.firePlaneCv.height = 96;
+    this.firePlane2d = this.firePlaneCv.getContext("2d")!;
+    this.paintFireField(0);
+    this.firePlaneTex = new THREE.CanvasTexture(this.firePlaneCv);
+    this.firePlaneTex.colorSpace = THREE.SRGBColorSpace;
+    this.firePlaneTex.magFilter = THREE.NearestFilter;
+    this.firePlaneTex.minFilter = THREE.NearestFilter;
+    this.firePlaneTex.generateMipmaps = false;
+    this.firePlaneTex.wrapS = THREE.RepeatWrapping;
+    this.firePlaneTex.wrapT = THREE.RepeatWrapping;
+    this.firePlaneTex.repeat.set(8, 8);
+    this.firePlaneMat = new THREE.MeshBasicMaterial({
+      map: this.firePlaneTex,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: true,
+    });
+    this.firePlane = new THREE.Mesh(new THREE.PlaneGeometry(groundSpan, groundSpan), this.firePlaneMat);
+    this.firePlane.rotation.x = -Math.PI / 2;
+    this.firePlane.position.y = 1.2; // just above the asphalt
+    this.firePlane.renderOrder = 4;
+    this.firePlane.frustumCulled = false;
+    this.group.add(this.firePlane);
+
     // --- Towers: one per visible grid cell, repositioned as the camera drives.
     for (let i = 0; i < TOWER_POOL; i++) {
       const t = this.makeTower();
@@ -230,6 +287,10 @@ class Bg01 implements EddieBackgroundVariant {
       this.camera = ctx.camera;
       this.camera.position.set(this.posX, this.camBaseY, this.posZ);
     }
+
+    // Initialize the road route: lock onto the start road + pick the first node.
+    this.snapToRoad();
+    this.chooseNextNode();
 
     // Seed the tower grid + fire sources around the start.
     this.refreshCells(true);
@@ -292,6 +353,43 @@ class Bg01 implements EddieBackgroundVariant {
     tex.minFilter = THREE.NearestFilter;
     tex.generateMipmaps = false;
     return tex;
+  }
+
+  // Paint the big-pixel ember field for the ground fire plane. Chunky cells of
+  // yellow/orange/red over near-black gaps, twinkled by `phase` so the molten
+  // sea shimmers. Strictly hot fire colors — no rainbow.
+  private paintFireField(phase: number): void {
+    const g = this.firePlane2d;
+    const W = this.firePlaneCv.width;
+    const H = this.firePlaneCv.height;
+    g.globalCompositeOperation = "source-over";
+    g.fillStyle = "#1a0500";
+    g.fillRect(0, 0, W, H);
+    const cell = 4; // chunky pixel size
+    let s = 0x9e3779b1;
+    const rnd = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+    for (let y = 0; y < H; y += cell) {
+      for (let x = 0; x < W; x += cell) {
+        const base = rnd();
+        // Flicker each cell on its own phase so the field churns like coals.
+        const flick = 0.5 + 0.5 * Math.sin(phase * 6 + base * 30 + x * 0.3 + y * 0.21);
+        const heat = base * 0.5 + flick * 0.5;
+        if (heat < 0.32) continue; // dark gap (reads as ember bed)
+        let col: number[];
+        if (heat > 0.86) col = FIRE_PALETTE[0]; // yellow-white core
+        else if (heat > 0.66) col = FIRE_PALETTE[1]; // yellow
+        else if (heat > 0.5) col = FIRE_PALETTE[2]; // orange
+        else col = FIRE_PALETTE[3]; // deep orange
+        // Luminance-clamp the cell alpha so additive stacking won't white out.
+        const a = Math.min(0.8, heat * 0.9);
+        g.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${a.toFixed(3)})`;
+        g.fillRect(x, y, cell, cell);
+      }
+    }
+    this.firePlaneTex && (this.firePlaneTex.needsUpdate = true);
   }
 
   private makeTower(): Tower {
@@ -401,43 +499,130 @@ class Bg01 implements EddieBackgroundVariant {
 
   // ---- Per-frame ----------------------------------------------------------
 
+  // Radius of the corner-turn arc. Kept <= ROAD_HALF so the swept path stays on
+  // the road and never reaches into a block (buildings start at ROAD_HALF).
+  private readonly turnRadius = Math.min(ROAD_HALF - 1, 5);
+
   private advanceRoute(dt: number, speed: number): void {
-    // While turning, rotate heading toward the target; otherwise drive straight
-    // and count down to the next intersection where we may take a corner.
-    if (this.turning) {
-      const diff = this.angleDiff(this.targetHeading, this.heading);
-      const step = Math.sign(diff) * Math.min(Math.abs(diff), TURN_RATE * dt);
-      this.heading += step;
-      if (Math.abs(this.angleDiff(this.targetHeading, this.heading)) < 0.02) {
-        this.heading = this.targetHeading;
-        this.turning = false;
-        this.distToNextNode = BLOCK;
-      }
-    } else {
-      this.distToNextNode -= speed * dt;
-      if (this.distToNextNode <= 0) {
-        // Reached an intersection: snap onto the grid line, then decide a turn.
-        // ~55% keep straight, ~45% turn left/right onto the cross-street.
-        const roll = this.rng();
-        if (roll < 0.45) {
-          const left = this.rng() < 0.5;
-          this.targetHeading = this.heading + (left ? Math.PI / 2 : -Math.PI / 2);
-          this.turning = true;
+    let remaining = speed * dt;
+    // Resolve movement in small chunks so a node/turn transition lands exactly
+    // on the road even across a single frame.
+    let guard = 0;
+    while (remaining > 1e-4 && guard++ < 8) {
+      if (this.turning) {
+        // Sweep along the quarter-circle arc about the pivot corner.
+        const arcLen = (Math.PI / 2) * this.turnRadius;
+        const dT = remaining / arcLen;
+        const prevT = this.turnT;
+        this.turnT = Math.min(1, this.turnT + dT);
+        const consumed = (this.turnT - prevT) * arcLen;
+        remaining -= consumed;
+        const ang = this.turnFrom + (this.turnTo - this.turnFrom) * this.turnT;
+        this.posX = this.turnPivotX + Math.cos(ang) * this.turnRadius;
+        this.posZ = this.turnPivotZ + Math.sin(ang) * this.turnRadius;
+        // Tangent direction along the arc = derivative of position.
+        const tang = ang + this.turnSign * (Math.PI / 2);
+        this.dirX = Math.cos(tang);
+        this.dirZ = Math.sin(tang);
+        this.heading = Math.atan2(this.dirZ, this.dirX);
+        if (this.turnT >= 1) {
+          this.turning = false;
+          // Snap exactly onto the outgoing road centerline + pick the next node.
+          this.snapToRoad();
+          this.chooseNextNode();
+        }
+      } else {
+        // Drive straight toward the node; stop when we reach the turn-entry point
+        // (turnRadius short of the node so the arc starts on the road).
+        const toNodeX = this.nodeX - this.posX;
+        const toNodeZ = this.nodeZ - this.posZ;
+        const distToNode = Math.abs(toNodeX) + Math.abs(toNodeZ); // axis-aligned
+        const entryDist = Math.max(0, distToNode - this.turnRadius);
+        if (remaining < entryDist || this.pendingStraight) {
+          // Either we don't reach the corner this step, or we're going straight
+          // through this node (no arc) — just advance and possibly cross it.
+          const step = Math.min(remaining, this.pendingStraight ? distToNode : entryDist);
+          this.posX += this.dirX * step;
+          this.posZ += this.dirZ * step;
+          remaining -= step;
+          if (this.pendingStraight && distToNode - step <= 1e-3) {
+            // Crossed the node going straight: lock onto it and choose the next.
+            this.posX = this.nodeX;
+            this.posZ = this.nodeZ;
+            this.pendingStraight = false;
+            this.chooseNextNode();
+          } else if (remaining <= 1e-4) {
+            break;
+          }
         } else {
-          this.distToNextNode = BLOCK;
+          // Advance to the arc-entry point, then begin the turn (if one is set).
+          this.posX += this.dirX * entryDist;
+          this.posZ += this.dirZ * entryDist;
+          remaining -= entryDist;
+          this.beginTurn();
         }
       }
     }
-    // Move forward along the current heading (XZ plane).
-    this.posX += Math.cos(this.heading) * speed * dt;
-    this.posZ += Math.sin(this.heading) * speed * dt;
+    this.heading = Math.atan2(this.dirZ, this.dirX);
   }
 
-  private angleDiff(a: number, b: number): number {
-    let d = a - b;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    return d;
+  // Snap the camera exactly onto the nearest road centerline on its cross axis
+  // (the axis perpendicular to travel) so float drift can't push it off-road.
+  private snapToRoad(): void {
+    if (Math.abs(this.dirX) > Math.abs(this.dirZ)) {
+      // Travelling along X: lock Z to the nearest grid line.
+      this.posZ = Math.round(this.posZ / BLOCK) * BLOCK;
+      this.dirZ = 0;
+      this.dirX = Math.sign(this.dirX) || 1;
+    } else {
+      this.posX = Math.round(this.posX / BLOCK) * BLOCK;
+      this.dirX = 0;
+      this.dirZ = Math.sign(this.dirZ) || 1;
+    }
+  }
+
+  // Decide the next intersection node ahead. ~55% straight, ~45% a turn. The
+  // node is one block ahead along the current direction.
+  private pendingStraight = false;
+  private pendingTurnLeft = false;
+  private pendingTurn = false;
+  private chooseNextNode(): void {
+    this.snapToRoad();
+    this.nodeX = Math.round((this.posX + this.dirX * BLOCK) / BLOCK) * BLOCK;
+    this.nodeZ = Math.round((this.posZ + this.dirZ * BLOCK) / BLOCK) * BLOCK;
+    if (this.rng() < 0.45) {
+      this.pendingTurn = true;
+      this.pendingTurnLeft = this.rng() < 0.5;
+      this.pendingStraight = false;
+    } else {
+      this.pendingTurn = false;
+      this.pendingStraight = true;
+    }
+  }
+
+  // Set up the quarter-circle arc that pivots from the incoming road onto the
+  // chosen cross-street, centered so the arc stays within turnRadius of the node.
+  private beginTurn(): void {
+    if (!this.pendingTurn) {
+      this.pendingStraight = true;
+      return;
+    }
+    this.pendingTurn = false;
+    // Left turn = +90deg (CCW) in XZ; right = -90deg. The pivot is offset from
+    // the node perpendicular to travel, toward the turn side.
+    this.turnSign = this.pendingTurnLeft ? 1 : -1;
+    // Perpendicular (left of travel) unit vector in XZ.
+    const leftX = -this.dirZ;
+    const leftZ = this.dirX;
+    const px = this.posX + leftX * this.turnSign * this.turnRadius;
+    const pz = this.posZ + leftZ * this.turnSign * this.turnRadius;
+    this.turnPivotX = px;
+    this.turnPivotZ = pz;
+    // Start angle points from pivot back to current position.
+    this.turnFrom = Math.atan2(this.posZ - pz, this.posX - px);
+    this.turnTo = this.turnFrom + this.turnSign * (Math.PI / 2);
+    this.turnT = 0;
+    this.turning = true;
   }
 
   update(dt: number, _audioTime: number): void {
@@ -572,10 +757,7 @@ class Bg01 implements EddieBackgroundVariant {
       this.camera.position.set(this.posX + sx, this.camBaseY + sy, this.posZ);
       this.camera.lookAt(lookX, this.camBaseY - 1, lookZ);
       // A little roll when taking a corner for a driving feel.
-      if (this.turning) {
-        const dir = Math.sign(this.angleDiff(this.targetHeading, this.heading));
-        this.camera.rotateZ(dir * 0.08);
-      }
+      if (this.turning) this.camera.rotateZ(-this.turnSign * 0.1);
     }
 
     // Keep sky + ground riding with the camera so the city never runs out.
@@ -589,6 +771,24 @@ class Bg01 implements EddieBackgroundVariant {
     // Scroll the ground texture so road lines stay locked to world space.
     const map = this.groundMat.map!;
     map.offset.set(this.posX / BLOCK, -this.posZ / BLOCK);
+
+    // --- Hellish ground fire plane. Ramps in over the top of the morph range so
+    //     it's "more fire than buildings" approaching 1: a screen-filling sea of
+    //     molten ember the towers poke their tops through. Stays orange/red.
+    const fireSea = THREE.MathUtils.clamp((m - 0.45) / 0.55, 0, 1); // 0 until ~mid
+    this.firePlane.position.set(this.posX, 1.2 + fireSea * 6.5, this.posZ);
+    this.firePlaneMat.opacity = Math.min(0.82, fireSea * fireSea * 0.95);
+    // Beat makes the sea surge brighter/taller for a frame.
+    const surge = (this.pulse + this.downbeatPulse) * 0.12 * fireSea;
+    this.firePlaneMat.color.setRGB(1 + surge, 1 - surge * 0.3, 1 - surge * 0.5);
+    // Drift the ember field with travel + repaint a few times a second so it
+    // churns like live coals.
+    this.firePlaneTex.offset.set(this.posX / 12 + this.t * 0.05, -this.posZ / 12 + this.t * 0.08);
+    this.firePlaneRepaint += sdt;
+    if (fireSea > 0.01 && this.firePlaneRepaint >= 0.08) {
+      this.firePlaneRepaint = 0;
+      this.paintFireField(this.t);
+    }
   }
 
   dispose(): void {
@@ -628,6 +828,9 @@ class Bg01 implements EddieBackgroundVariant {
     this.sky.geometry.dispose();
     this.skyTex.dispose();
     this.skyMat.dispose();
+    this.firePlane.geometry.dispose();
+    this.firePlaneTex.dispose();
+    this.firePlaneMat.dispose();
 
     this.camera = null;
   }

@@ -8,14 +8,19 @@
 // boat in a tempest. At morph 1 it is a raging storm: towering chaotic waves,
 // near-constant lightning, blood-red sky, waterspouts.
 //
-// Pixely neon DOLPHINS leap out of the swell in parabolic arcs (chunky pixel
-// silhouettes with a neon rim + a little splash). They surface occasionally in
-// calm and leap more often, bigger, and in larger pods on the beat as intensity
-// rises. The dolphin sprites are pooled/recycled — no per-leap allocation.
+// Sea creatures key off the weather. In the CALM / SUNNY state (low morph),
+// pixely neon DOLPHINS leap out of the swell in joyful parabolic arcs (chunky
+// silhouettes with a neon rim + a splash) — frequent and in big pods at max sun,
+// tapering off as the storm builds. In the STORM (rising morph), chaotic neon
+// MERMAIDS surface and thrash — whipping hair, flailing arms, a lashing tail
+// flicking up spray (a "hot mess") — appearing progressively: ONE, then TWO,
+// then THREE, and SCHOOLS at max storm. Both are pooled/recycled (no per-event
+// allocation).
 //
 // Juice contract (all three events handled):
 //  - eddieBeatPulse  -> wave surge + lightning strike + a dolphin pod leap
-//    (chance + pod size grow with morph; downbeats stronger).
+//    (sunny: chance/pod grow as morph FALLS) and a mermaid surfacing
+//    (stormy: chance/count grow as morph rises). Downbeats stronger.
 //  - eddieShake      -> camera jolt that decays.
 //  - eddieIntensity  -> target morph; eased each frame (never snapped).
 //
@@ -71,6 +76,21 @@ interface Dolphin {
   splash: number; // splash flash on entry, decays
 }
 
+// A chaotic neon storm mermaid: surfaces and THRASHES — whipping hair + tail,
+// splashing — to read as a "hot mess". Pooled like the dolphins. Unlike the
+// dolphin arc, a mermaid bobs at the surface for a while then submerges.
+interface Mermaid {
+  active: boolean;
+  x: number; // canvas-x
+  surfaceY: number; // water surface y it bobs around
+  t: number; // 0..1 life progress (rise -> thrash -> submerge)
+  dur: number; // seconds of the whole appearance
+  rise: number; // how high above the surface the torso lifts (px)
+  phase: number; // per-mermaid thrash phase offset
+  hue: number; // 0..1 neon hue (magenta..cyan)
+  splash: number; // splashing flash, decays
+}
+
 class Bg02 implements EddieBackgroundVariant {
   private scene: THREE.Scene | null = null;
   private group = new THREE.Group();
@@ -104,6 +124,10 @@ class Bg02 implements EddieBackgroundVariant {
   private dolphins: Dolphin[] = [];
   private dolphinTimer = 0; // counts down to the next ambient leap
 
+  // Mermaid pool (fixed-size, recycled), surfacing during the storm.
+  private mermaids: Mermaid[] = [];
+  private mermaidTimer = 0; // counts down to the next ambient surfacing
+
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
@@ -133,6 +157,22 @@ class Bg02 implements EddieBackgroundVariant {
       });
     }
     this.dolphinTimer = 1.5 + Math.random() * 2;
+
+    // Pre-allocate the mermaid pool once (max simultaneous = a small school).
+    for (let i = 0; i < 8; i++) {
+      this.mermaids.push({
+        active: false,
+        x: 0,
+        surfaceY: 0,
+        t: 0,
+        dur: 1,
+        rise: 0,
+        phase: 0,
+        hue: 0,
+        splash: 0,
+      });
+    }
+    this.mermaidTimer = 2 + Math.random() * 2;
 
     this.paint();
     this.tex = new THREE.CanvasTexture(this.canvas);
@@ -165,12 +205,20 @@ class Bg02 implements EddieBackgroundVariant {
       const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
       if (Math.random() < chance) this.strike(e.downbeat);
 
-      // Dolphins leap ON THE BEAT: chance + pod size grow with morph + downbeat.
-      // Calm baseline still gets the occasional single downbeat leap.
-      const leapChance = (e.downbeat ? 0.5 : 0.18) + this.morph * 0.5;
-      if (Math.random() < leapChance) {
-        const pod = 1 + Math.floor(this.morph * 3) + (e.downbeat ? 1 : 0);
+      // Dolphins are a CALM/SUNNY thing: joyful and frequent at max sun
+      // (morph ~0), tapering off as the storm builds. sun = 1 - morph.
+      const sun = 1 - this.morph;
+      const dolphinChance = (e.downbeat ? 0.45 : 0.15) + sun * 0.5;
+      if (Math.random() < dolphinChance) {
+        const pod = 1 + Math.floor(sun * 3) + (e.downbeat ? 1 : 0);
         this.launchPod(pod, e.downbeat);
+      }
+
+      // Mermaids are a STORM thing: a chaotic hot mess that surfaces during the
+      // storm, more numerous as morph rises — 1 -> 2 -> 3 -> schools at max.
+      const mermChance = (e.downbeat ? 0.5 : 0.2) * this.morph;
+      if (Math.random() < mermChance) {
+        this.launchMermaids(this.mermaidCount(), e.downbeat);
       }
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
@@ -242,6 +290,44 @@ class Bg02 implements EddieBackgroundVariant {
     d.dur = 0.7 + Math.random() * 0.25 - this.morph * 0.15; // snappier at high energy
     d.hue = Math.random();
     d.splash = 0;
+  }
+
+  /** Progressive mermaid count: storm onset shows ONE, then TWO, then THREE,
+   *  and at max storm a SCHOOL. Gated by morph; returns 0 below the threshold. */
+  private mermaidCount(): number {
+    const m = this.morph;
+    if (m < 0.25) return 0;
+    if (m < 0.5) return 1;
+    if (m < 0.72) return 2;
+    if (m < 0.9) return 3;
+    return 4 + Math.floor((m - 0.9) * 30); // schools at max storm
+  }
+
+  /** Surface up to `n` mermaids from free pool slots, clustered into a school. */
+  private launchMermaids(n: number, big: boolean): void {
+    if (n <= 0) return;
+    const cx = 16 + Math.random() * (SEA_W - 32);
+    let launched = 0;
+    for (const mm of this.mermaids) {
+      if (mm.active) continue;
+      const jitterX = (launched - (n - 1) / 2) * (10 + Math.random() * 8);
+      this.spawnMermaid(mm, cx + jitterX, big);
+      if (++launched >= n) break;
+    }
+  }
+
+  /** Configure a pooled mermaid slot. Wilder/taller toward max storm. */
+  private spawnMermaid(mm: Mermaid, x: number, big: boolean): void {
+    const px = Math.max(8, Math.min(SEA_W - 8, x));
+    mm.active = true;
+    mm.x = px;
+    mm.surfaceY = this.surfaceYAt(px);
+    mm.t = 0;
+    mm.dur = 1.4 + Math.random() * 1.0; // lingers, thrashing, longer than a leap
+    mm.rise = (10 + Math.random() * 6 + this.morph * 12) * (big ? 1.2 : 1);
+    mm.phase = Math.random() * Math.PI * 2;
+    mm.hue = Math.random();
+    mm.splash = 1; // surfacing splash
   }
 
   private lerp(a: number, b: number, t: number): number {
@@ -364,8 +450,9 @@ class Bg02 implements EddieBackgroundVariant {
       ctx.globalAlpha = 1;
     }
 
-    // --- Dolphins: pixely neon leapers arcing over the swell.
+    // --- Dolphins (sunny) + mermaids (stormy): pixely neon sea creatures.
     this.drawDolphins();
+    this.drawMermaids();
 
     // --- Lightning bolts (drawn over the sky).
     for (const bolt of this.bolts) {
@@ -402,13 +489,15 @@ class Bg02 implements EddieBackgroundVariant {
    *  recycle finished slots. Splash pops fire as a dolphin crosses the surface
    *  on the way up (exit) and back down (entry). */
   private updateDolphins(dt: number): void {
-    // Ambient leaps: occasional in calm, more frequent as morph rises.
+    // Ambient leaps are a SUNNY thing: frequent + joyful at max sun (morph ~0),
+    // tapering off as the storm builds. sun = 1 - morph.
+    const sun = 1 - this.morph;
     this.dolphinTimer -= dt;
     if (this.dolphinTimer <= 0) {
-      const pod = 1 + Math.floor(this.morph * 2);
+      const pod = 1 + Math.floor(sun * 2);
       this.launchPod(pod, false);
-      // Interval shrinks with morph (calm ~3s, storm ~0.8s) + jitter.
-      this.dolphinTimer = this.lerp(3.2, 0.8, this.morph) * (0.6 + Math.random() * 0.8);
+      // Interval shrinks with sun (storm ~3.2s rare, calm ~0.8s frequent) + jitter.
+      this.dolphinTimer = this.lerp(3.2, 0.8, sun) * (0.6 + Math.random() * 0.8);
     }
 
     for (const d of this.dolphins) {
@@ -427,6 +516,29 @@ class Bg02 implements EddieBackgroundVariant {
 
       // Retire once the arc is done AND its splash has faded.
       if (d.t > 1 && d.splash <= 0.01) d.active = false;
+    }
+  }
+
+  /** Advance mermaid appearances, fire ambient surfacings during the storm,
+   *  decay splashes, recycle finished slots. */
+  private updateMermaids(dt: number): void {
+    // Ambient surfacings only happen in the storm; more often as morph rises.
+    if (this.morph > 0.25) {
+      this.mermaidTimer -= dt;
+      if (this.mermaidTimer <= 0) {
+        this.launchMermaids(this.mermaidCount(), false);
+        // Interval shrinks as the storm intensifies (~3.5s onset -> ~1.0s max).
+        this.mermaidTimer = this.lerp(3.5, 1.0, this.morph) * (0.6 + Math.random() * 0.8);
+      }
+    }
+
+    for (const mm of this.mermaids) {
+      if (!mm.active) continue;
+      if (mm.splash > 0) mm.splash = Math.max(0, mm.splash - dt * 3.5);
+      mm.t += dt / mm.dur;
+      // A fresh splash whenever the thrash whips hard (periodic, chaotic).
+      if (Math.sin(this.t * 14 + mm.phase) > 0.92) mm.splash = Math.max(mm.splash, 0.7);
+      if (mm.t > 1 && mm.splash <= 0.01) mm.active = false;
     }
   }
 
@@ -503,6 +615,74 @@ class Bg02 implements EddieBackgroundVariant {
     }
   }
 
+  /** Draw all active mermaids (called from paint()). A chaotic pixel "hot mess":
+   *  a small torso bobbing above the surface with whipping neon hair and a
+   *  thrashing tail flicking up sheets of spray. */
+  private drawMermaids(): void {
+    const ctx = this.c2d;
+    for (const mm of this.mermaids) {
+      if (!mm.active) continue;
+
+      // Vertical envelope: rise out (0..0.25), thrash (0.25..0.8), sink (0.8..1).
+      let lift: number;
+      if (mm.t < 0.25) lift = mm.t / 0.25;
+      else if (mm.t < 0.8) lift = 1;
+      else lift = Math.max(0, 1 - (mm.t - 0.8) / 0.2);
+      const bobY = mm.surfaceY - lift * mm.rise + Math.sin(this.t * 6 + mm.phase) * 1.5;
+
+      // Splashing spray around her — chaotic, scales with the thrash + splash.
+      if (mm.splash > 0.01 || lift > 0.3) {
+        ctx.fillStyle = "#ffffff";
+        const sn = 3 + Math.floor((mm.splash + lift) * 6);
+        for (let i = 0; i < sn; i++) {
+          const ax = mm.x + (Math.random() - 0.5) * 16;
+          const ay = mm.surfaceY - Math.random() * 8 * (mm.splash + lift * 0.4);
+          ctx.globalAlpha = 0.4 + Math.random() * 0.5;
+          ctx.fillRect(Math.round(ax), Math.round(ay), 1, 1);
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (lift <= 0.02) continue;
+
+      // Neon palette: magenta..cyan by hue, hot-pink rim.
+      const r = Math.round(this.lerp(255, 0, mm.hue));
+      const g = Math.round(this.lerp(43, 240, mm.hue));
+      const b = Math.round(this.lerp(214, 255, mm.hue));
+      const skin = `rgb(${r},${g},${b})`;
+      const hair = `rgb(255,${Math.round(60 + mm.hue * 100)},200)`;
+
+      // Tail under the surface, thrashing side to side.
+      const thrash = Math.sin(this.t * 12 + mm.phase);
+      const tailX = mm.x + thrash * 4 * lift;
+      ctx.fillStyle = skin;
+      for (let s = 0; s < 6; s++) {
+        const ty = mm.surfaceY + s; // below the surface
+        const bend = Math.sin(this.t * 12 + mm.phase + s * 0.5) * (s * 0.6) * lift;
+        ctx.fillRect(Math.round(mm.x + bend), Math.round(ty), 2, 1);
+      }
+      // Tail fluke flicking up spray at the bottom.
+      ctx.fillRect(Math.round(tailX - 2), Math.round(mm.surfaceY + 6), 5, 1);
+
+      // Torso (a couple of stacked pixels) above the surface.
+      ctx.fillStyle = skin;
+      ctx.fillRect(Math.round(mm.x), Math.round(bobY + 2), 2, 4);
+      // Head.
+      ctx.fillRect(Math.round(mm.x), Math.round(bobY), 2, 2);
+      // Whipping hair: a few neon strands flailing off the head.
+      ctx.fillStyle = hair;
+      for (let h = 0; h < 4; h++) {
+        const hwhip = Math.sin(this.t * 16 + mm.phase + h * 1.3) * (3 + h);
+        ctx.fillRect(Math.round(mm.x + hwhip), Math.round(bobY - 1 - h), 1, 2);
+      }
+      // Flailing arms (the "hot mess" flourish).
+      ctx.fillStyle = skin;
+      const armL = Math.sin(this.t * 13 + mm.phase) * 4;
+      const armR = Math.sin(this.t * 13 + mm.phase + Math.PI) * 4;
+      ctx.fillRect(Math.round(mm.x - 2), Math.round(bobY + 2 + armL * 0.3), 2, 1);
+      ctx.fillRect(Math.round(mm.x + 2), Math.round(bobY + 2 + armR * 0.3), 2, 1);
+    }
+  }
+
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
@@ -517,6 +697,7 @@ class Bg02 implements EddieBackgroundVariant {
     }
 
     this.updateDolphins(dt);
+    this.updateMermaids(dt);
 
     this.paint();
     this.tex.needsUpdate = true;
@@ -569,6 +750,7 @@ class Bg02 implements EddieBackgroundVariant {
     this.tex.dispose();
     this.bolts = [];
     this.dolphins = [];
+    this.mermaids = [];
     this.camera = null;
   }
 }
@@ -576,7 +758,7 @@ class Bg02 implements EddieBackgroundVariant {
 const def: EddieBackgroundDef = {
   id: "bg02",
   label: "Neon Sea → Storm",
-  blurb: "A calm neon synthwave ocean under a banded moon that morphs into a raging tempest as you heat up — swelling waves, whitecaps, waterspouts, beat-timed lightning and leaping neon dolphins, with the camera pitching like a boat.",
+  blurb: "A calm neon synthwave ocean under a banded moon — sunny skies full of leaping neon dolphins — that morphs into a raging tempest as you heat up, with swelling waves, whitecaps, waterspouts, beat-timed lightning and a hot mess of thrashing neon mermaids (1 → 2 → 3 → schools), the camera pitching like a boat.",
   create: () => new Bg02(),
 };
 

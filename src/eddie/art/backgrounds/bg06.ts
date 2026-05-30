@@ -1,22 +1,27 @@
-// bg06 — "Desert Drive -> Rainstorm" — flying forward through a pixel desert at
-// dusk that builds into an intense desert RAINSTORM as performance intensity
-// climbs. Three.js scene decoration (visuals only, GDD §8).
+// bg06 — "Desert Drive -> Rainstorm" — driving along a winding desert road at
+// dusk through wide-open desert that builds into an intense RAINSTORM as
+// performance intensity climbs. Three.js scene decoration (visuals only, GDD §8).
 //
-// The camera flies forward down the desert floor; saguaro cactuses and chunky
-// pixel ROCK MONUMENTS (mesas / buttes / arches) stream past on both sides and
-// recycle front->back so the drive is endless. A gradient desert sky sits behind
-// a distant horizon. An eased `morph` (0..1) drives the whole transformation:
-//   morph 0  -> calm dusk desert: warm amber/violet sky, dry ground, scenery
-//               streaming past, no rain.
-//   morph ~  -> storm clouds roll in and darken the sky, rain begins (sparse
-//               pixel streaks), the ground turns wet and reflective, wind tilts
-//               the rain, occasional lightning on the beat.
-//   morph 1  -> torrential chaotic downpour: dense slanted rain, dark roiling
-//               sky, frequent lightning bolts on the beat, camera buffeting.
+// A winding pixel road curves left/right into the distance; the camera follows
+// the road's curve (its X tracks the road centerline just ahead, and it looks
+// further down the road). The foreground is mostly OPEN desert — only the
+// occasional saguaro cactus or small rock sits beside the road and streams past
+// (recycling front->back so the drive is endless). The big ROCK MONUMENTS
+// (mesas / buttes / arches) live FAR on the horizon as a sparse silhouette band,
+// not lining the road. A gradient desert sky sits behind the horizon.
+//
+// An eased `morph` (0..1) drives the transformation:
+//   morph 0  -> calm dusk desert drive: warm sky, dry road + sand, open vistas,
+//               distant monument silhouettes, no rain.
+//   morph ~  -> storm clouds darken the sky, rain begins (sparse pixel streaks),
+//               the road turns wet/reflective, wind tilts the rain + sways props,
+//               occasional lightning on the beat.
+//   morph 1  -> torrential chaotic downpour: dense slanted rain, near-black sky,
+//               frequent lightning, camera buffeting.
 //
 // Juice (all three required):
-//   eddieBeatPulse  -> rain surge + lightning. Lightning fires on the beat, more
-//                      reliably at higher morph (downbeat stronger).
+//   eddieBeatPulse  -> rain surge + lightning (downbeat stronger; strike chance
+//                      scales with morph).
 //   eddieShake      -> camera jolt that decays.
 //   eddieIntensity  -> stored as target; `morph` eases toward it every frame.
 //
@@ -31,16 +36,19 @@ import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
 const SKY_H = 96; // sky gradient canvas resolution (vertical)
 const RAIN_COUNT = 700; // max rain streaks (scaled visible by morph)
-const SCENERY_COUNT = 22; // cactus + rock props streaming past
-const FAR_Z = -260; // recycle horizon (props spawn here)
+const PROP_COUNT = 12; // sparse near props beside the road
+const FAR_Z = -300; // recycle horizon (props spawn here)
 const NEAR_Z = 30; // props recycle once they pass this (behind camera)
+const ROAD_HALF_W = 11; // road half-width in world units (at the surface)
 
-type PropKind = "cactus" | "mesa" | "butte" | "arch";
+type PropKind = "cactus" | "smallrock";
 
 interface Prop {
   mesh: THREE.Mesh;
-  side: number; // -1 left, +1 right
+  side: number; // -1 left, +1 right of the road
+  offset: number; // lateral distance from road edge
   baseScale: number;
+  kind: PropKind;
 }
 
 class Bg06 implements EddieBackgroundVariant {
@@ -56,7 +64,12 @@ class Bg06 implements EddieBackgroundVariant {
   private skyMat!: THREE.MeshBasicMaterial;
   private skyMesh!: THREE.Mesh;
 
-  // Ground plane (dry -> wet/reflective).
+  // Distant monument silhouette band (sparse, on the horizon).
+  private monTex!: THREE.CanvasTexture;
+  private monMat!: THREE.MeshBasicMaterial;
+  private monMesh!: THREE.Mesh;
+
+  // Ground plane (dry sand -> wet).
   private groundMat!: THREE.MeshBasicMaterial;
   private groundMesh!: THREE.Mesh;
   private groundCanvas!: HTMLCanvasElement;
@@ -64,22 +77,33 @@ class Bg06 implements EddieBackgroundVariant {
   private groundTex!: THREE.CanvasTexture;
   private groundScroll = 0;
 
-  // Scenery props (cactus + rock monuments). Shared geometries, disposed once.
+  // Winding road: a ribbon strip mesh whose vertices follow roadCurve(z).
+  private roadMesh!: THREE.Mesh;
+  private roadGeo!: THREE.PlaneGeometry;
+  private roadMat!: THREE.MeshBasicMaterial;
+  private roadCanvas!: HTMLCanvasElement;
+  private roadCtx!: CanvasRenderingContext2D;
+  private roadTex!: THREE.CanvasTexture;
+  private roadScroll = 0;
+  private roadSegZ: number[] = []; // z of each road cross-row (camera->far)
+
+  // Scenery props (occasional cactus + small rock beside the road).
   private props: Prop[] = [];
   private cactusTex!: THREE.CanvasTexture;
-  private rockTex!: THREE.CanvasTexture;
+  private smallRockTex!: THREE.CanvasTexture;
   private cactusMat!: THREE.MeshBasicMaterial;
-  private rockMat!: THREE.MeshBasicMaterial;
-  private propGeos: THREE.PlaneGeometry[] = [];
+  private smallRockMat!: THREE.MeshBasicMaterial;
+  private cactusGeo!: THREE.PlaneGeometry;
+  private rockGeo!: THREE.PlaneGeometry;
 
-  // Rain (additive line segments via a single LineSegments mesh).
+  // Rain.
   private rain!: THREE.LineSegments;
   private rainGeo!: THREE.BufferGeometry;
   private rainMat!: THREE.LineBasicMaterial;
-  private rainPos!: Float32Array; // 2 verts per streak (head+tail)
-  private rainVel!: Float32Array; // per-streak fall velocity (x,y,z)
+  private rainPos!: Float32Array;
+  private rainVel!: Float32Array;
 
-  // Lightning: a full-screen flash quad + a few jagged bolt line meshes.
+  // Lightning.
   private flashMat!: THREE.MeshBasicMaterial;
   private flashMesh!: THREE.Mesh;
   private flash = 0;
@@ -89,8 +113,8 @@ class Bg06 implements EddieBackgroundVariant {
   private boltLife = 0;
 
   private camera: THREE.PerspectiveCamera | null = null;
-  private camBaseY = 14;
-  private camBaseZ = 36;
+  private camBaseY = 13;
+  private camBaseZ = 34;
 
   private offBeat?: () => void;
   private offShake?: () => void;
@@ -98,11 +122,12 @@ class Bg06 implements EddieBackgroundVariant {
 
   private morph = 0;
   private morphTarget = 0;
-  private beat = 0; // beat pump, decays
+  private beat = 0;
   private beatDecay = 4;
   private shake = 0;
   private t = 0;
-  private flySpeed = 60; // world units/sec the scenery streams toward camera
+  private flySpeed = 56; // forward travel; advances roadPhase + prop streaming
+  private roadPhase = 0; // travelled distance, drives the winding curve scroll
   private rngState = 0x1234abcd >>> 0;
 
   mount(ctx: {
@@ -114,7 +139,7 @@ class Bg06 implements EddieBackgroundVariant {
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
     ctx.scene.background = new THREE.Color(0x3a2436);
-    ctx.scene.fog = new THREE.Fog(0x3a2436, 60, 240);
+    ctx.scene.fog = new THREE.Fog(0x3a2436, 70, 260);
 
     // --- Sky --------------------------------------------------------------
     this.skyCanvas = document.createElement("canvas");
@@ -132,11 +157,27 @@ class Bg06 implements EddieBackgroundVariant {
       depthTest: false,
       fog: false,
     });
-    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(680, 300), this.skyMat);
-    this.skyMesh.position.set(0, 80, -280);
+    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(760, 320), this.skyMat);
+    this.skyMesh.position.set(0, 82, -300);
     this.skyMesh.renderOrder = -30;
     this.skyMesh.frustumCulled = false;
     this.group.add(this.skyMesh);
+
+    // --- Distant monuments (sparse horizon silhouette) --------------------
+    this.monTex = this.buildMonumentTexture();
+    this.monMat = new THREE.MeshBasicMaterial({
+      map: this.monTex,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      fog: false,
+    });
+    // Sits just above the horizon, far back so it reads as distance.
+    this.monMesh = new THREE.Mesh(new THREE.PlaneGeometry(720, 70), this.monMat);
+    this.monMesh.position.set(0, 18, -296);
+    this.monMesh.renderOrder = -28;
+    this.monMesh.frustumCulled = false;
+    this.group.add(this.monMesh);
 
     // --- Ground -----------------------------------------------------------
     this.groundCanvas = document.createElement("canvas");
@@ -151,22 +192,59 @@ class Bg06 implements EddieBackgroundVariant {
     this.groundTex.generateMipmaps = false;
     this.groundTex.wrapS = THREE.RepeatWrapping;
     this.groundTex.wrapT = THREE.RepeatWrapping;
-    this.groundTex.repeat.set(8, 12);
+    this.groundTex.repeat.set(10, 14);
     this.groundMat = new THREE.MeshBasicMaterial({
       map: this.groundTex,
       depthWrite: true,
       fog: true,
     });
-    this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(400, 420), this.groundMat);
+    this.groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(600, 520), this.groundMat);
     this.groundMesh.rotation.x = -Math.PI / 2;
-    this.groundMesh.position.set(0, 0, -120);
+    this.groundMesh.position.set(0, -0.05, -160);
     this.groundMesh.renderOrder = -25;
     this.groundMesh.frustumCulled = false;
     this.group.add(this.groundMesh);
 
-    // --- Scenery textures + materials ------------------------------------
+    // --- Winding road -----------------------------------------------------
+    // A long strip of cross-rows from just behind the camera to the horizon;
+    // each row's X is shifted by roadCurve() every frame so the road winds.
+    this.roadCanvas = document.createElement("canvas");
+    this.roadCanvas.width = 32;
+    this.roadCanvas.height = 128;
+    this.roadCtx = this.roadCanvas.getContext("2d")!;
+    this.roadCtx.imageSmoothingEnabled = false;
+    this.roadTex = new THREE.CanvasTexture(this.roadCanvas);
+    this.roadTex.colorSpace = THREE.SRGBColorSpace;
+    this.roadTex.magFilter = THREE.NearestFilter;
+    this.roadTex.minFilter = THREE.NearestFilter;
+    this.roadTex.generateMipmaps = false;
+    this.roadTex.wrapS = THREE.ClampToEdgeWrapping;
+    this.roadTex.wrapT = THREE.RepeatWrapping;
+    this.roadMat = new THREE.MeshBasicMaterial({
+      map: this.roadTex,
+      transparent: true,
+      depthWrite: false,
+      fog: true,
+    });
+    // Build a tessellated plane lying flat; we'll bend its vertices in update().
+    const ROAD_ROWS = 64;
+    this.roadGeo = new THREE.PlaneGeometry(1, 1, 1, ROAD_ROWS);
+    this.roadMesh = new THREE.Mesh(this.roadGeo, this.roadMat);
+    this.roadMesh.rotation.x = -Math.PI / 2;
+    this.roadMesh.position.set(0, 0, 0);
+    this.roadMesh.renderOrder = -24;
+    this.roadMesh.frustumCulled = false;
+    this.group.add(this.roadMesh);
+    // Precompute the z of each row (camera-near -> far), nonlinear for perspective.
+    for (let r = 0; r <= ROAD_ROWS; r++) {
+      const f = r / ROAD_ROWS;
+      this.roadSegZ.push(NEAR_Z - f * (NEAR_Z - FAR_Z));
+    }
+    this.paintRoad();
+
+    // --- Props (sparse, beside the road) ----------------------------------
     this.cactusTex = this.buildCactusTexture();
-    this.rockTex = this.buildRockTexture();
+    this.smallRockTex = this.buildSmallRockTexture();
     this.cactusMat = new THREE.MeshBasicMaterial({
       map: this.cactusTex,
       transparent: true,
@@ -174,29 +252,29 @@ class Bg06 implements EddieBackgroundVariant {
       depthWrite: true,
       fog: true,
     });
-    this.rockMat = new THREE.MeshBasicMaterial({
-      map: this.rockTex,
+    this.smallRockMat = new THREE.MeshBasicMaterial({
+      map: this.smallRockTex,
       transparent: true,
       alphaTest: 0.5,
       depthWrite: true,
       fog: true,
     });
-
-    // A few shared plane geometries (different aspect ratios for the prop kinds).
-    const cactusGeo = new THREE.PlaneGeometry(14, 28);
-    const mesaGeo = new THREE.PlaneGeometry(46, 30);
-    const butteGeo = new THREE.PlaneGeometry(26, 40);
-    const archGeo = new THREE.PlaneGeometry(40, 28);
-    this.propGeos = [cactusGeo, mesaGeo, butteGeo, archGeo];
-
-    for (let i = 0; i < SCENERY_COUNT; i++) {
-      const side = i % 2 === 0 ? -1 : 1;
-      const kind = this.pickKind();
-      const geo = this.geoFor(kind);
-      const mat = kind === "cactus" ? this.cactusMat : this.rockMat;
-      const mesh = new THREE.Mesh(geo, mat);
+    this.cactusGeo = new THREE.PlaneGeometry(13, 26);
+    this.rockGeo = new THREE.PlaneGeometry(16, 11);
+    for (let i = 0; i < PROP_COUNT; i++) {
+      const kind: PropKind = this.rng() < 0.6 ? "cactus" : "smallrock";
+      const mesh = new THREE.Mesh(
+        kind === "cactus" ? this.cactusGeo : this.rockGeo,
+        kind === "cactus" ? this.cactusMat : this.smallRockMat,
+      );
       mesh.frustumCulled = false;
-      const p: Prop = { mesh, side, baseScale: 0.8 + this.rng() * 1.6 };
+      const p: Prop = {
+        mesh,
+        side: this.rng() < 0.5 ? -1 : 1,
+        offset: 8 + this.rng() * 40, // beyond the road edge, into open desert
+        baseScale: 0.7 + this.rng() * 0.9,
+        kind,
+      };
       this.placeProp(p, FAR_Z + this.rng() * (NEAR_Z - FAR_Z));
       this.group.add(mesh);
       this.props.push(p);
@@ -206,15 +284,13 @@ class Bg06 implements EddieBackgroundVariant {
     this.rainGeo = new THREE.BufferGeometry();
     this.rainPos = new Float32Array(RAIN_COUNT * 2 * 3);
     this.rainVel = new Float32Array(RAIN_COUNT * 3);
-    for (let i = 0; i < RAIN_COUNT; i++) {
-      this.respawnRain(i, true);
-    }
+    for (let i = 0; i < RAIN_COUNT; i++) this.respawnRain(i, true);
     this.rainGeo.setAttribute("position", new THREE.BufferAttribute(this.rainPos, 3));
-    this.rainGeo.setDrawRange(0, 0); // nothing visible until morph rises
+    this.rainGeo.setDrawRange(0, 0);
     this.rainMat = new THREE.LineBasicMaterial({
       color: 0xaecbe6,
       transparent: true,
-      opacity: 0.0,
+      opacity: 0,
       depthWrite: false,
       fog: true,
       blending: THREE.AdditiveBlending,
@@ -233,14 +309,13 @@ class Bg06 implements EddieBackgroundVariant {
       fog: false,
       blending: THREE.AdditiveBlending,
     });
-    this.flashMesh = new THREE.Mesh(new THREE.PlaneGeometry(800, 400), this.flashMat);
-    this.flashMesh.position.set(0, 60, -120);
+    this.flashMesh = new THREE.Mesh(new THREE.PlaneGeometry(900, 460), this.flashMat);
+    this.flashMesh.position.set(0, 60, -130);
     this.flashMesh.renderOrder = -5;
     this.flashMesh.frustumCulled = false;
     this.group.add(this.flashMesh);
 
     this.boltGeo = new THREE.BufferGeometry();
-    // Up to 16 jagged segments (2 verts each).
     this.boltGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(16 * 2 * 3), 3));
     this.boltGeo.setDrawRange(0, 0);
     this.boltMat = new THREE.LineBasicMaterial({
@@ -269,7 +344,6 @@ class Bg06 implements EddieBackgroundVariant {
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
       this.beat = Math.max(this.beat, e.downbeat ? 1 : 0.55);
       this.beatDecay = e.downbeat ? 1 / 0.3 : 1 / 0.18;
-      // Lightning on the beat: probability climbs with morph; downbeats reliable.
       const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
       if (this.morph > 0.25 && this.rng() < chance) this.strikeLightning(e.downbeat);
     });
@@ -281,7 +355,7 @@ class Bg06 implements EddieBackgroundVariant {
     });
   }
 
-  /** Deterministic xorshift so the scenery layout is stable per mount. */
+  /** Deterministic xorshift so the layout is stable per mount. */
   private rng(): number {
     let s = this.rngState;
     s ^= s << 13;
@@ -291,44 +365,33 @@ class Bg06 implements EddieBackgroundVariant {
     return (this.rngState % 100000) / 100000;
   }
 
-  private pickKind(): PropKind {
-    const r = this.rng();
-    if (r < 0.45) return "cactus";
-    if (r < 0.7) return "mesa";
-    if (r < 0.88) return "butte";
-    return "arch";
+  /** Lateral X (world units) of the road centerline at world depth z, given the
+   *  current travelled distance. A sum of sines that scrolls as we drive so the
+   *  road appears to wind left and right into the distance. */
+  private roadCurve(z: number): number {
+    // Use absolute travelled-depth so the curve streams toward the camera.
+    const d = this.roadPhase - z; // larger ahead (more negative z => larger d)
+    return (
+      Math.sin(d * 0.012) * 22 +
+      Math.sin(d * 0.027 + 1.3) * 11 +
+      Math.sin(d * 0.006 + 0.5) * 30
+    );
   }
 
-  private geoFor(kind: PropKind): THREE.PlaneGeometry {
-    switch (kind) {
-      case "cactus":
-        return this.propGeos[0];
-      case "mesa":
-        return this.propGeos[1];
-      case "butte":
-        return this.propGeos[2];
-      case "arch":
-        return this.propGeos[3];
-    }
-  }
-
-  /** Position a prop at depth z along its side of the road, sitting on ground. */
   private placeProp(p: Prop, z: number): void {
-    const lateral = 26 + this.rng() * 60;
+    const cx = this.roadCurve(z);
     const geo = p.mesh.geometry as THREE.PlaneGeometry;
-    const h = (geo.parameters.height ?? 28) * p.baseScale;
+    const h = (geo.parameters.height ?? 26) * p.baseScale;
     p.mesh.scale.setScalar(p.baseScale);
-    p.mesh.position.set(p.side * lateral, h / 2, z);
-    // Billboards face the camera (down +Z), so leave rotation at identity.
+    p.mesh.position.set(cx + p.side * (ROAD_HALF_W + p.offset), h / 2, z);
     p.mesh.rotation.set(0, 0, 0);
   }
 
   private respawnRain(i: number, scatter: boolean): void {
     const o = i * 2 * 3;
-    const x = (this.rng() - 0.5) * 220;
+    const x = (this.rng() - 0.5) * 240;
     const y = scatter ? this.rng() * 140 : 90 + this.rng() * 50;
-    const z = -10 - this.rng() * 220;
-    // Streak length grows with intent; tail is above the head.
+    const z = -10 - this.rng() * 240;
     const len = 6 + this.rng() * 6;
     this.rainPos[o] = x;
     this.rainPos[o + 1] = y;
@@ -344,17 +407,16 @@ class Bg06 implements EddieBackgroundVariant {
   private strikeLightning(strong: boolean): void {
     this.flash = strong ? 1 : 0.6;
     this.boltLife = 0.14;
-    // Build a jagged vertical bolt from a random sky x down to the horizon.
     const pos = this.boltGeo.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
     const segs = 10 + Math.floor(this.rng() * 6);
-    let x = (this.rng() - 0.5) * 160;
+    let x = (this.rng() - 0.5) * 180;
     let y = 130;
-    const z = -150 - this.rng() * 60;
+    const z = -160 - this.rng() * 60;
     const stepY = 130 / segs;
     let v = 0;
     for (let s = 0; s < segs; s++) {
-      const nx = x + (this.rng() - 0.5) * 22;
+      const nx = x + (this.rng() - 0.5) * 24;
       const ny = y - stepY;
       arr[v++] = x;
       arr[v++] = y;
@@ -375,15 +437,12 @@ class Bg06 implements EddieBackgroundVariant {
     const ctx = this.skyCtx;
     const m = this.morph;
     const grad = ctx.createLinearGradient(0, 0, 0, SKY_H);
-    // Top: deep violet (calm) -> near-black storm.
     const topR = Math.floor(58 - m * 40);
     const topG = Math.floor(30 - m * 22);
     const topB = Math.floor(78 - m * 58);
-    // Mid: dusk magenta -> slate storm grey.
     const midR = Math.floor(150 - m * 100);
     const midG = Math.floor(60 - m * 20);
     const midB = Math.floor(110 - m * 60);
-    // Horizon: warm amber (calm) -> dim grey-blue (storm).
     const horR = Math.floor(255 - m * 180);
     const horG = Math.floor(150 - m * 90);
     const horB = Math.floor(70 + m * 30);
@@ -392,8 +451,6 @@ class Bg06 implements EddieBackgroundVariant {
     grad.addColorStop(1, `rgb(${Math.max(0, horR)},${Math.max(0, horG)},${Math.max(0, horB)})`);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 8, SKY_H);
-
-    // Storm clouds: chunky dark bands rolling across the upper sky with morph.
     if (m > 0.12) {
       const bands = Math.floor(m * 6);
       for (let b = 0; b < bands; b++) {
@@ -406,17 +463,15 @@ class Bg06 implements EddieBackgroundVariant {
     this.skyTex.needsUpdate = true;
   }
 
-  /** Desert floor: dry sandy pixels (calm) -> dark wet/reflective sheen (storm). */
+  /** Desert floor: dry sand (calm) -> dark wet/reflective (storm). */
   private paintGround(): void {
     const ctx = this.groundCtx;
     const m = this.morph;
-    // Base sand -> wet mud.
     const baseR = Math.floor(150 - m * 110);
     const baseG = Math.floor(110 - m * 80);
     const baseB = Math.floor(70 - m * 30);
     ctx.fillStyle = `rgb(${Math.max(0, baseR)},${Math.max(0, baseG)},${Math.max(0, baseB)})`;
     ctx.fillRect(0, 0, 64, 64);
-    // Speckle the sand with pixel grit (fades as it wets down).
     const grit = Math.max(0, 1 - m);
     for (let i = 0; i < 120; i++) {
       const gx = Math.floor(this.rng() * 64);
@@ -425,7 +480,6 @@ class Bg06 implements EddieBackgroundVariant {
       ctx.fillStyle = `rgba(${Math.max(0, baseR + d)},${Math.max(0, baseG + d)},${Math.max(0, baseB + d)},${grit})`;
       ctx.fillRect(gx, gy, 1, 1);
     }
-    // Wet reflective highlights: bright cool specks once it's raining.
     if (m > 0.3) {
       const wet = (m - 0.3) / 0.7;
       for (let i = 0; i < 70; i++) {
@@ -438,6 +492,84 @@ class Bg06 implements EddieBackgroundVariant {
     this.groundTex.needsUpdate = true;
   }
 
+  /** Road surface stripe texture: asphalt + dashed centerline + edge lines.
+   *  Reddens/wets darker with morph; reflective sheen specks once raining. */
+  private paintRoad(): void {
+    const ctx = this.roadCtx;
+    const m = this.morph;
+    const W = 32;
+    const H = 128;
+    // Asphalt — dusty tan (dry) toward slick dark grey (wet).
+    const aR = Math.floor(70 - m * 40);
+    const aG = Math.floor(60 - m * 36);
+    const aB = Math.floor(58 - m * 30);
+    ctx.fillStyle = `rgb(${Math.max(8, aR)},${Math.max(8, aG)},${Math.max(8, aB)})`;
+    ctx.fillRect(0, 0, W, H);
+    // Edge lines.
+    const edge = Math.max(0.25, 1 - m * 0.5);
+    ctx.fillStyle = `rgba(210,200,170,${edge})`;
+    ctx.fillRect(2, 0, 2, H);
+    ctx.fillRect(W - 4, 0, 2, H);
+    // Dashed centerline.
+    ctx.fillStyle = `rgba(240,225,150,${edge})`;
+    for (let y = 0; y < H; y += 18) ctx.fillRect(W / 2 - 1, y, 2, 9);
+    // Wet reflective specks.
+    if (m > 0.3) {
+      const wet = (m - 0.3) / 0.7;
+      for (let i = 0; i < 40; i++) {
+        const gx = Math.floor(this.rng() * W);
+        const gy = Math.floor(this.rng() * H);
+        ctx.fillStyle = `rgba(150,180,210,${0.1 + wet * 0.45})`;
+        ctx.fillRect(gx, gy, 1, 2);
+      }
+    }
+    this.roadTex.needsUpdate = true;
+  }
+
+  private buildMonumentTexture(): THREE.CanvasTexture {
+    // Sparse mesa/butte/arch silhouettes spread across a wide strip with big
+    // gaps, so the horizon reads open, not a wall of rock.
+    const W = 360;
+    const H = 64;
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const g = c.getContext("2d")!;
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = "#3a2230";
+    let x = 6;
+    while (x < W) {
+      // Mostly gap; occasionally a formation.
+      if (this.rng() < 0.45) {
+        const kind = this.rng();
+        const w = 18 + Math.floor(this.rng() * 40);
+        const h = 14 + Math.floor(this.rng() * 34);
+        if (kind < 0.5) {
+          // Mesa: flat-topped block.
+          g.fillRect(x, H - h, w, h);
+        } else if (kind < 0.8) {
+          // Butte: narrower, taller.
+          const bw = Math.floor(w * 0.5);
+          g.fillRect(x, H - h, bw, h);
+        } else {
+          // Arch: block with a hole near the base.
+          g.fillRect(x, H - h, w, h);
+          g.clearRect(x + Math.floor(w * 0.35), H - Math.floor(h * 0.5), Math.floor(w * 0.3), Math.floor(h * 0.5));
+        }
+        x += w + 20 + Math.floor(this.rng() * 60);
+      } else {
+        x += 24 + Math.floor(this.rng() * 70);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  }
+
   private buildCactusTexture(): THREE.CanvasTexture {
     const c = document.createElement("canvas");
     c.width = 16;
@@ -446,15 +578,11 @@ class Bg06 implements EddieBackgroundVariant {
     g.imageSmoothingEnabled = false;
     g.clearRect(0, 0, 16, 32);
     g.fillStyle = "#2f7a3a";
-    // Trunk.
     g.fillRect(6, 4, 4, 28);
-    // Left arm.
     g.fillRect(2, 14, 2, 8);
     g.fillRect(2, 12, 4, 2);
-    // Right arm.
     g.fillRect(12, 18, 2, 8);
     g.fillRect(10, 16, 4, 2);
-    // Shading column.
     g.fillStyle = "#236030";
     g.fillRect(8, 4, 2, 28);
     const tex = new THREE.CanvasTexture(c);
@@ -465,26 +593,18 @@ class Bg06 implements EddieBackgroundVariant {
     return tex;
   }
 
-  private buildRockTexture(): THREE.CanvasTexture {
-    // A blocky mesa/butte/arch-ish silhouette with banded strata. Used for all
-    // rock kinds — the plane aspect ratio differentiates the shapes.
+  private buildSmallRockTexture(): THREE.CanvasTexture {
     const c = document.createElement("canvas");
-    c.width = 32;
-    c.height = 32;
+    c.width = 16;
+    c.height = 12;
     const g = c.getContext("2d")!;
     g.imageSmoothingEnabled = false;
-    g.clearRect(0, 0, 32, 32);
-    // Body.
-    g.fillStyle = "#a8543a";
-    g.fillRect(3, 6, 26, 26);
-    // Flat top notch (mesa cap).
-    g.fillStyle = "#bd6748";
-    g.fillRect(3, 6, 26, 4);
-    // Strata bands.
-    g.fillStyle = "#8c4330";
-    for (let y = 12; y < 32; y += 5) g.fillRect(3, y, 26, 2);
-    // Arch hole (only reads when the plane is wide — harmless otherwise).
-    g.clearRect(13, 16, 6, 16);
+    g.clearRect(0, 0, 16, 12);
+    g.fillStyle = "#9a5238";
+    g.fillRect(2, 5, 12, 7);
+    g.fillRect(4, 3, 8, 3);
+    g.fillStyle = "#7c3f2c";
+    g.fillRect(2, 9, 12, 3);
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.magFilter = THREE.NearestFilter;
@@ -493,52 +613,92 @@ class Bg06 implements EddieBackgroundVariant {
     return tex;
   }
 
+  /** Bend the road strip so each cross-row follows roadCurve(z). The plane was
+   *  built in local XY (then rotated flat): local Y maps to world -Z, local X to
+   *  world X. We offset each row's X by the curve at that row's world z. */
+  private bendRoad(): void {
+    const pos = this.roadGeo.getAttribute("position") as THREE.BufferAttribute;
+    const arr = pos.array as Float32Array;
+    const rows = this.roadSegZ.length; // ROAD_ROWS + 1
+    // PlaneGeometry(1,1,1,rows-1) has 2 verts per row (left,right), rows total,
+    // ordered top(+Y)->bottom. Top row = far, bottom row = near.
+    for (let r = 0; r < rows; r++) {
+      // Row 0 in geometry is +Y (top). Map top->far so far = roadSegZ[last].
+      const zIndex = rows - 1 - r;
+      const z = this.roadSegZ[zIndex];
+      const cx = this.roadCurve(z);
+      // Width tapers slightly with distance for a touch of perspective.
+      const f = zIndex / (rows - 1); // 0 near .. 1 far
+      const halfW = ROAD_HALF_W * (1 - f * 0.15);
+      const li = (r * 2) * 3;
+      const ri = (r * 2 + 1) * 3;
+      // Local X (index +0), local Y (index +1) = -z in world after rot.
+      arr[li] = cx - halfW;
+      arr[li + 1] = -z;
+      arr[ri] = cx + halfW;
+      arr[ri + 1] = -z;
+    }
+    pos.needsUpdate = true;
+    this.roadGeo.computeVertexNormals();
+  }
+
   update(dt: number, _audioTime: number): void {
     this.t += dt;
 
-    // Ease morph toward target (never snap).
     this.morph += (this.morphTarget - this.morph) * dt * 1.5;
     const m = this.morph;
 
     if (this.beat > 0) this.beat = Math.max(0, this.beat - dt * this.beatDecay);
 
-    // Fly forward: scenery streams toward camera; speed picks up with storm wind.
-    const speed = this.flySpeed * (1 + m * 0.6) + this.beat * 30;
+    const speed = this.flySpeed * (1 + m * 0.5) + this.beat * 26;
+    this.roadPhase += speed * dt;
+
+    // Bend the winding road to the current phase + scroll its dashes.
+    this.bendRoad();
+    this.roadScroll = (this.roadScroll + dt * speed * 0.05) % 1;
+    this.roadTex.offset.y = -this.roadScroll;
+
+    // Stream props toward the camera; recycle to the far horizon. Their lateral
+    // placement re-snaps to the road curve every frame so they hug the road.
     for (const p of this.props) {
       p.mesh.position.z += speed * dt;
       if (p.mesh.position.z > NEAR_Z) {
-        // Recycle to the far horizon as a fresh prop.
-        p.baseScale = 0.8 + this.rng() * 1.6;
-        this.placeProp(p, FAR_Z - this.rng() * 40);
+        p.baseScale = 0.7 + this.rng() * 0.9;
+        p.side = this.rng() < 0.5 ? -1 : 1;
+        p.offset = 8 + this.rng() * 40;
+        this.placeProp(p, FAR_Z - this.rng() * 50);
+      } else {
+        // Keep hugging the (now-shifted) road curve at this depth.
+        const cx = this.roadCurve(p.mesh.position.z);
+        p.mesh.position.x = cx + p.side * (ROAD_HALF_W + p.offset);
       }
-      // Wind sway grows with morph (rock monuments barely move; cactuses lean).
       const sway = Math.sin(this.t * 3 + p.mesh.position.z * 0.05) * m * 0.12;
-      p.mesh.rotation.z = sway * (p.mesh.material === this.cactusMat ? 1 : 0.25);
+      p.mesh.rotation.z = sway * (p.kind === "cactus" ? 1 : 0.2);
     }
 
-    // Ground scrolls toward the camera to sell forward motion.
+    // Ground scroll for forward motion.
     this.groundScroll = (this.groundScroll + dt * speed * 0.02) % 1;
     this.groundTex.offset.y = -this.groundScroll;
 
-    // Repaint pixel canvases (cheap at this resolution); morph drives their look.
     this.paintSky();
     this.paintGround();
+    this.paintRoad();
     this.groundMat.color.setRGB(1 - m * 0.2, 1 - m * 0.2, 1 - m * 0.1);
+    // Distant monuments darken under the storm.
+    this.monMat.color.setRGB(1 - m * 0.4, 1 - m * 0.45, 1 - m * 0.4);
 
     // --- Rain ----------------------------------------------------------------
-    const rainAmt = Math.max(0, (m - 0.18) / 0.82); // starts ~morph 0.18
+    const rainAmt = Math.max(0, (m - 0.18) / 0.82);
     const visible = Math.floor(rainAmt * RAIN_COUNT);
     this.rainGeo.setDrawRange(0, visible * 2);
     this.rainMat.opacity = 0.15 + rainAmt * 0.6;
     if (visible > 0) {
-      const windX = m * 90 + this.beat * 40; // slant grows with storm + beat
+      const windX = m * 90 + this.beat * 40;
       for (let i = 0; i < visible; i++) {
         const o = i * 2 * 3;
         const vy = this.rainVel[i * 3 + 1] * (1 + this.beat * 0.5);
-        // Head.
         this.rainPos[o] += windX * dt;
         this.rainPos[o + 1] += vy * dt;
-        // Tail (trails behind by the slant + length).
         this.rainPos[o + 3] += windX * dt;
         this.rainPos[o + 4] += vy * dt;
         if (this.rainPos[o + 1] < 0) this.respawnRain(i, false);
@@ -555,7 +715,7 @@ class Bg06 implements EddieBackgroundVariant {
       if (this.boltLife === 0) this.boltGeo.setDrawRange(0, 0);
     }
 
-    // Scene background + fog track the sky mood (dusk warm -> storm dark).
+    // Scene background + fog track the sky mood.
     const bg = this.scene && this.scene.background instanceof THREE.Color ? this.scene.background : null;
     if (bg) {
       bg.setRGB(
@@ -568,19 +728,24 @@ class Bg06 implements EddieBackgroundVariant {
       if (bg.b < 0) bg.b = 0;
     }
     if (this.scene && this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.color.setRGB(0.23 - m * 0.17, 0.14 - m * 0.09, 0.21 - m * 0.1);
-      if (this.scene.fog.color.r < 0) this.scene.fog.color.r = 0;
-      if (this.scene.fog.color.g < 0) this.scene.fog.color.g = 0;
-      if (this.scene.fog.color.b < 0) this.scene.fog.color.b = 0;
-      this.scene.fog.near = 60 - m * 30;
-      this.scene.fog.far = 240 - m * 90;
+      const fc = this.scene.fog.color;
+      fc.setRGB(0.23 - m * 0.17, 0.14 - m * 0.09, 0.21 - m * 0.1);
+      if (fc.r < 0) fc.r = 0;
+      if (fc.g < 0) fc.g = 0;
+      if (fc.b < 0) fc.b = 0;
+      this.scene.fog.near = 70 - m * 34;
+      this.scene.fog.far = 260 - m * 90;
     }
 
-    // Camera: parked, with forward bob, storm buffeting, and decaying shake.
+    // Camera: FOLLOW the winding road. X tracks the road centerline a little
+    // ahead of the camera; the look target tracks the curve further down.
     if (this.camera) {
+      const followZ = this.camBaseZ - 18; // a touch ahead of the camera
+      const roadX = this.roadCurve(followZ);
+      const lookX = this.roadCurve(-120);
       const bob = Math.sin(this.t * 5) * (0.3 + m * 0.5) + this.beat * 1.0;
-      const buffet = m * (Math.sin(this.t * 13.0) + Math.sin(this.t * 7.3)) * 1.4;
-      let px = buffet;
+      const buffet = m * (Math.sin(this.t * 13.0) + Math.sin(this.t * 7.3)) * 1.3;
+      let px = roadX + buffet;
       let py = this.camBaseY + bob;
       let pz = this.camBaseZ;
       if (this.shake > 0) {
@@ -591,7 +756,7 @@ class Bg06 implements EddieBackgroundVariant {
         pz += (Math.random() - 0.5) * a;
       }
       this.camera.position.set(px, py, pz);
-      this.camera.lookAt(0, 8, -120);
+      this.camera.lookAt(lookX, 8, -120);
     }
   }
 
@@ -614,16 +779,24 @@ class Bg06 implements EddieBackgroundVariant {
     this.skyMat.dispose();
     this.skyTex.dispose();
 
+    this.monMesh.geometry.dispose();
+    this.monMat.dispose();
+    this.monTex.dispose();
+
     this.groundMesh.geometry.dispose();
     this.groundMat.dispose();
     this.groundTex.dispose();
 
-    for (const geo of this.propGeos) geo.dispose();
-    this.propGeos = [];
+    this.roadGeo.dispose();
+    this.roadMat.dispose();
+    this.roadTex.dispose();
+
+    this.cactusGeo.dispose();
+    this.rockGeo.dispose();
     this.cactusMat.dispose();
-    this.rockMat.dispose();
+    this.smallRockMat.dispose();
     this.cactusTex.dispose();
-    this.rockTex.dispose();
+    this.smallRockTex.dispose();
     this.props = [];
 
     this.rainGeo.dispose();
@@ -641,7 +814,7 @@ class Bg06 implements EddieBackgroundVariant {
 const def: EddieBackgroundDef = {
   id: "bg06",
   label: "Desert Drive -> Rainstorm",
-  blurb: "Flying through a pixel desert at dusk past saguaros and rock monuments; rising intensity rolls in storm clouds, pours slanting rain on the wet reflective ground, and cracks lightning on the beat into a torrential downpour.",
+  blurb: "Driving a winding desert road through wide-open desert at dusk, distant rock monuments on the horizon; rising intensity rolls in storm clouds, slants rain onto the wet reflective road, and cracks lightning on the beat into a torrential downpour.",
   create: () => new Bg06(),
 };
 
