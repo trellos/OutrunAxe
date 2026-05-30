@@ -1,24 +1,28 @@
-// bg04 — "Roman Garden → Glitch Meltdown" — a formal, endless Roman/Italian-villa
-// garden the camera glides through on a smooth spline, that corrupts into a
-// tasteful datamosh meltdown as performance intensity rises.
+// bg04 — "Roman Garden → Glitch Meltdown" — a formal Roman/Italian-villa garden
+// whose path WINDS through the grounds, with the camera STEERING along the curve,
+// that corrupts into a tasteful datamosh meltdown as performance intensity rises.
 //
-// Layout: a long central PATH (checkerboard marble) runs down -Z, flanked by
-// symmetric garden "rooms": pairs of marble BUSTS and STATUES on plinths,
-// COLUMNS, low HEDGES, and round FOUNTAINS with a little animated water spout.
-// Everything is mirrored left/right for the formal Roman feel. The whole layout
-// is laid in a band along -Z and recycled (room by room) behind→front, so the
-// garden is endless. A soft magenta→cyan→peach vaporwave sky dome + a banded sun
-// sit behind it, and the marble/checkerboard palette keeps the vaporwave vibe.
+// The garden is laid along a closed, WINDING Catmull-Rom curve (gentle left/right
+// bends) in the world XZ plane. The camera travels along this curve and turns to
+// FOLLOW it — looking down the path ahead, so it actually steers through the
+// bends rather than sliding down a straight corridor. Because the curve is a
+// closed loop, the journey is endless with no per-object recycling.
 //
-// CAMERA: glides along a CATMULL-ROM SPLINE through gentle waypoints that weave
-// softly between the garden rooms — slow, graceful, eased. eddieShake is only a
-// gentle nudge (small, decays), and there is NO high-frequency idle jitter, so
-// the ride is smooth even at full meltdown.
+// Along the curve sit formal, mirrored garden ROOMS — marble BUSTS and STATUES on
+// plinths, COLONNADES of fluted COLUMNS, low HEDGES lining the path, and round
+// FOUNTAINS with a little animated water spout. Each room is oriented to the
+// path's tangent and its features flank the path left/right (along the curve
+// normal). A checkerboard MARBLE path ribbon follows the curve; a vaporwave sky
+// dome + banded sun sit behind it, keeping the marble/checkerboard palette.
+//
+// CAMERA: glides along the curve with smooth arc-length easing — slow, graceful.
+// eddieShake is only a small, smoothed nudge (no high-frequency jitter), so the
+// ride stays comfortable even at full meltdown.
 //
 // MORPH (eddieIntensity, eased — never snaps): calm formal garden at 0 → at high
 // intensity the marble shatters (vertex displacement + shudder), the path checker
 // tears, neon trim corrupts/strobes, and the fountains spray erratically. The
-// camera path stays smooth throughout (meltdown is in the world, not the lens).
+// camera path stays smooth throughout.
 // Beat (eddieBeatPulse, downbeat stronger, scaled by morph): a one-shot burst.
 // Shake (eddieShake): a small, smooth camera offset that decays.
 //
@@ -41,13 +45,10 @@ const HEDGE = 0x2f6f4a;
 const WATER = 0x9fe8ff;
 const CORRUPT_HEX = [0xff2bd6, 0x00f0ff, 0xffd02b, 0xc7ff2b];
 
-// Corridor of garden rooms along -Z.
-const ROOM_SPACING = 46; // distance between consecutive garden rooms
-const ROOM_COUNT = 9; // rooms alive at once
-const CORRIDOR_NEAR = 24; // recycle a room once it passes behind this z
-const CORRIDOR_LEN = ROOM_SPACING * ROOM_COUNT;
-const PATH_HALF = 9; // half-width of the central path
-const LANE_X = 24; // how far flanking objects sit from the centre
+const PATH_HALF = 9; // half-width of the path ribbon
+const LANE_X = 22; // how far flanking objects sit from the path centre (along normal)
+const ROOM_COUNT = 12; // garden rooms spaced evenly along the winding loop
+const CAM_LOOK_AHEAD = 0.012; // fraction of the loop the camera looks ahead (steering)
 
 interface ShatterPart {
   mesh: THREE.Mesh;
@@ -57,9 +58,9 @@ interface ShatterPart {
 
 interface Fountain {
   spout: THREE.Points;
-  spoutPos: Float32Array; // live positions
-  vel: Float32Array; // per-particle velocity
-  life: Float32Array; // per-particle remaining life
+  spoutPos: Float32Array;
+  vel: Float32Array;
+  life: Float32Array;
   origin: THREE.Vector3; // local nozzle position within the room
 }
 
@@ -84,7 +85,8 @@ class Bg04 implements EddieBackgroundVariant {
   private geometries: THREE.BufferGeometry[] = [];
   private materials: THREE.Material[] = [];
 
-  private path!: THREE.Mesh;
+  private curve!: THREE.CatmullRomCurve3; // the winding garden path (closed loop)
+  private path!: THREE.Mesh; // checkerboard ribbon following the curve
   private pathMat!: THREE.MeshBasicMaterial;
   private pathTex!: THREE.CanvasTexture;
   private pathBase!: Float32Array;
@@ -105,32 +107,32 @@ class Bg04 implements EddieBackgroundVariant {
   private beat = 0;
   private beatDecay = 6;
   private shake = 0;
-  private shakeOffset = new THREE.Vector3(); // smoothed shake nudge
+  private shakeOffset = new THREE.Vector3();
   private t = 0;
-  private travel = 0; // forward distance along the path
+  private progress = 0; // 0..1 position along the loop
 
-  // Camera spline: a ring of gentle waypoints the camera glides through.
-  private waypoints: THREE.Vector3[] = [];
-  private readonly WP_SPACING = 30; // z-distance between waypoints
-  private readonly WP_COUNT = 24; // total ring length (z span = SPACING*COUNT)
+  // Scratch vectors reused per frame (no per-frame allocation).
+  private vPos = new THREE.Vector3();
+  private vLook = new THREE.Vector3();
+  private vUp = new THREE.Vector3(0, 1, 0);
 
   mount(ctx: { scene: THREE.Scene; camera?: THREE.PerspectiveCamera; juice: EventBus<EddieJuiceEvents> }): void {
     this.scene = ctx.scene;
     this.prevBackground = ctx.scene.background;
     this.prevFog = ctx.scene.fog;
     ctx.scene.background = new THREE.Color(SKY_TOP);
-    ctx.scene.fog = new THREE.Fog(0x3a1466, 140, 380);
+    ctx.scene.fog = new THREE.Fog(0x3a1466, 120, 360);
 
+    this.buildCurve();
     this.buildSky();
     this.buildPath();
     this.buildRooms();
-    this.buildWaypoints();
 
     this.scene.add(this.group);
 
     if (ctx.camera) {
       this.camera = ctx.camera;
-      this.positionCamera(0);
+      this.positionCamera();
     }
 
     this.offBeat = ctx.juice.on("eddieBeatPulse", (e) => {
@@ -138,12 +140,41 @@ class Bg04 implements EddieBackgroundVariant {
       this.beatDecay = e.downbeat ? 1 / 0.14 : 1 / 0.2;
     });
     this.offShake = ctx.juice.on("eddieShake", (e) => {
-      // Gentle nudge only — clamp hard so scoring shake can never thrash the lens.
       this.shake = Math.min(1.2, Math.max(this.shake, e.magnitude * 0.35));
     });
     this.offIntensity = ctx.juice.on("eddieIntensity", (e) => {
       this.morphTarget = Math.min(1, Math.max(0, e.value));
     });
+  }
+
+  // --- Curve ---------------------------------------------------------------
+
+  private buildCurve(): void {
+    // A closed, winding loop of waypoints in world XZ (y≈0 ground plane). Gentle
+    // left/right bends give the meandering garden-path feel; closed → endless.
+    const pts = [
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(36, 0, -64),
+      new THREE.Vector3(18, 0, -148),
+      new THREE.Vector3(-44, 0, -196),
+      new THREE.Vector3(-96, 0, -150),
+      new THREE.Vector3(-80, 0, -60),
+      new THREE.Vector3(-118, 0, 26),
+      new THREE.Vector3(-70, 0, 96),
+      new THREE.Vector3(20, 0, 104),
+      new THREE.Vector3(74, 0, 52),
+    ];
+    this.curve = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
+  }
+
+  /** World position on the path centre at loop fraction u (0..1). */
+  private curvePoint(u: number, out: THREE.Vector3): THREE.Vector3 {
+    return this.curve.getPointAt(((u % 1) + 1) % 1, out);
+  }
+
+  /** Unit tangent (forward along the path) at loop fraction u. */
+  private curveTangent(u: number, out: THREE.Vector3): THREE.Vector3 {
+    return this.curve.getTangentAt(((u % 1) + 1) % 1, out);
   }
 
   // --- Build helpers -------------------------------------------------------
@@ -199,14 +230,26 @@ class Bg04 implements EddieBackgroundVariant {
         c.fillRect(cx - half, y, half * 2, 1);
       }
     });
-    const sunGeo = new THREE.PlaneGeometry(110, 110);
+    const sunGeo = new THREE.PlaneGeometry(120, 120);
     this.geometries.push(sunGeo);
     this.sunMat = new THREE.MeshBasicMaterial({ map: sunTex, transparent: true, depthWrite: false, fog: false });
     this.materials.push(this.sunMat);
     this.sun = new THREE.Mesh(sunGeo, this.sunMat);
-    this.sun.position.set(0, 48, -CORRIDOR_LEN - 120);
+    // The sun sits high + far; it billboards toward the camera each frame.
+    this.sun.position.set(0, 60, -300);
     this.sun.frustumCulled = false;
     this.group.add(this.sun);
+
+    // Ground lawn so the world isn't void under the garden.
+    const lawnGeo = new THREE.PlaneGeometry(700, 700);
+    this.geometries.push(lawnGeo);
+    const lawnMat = new THREE.MeshBasicMaterial({ color: 0x1c2a22, fog: true });
+    this.materials.push(lawnMat);
+    const lawn = new THREE.Mesh(lawnGeo, lawnMat);
+    lawn.rotation.x = -Math.PI / 2;
+    lawn.position.y = -0.25;
+    lawn.frustumCulled = false;
+    this.group.add(lawn);
   }
 
   private buildPath(): void {
@@ -226,30 +269,57 @@ class Bg04 implements EddieBackgroundVariant {
     this.pathTex.generateMipmaps = false;
     this.pathTex.wrapS = THREE.RepeatWrapping;
     this.pathTex.wrapT = THREE.RepeatWrapping;
-    this.pathTex.repeat.set(4, 48);
 
-    const geo = new THREE.PlaneGeometry(PATH_HALF * 2 + 4, CORRIDOR_LEN + 200, 8, 120);
+    // Build the path ribbon by sampling the curve and laying a quad strip along
+    // it (offset ±PATH_HALF along the per-sample normal). One BufferGeometry.
+    const SEG = 600;
+    const positions = new Float32Array((SEG + 1) * 2 * 3);
+    const uvs = new Float32Array((SEG + 1) * 2 * 2);
+    const indices: number[] = [];
+    const p = new THREE.Vector3();
+    const tan = new THREE.Vector3();
+    const nrm = new THREE.Vector3();
+    let totalLen = 0;
+    const prev = new THREE.Vector3();
+    for (let i = 0; i <= SEG; i++) {
+      const u = i / SEG;
+      this.curvePoint(u, p);
+      this.curveTangent(u, tan);
+      // Horizontal normal (perpendicular to tangent in XZ).
+      nrm.set(-tan.z, 0, tan.x).normalize();
+      if (i > 0) totalLen += p.distanceTo(prev);
+      prev.copy(p);
+      const li = i * 2;
+      positions[li * 3] = p.x + nrm.x * PATH_HALF;
+      positions[li * 3 + 1] = 0.02;
+      positions[li * 3 + 2] = p.z + nrm.z * PATH_HALF;
+      positions[(li + 1) * 3] = p.x - nrm.x * PATH_HALF;
+      positions[(li + 1) * 3 + 1] = 0.02;
+      positions[(li + 1) * 3 + 2] = p.z - nrm.z * PATH_HALF;
+      const v = totalLen / 14; // repeat checker roughly every 14 world units
+      uvs[li * 2] = 0;
+      uvs[li * 2 + 1] = v;
+      uvs[(li + 1) * 2] = 1;
+      uvs[(li + 1) * 2 + 1] = v;
+      if (i < SEG) {
+        const a = li;
+        const b = li + 1;
+        const c = li + 2;
+        const d = li + 3;
+        indices.push(a, b, c, b, d, c);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
     this.geometries.push(geo);
-    this.pathMat = new THREE.MeshBasicMaterial({ map: this.pathTex, fog: true });
+    this.pathMat = new THREE.MeshBasicMaterial({ map: this.pathTex, fog: true, side: THREE.DoubleSide });
     this.materials.push(this.pathMat);
     this.path = new THREE.Mesh(geo, this.pathMat);
-    this.path.rotation.x = -Math.PI / 2;
-    this.path.position.set(0, 0, -CORRIDOR_LEN / 2 + CORRIDOR_NEAR);
     this.path.frustumCulled = false;
-    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
-    this.pathBase = Float32Array.from(pos.array as Float32Array);
+    this.pathBase = Float32Array.from(positions);
     this.group.add(this.path);
-
-    // Lawn/ground plane under everything (flat, fog-tinted) so the world isn't void.
-    const lawnGeo = new THREE.PlaneGeometry(400, CORRIDOR_LEN + 300);
-    this.geometries.push(lawnGeo);
-    const lawnMat = new THREE.MeshBasicMaterial({ color: 0x1c2a22, fog: true });
-    this.materials.push(lawnMat);
-    const lawn = new THREE.Mesh(lawnGeo, lawnMat);
-    lawn.rotation.x = -Math.PI / 2;
-    lawn.position.set(0, -0.2, -CORRIDOR_LEN / 2 + CORRIDOR_NEAR);
-    lawn.frustumCulled = false;
-    this.group.add(lawn);
   }
 
   private paintPathTexture(g: number): void {
@@ -261,7 +331,6 @@ class Bg04 implements EddieBackgroundVariant {
     c.fillStyle = light;
     c.fillRect(0, 0, 32, 32);
     c.fillRect(32, 32, 32, 32);
-    // Neon seam lines.
     c.fillStyle = g > 0.5 ? "#ff2bd6" : "#00f0ff";
     c.globalAlpha = 0.4 + g * 0.5;
     c.fillRect(0, 0, 64, 1);
@@ -312,26 +381,35 @@ class Bg04 implements EddieBackgroundVariant {
   }
 
   private buildRooms(): void {
-    // Each room index gets a formal, mirrored feature set; rooms repeat by type.
+    // Place rooms evenly along the loop; each is positioned at its curve point
+    // and rotated so its local -Z faces along the path tangent. Features flank
+    // the path left/right (room-local X = curve normal).
+    const p = new THREE.Vector3();
+    const tan = new THREE.Vector3();
     for (let i = 0; i < ROOM_COUNT; i++) {
+      const u = i / ROOM_COUNT;
       const room = this.makeRoom(i);
-      room.root.position.z = CORRIDOR_NEAR - i * ROOM_SPACING;
+      this.curvePoint(u, p);
+      this.curveTangent(u, tan);
+      room.root.position.copy(p);
+      // Yaw so local -Z aligns with the tangent direction.
+      room.root.rotation.y = Math.atan2(tan.x, tan.z);
       this.rooms.push(room);
       this.group.add(room.root);
     }
   }
 
-  /** Build one symmetric garden room. Feature rotates by index for variety:
-   *  busts | statues+fountain | columns+hedges. All mirrored left/right. */
+  /** Build one symmetric garden room (local space: path runs along ±Z, features
+   *  flank along ±X). Feature rotates by index. */
   private makeRoom(index: number): Room {
     const root = new THREE.Group();
     const room: Room = { root, shatter: [], emissives: [], fountains: [], dirty: false };
     const feature = index % 3;
 
-    // Low hedges line both sides of the path in every room (formal border).
+    // Low hedges line both sides of the path.
     const hedgeMat = this.stoneMaterial(HEDGE);
     for (const side of [-1, 1]) {
-      const hedgeGeo = new THREE.BoxGeometry(2, 3, ROOM_SPACING - 6);
+      const hedgeGeo = new THREE.BoxGeometry(2, 3, 28);
       this.geometries.push(hedgeGeo);
       const hedge = new THREE.Mesh(hedgeGeo, hedgeMat);
       hedge.position.set(side * (PATH_HALF + 2), 1.5, 0);
@@ -340,18 +418,13 @@ class Bg04 implements EddieBackgroundVariant {
     }
 
     if (feature === 0) {
-      // Mirrored marble busts on plinths.
       for (const side of [-1, 1]) this.addBust(room, side * LANE_X);
     } else if (feature === 1) {
-      // Central fountain + mirrored statues.
       this.addFountain(room, 0);
       for (const side of [-1, 1]) this.addStatue(room, side * LANE_X);
     } else {
-      // Colonnade: mirrored columns marching down the room.
       for (const side of [-1, 1]) {
-        for (let z = -ROOM_SPACING / 2 + 8; z < ROOM_SPACING / 2; z += 14) {
-          this.addColumn(room, side * (LANE_X - 4), z);
-        }
+        for (let z = -12; z <= 12; z += 12) this.addColumn(room, side * (LANE_X - 4), z);
       }
     }
     return room;
@@ -421,21 +494,18 @@ class Bg04 implements EddieBackgroundVariant {
 
   private addColumn(room: Room, x: number, z: number): void {
     const marble = this.stoneMaterial(MARBLE);
-    // Base.
     const baseGeo = new THREE.BoxGeometry(4, 1.5, 4);
     this.geometries.push(baseGeo);
     const base = new THREE.Mesh(baseGeo, marble);
     base.position.set(x, 0.75, z);
     this.registerShatter(room, base);
     room.root.add(base);
-    // Fluted shaft.
     const shaftGeo = new THREE.CylinderGeometry(1.3, 1.5, 18, 12, 2);
     this.geometries.push(shaftGeo);
     const shaft = new THREE.Mesh(shaftGeo, marble);
     shaft.position.set(x, 10.5, z);
     this.registerShatter(room, shaft);
     room.root.add(shaft);
-    // Capital.
     const capGeo = new THREE.BoxGeometry(4, 1.5, 4);
     this.geometries.push(capGeo);
     const cap = new THREE.Mesh(capGeo, marble);
@@ -446,7 +516,6 @@ class Bg04 implements EddieBackgroundVariant {
 
   private addFountain(room: Room, x: number): void {
     const marble = this.stoneMaterial(0xcfc7e8);
-    // Basin (torus rim + disc).
     const rimGeo = new THREE.TorusGeometry(6, 1, 8, 20);
     this.geometries.push(rimGeo);
     const rim = new THREE.Mesh(rimGeo, marble);
@@ -454,14 +523,12 @@ class Bg04 implements EddieBackgroundVariant {
     rim.position.set(x, 1.5, 0);
     this.registerShatter(room, rim);
     room.root.add(rim);
-    // Pedestal.
     const pedGeo = new THREE.CylinderGeometry(1, 1.6, 5, 8);
     this.geometries.push(pedGeo);
     const ped = new THREE.Mesh(pedGeo, marble);
     ped.position.set(x, 3.5, 0);
     this.registerShatter(room, ped);
     room.root.add(ped);
-    // Glowing water-pool disc (emissive, bloom-safe).
     const poolMat = this.neonMaterial(0x2a6f8f);
     room.emissives.push({ mat: poolMat, seed: Math.random() * 6.28 });
     const poolGeo = new THREE.CircleGeometry(5.6, 20);
@@ -472,7 +539,6 @@ class Bg04 implements EddieBackgroundVariant {
     pool.frustumCulled = false;
     room.root.add(pool);
 
-    // Animated water spout: a small THREE.Points fountain.
     const N = 70;
     const positions = new Float32Array(N * 3);
     const vel = new Float32Array(N * 3);
@@ -512,19 +578,9 @@ class Bg04 implements EddieBackgroundVariant {
     pos[i * 3 + 1] = origin.y;
     pos[i * 3 + 2] = origin.z;
     vel[i * 3] = Math.cos(a) * out;
-    vel[i * 3 + 1] = 7 + Math.random() * 3; // upward
+    vel[i * 3 + 1] = 7 + Math.random() * 3;
     vel[i * 3 + 2] = Math.sin(a) * out;
     life[i] = 0.6 + Math.random() * 0.6;
-  }
-
-  private buildWaypoints(): void {
-    // A ring of gentle waypoints down the path centre with a soft serpentine
-    // sway. The camera advances along this ring with Catmull-Rom interpolation;
-    // because z is taken modulo the ring length, the journey loops endlessly.
-    for (let i = 0; i < this.WP_COUNT; i++) {
-      const sway = Math.sin(i * 0.5) * (PATH_HALF - 3);
-      this.waypoints.push(new THREE.Vector3(sway, 9 + Math.sin(i * 0.33) * 1.5, 0));
-    }
   }
 
   // --- Per-frame -----------------------------------------------------------
@@ -533,38 +589,30 @@ class Bg04 implements EddieBackgroundVariant {
     return Math.min(1, this.morph + this.beat * (0.2 + this.morph * 0.8));
   }
 
-  /** Catmull-Rom between waypoint ring samples, with the path's forward z folded
-   *  in so the camera always advances down -Z while swaying smoothly. */
-  private positionCamera(travel: number): void {
+  /** Place + steer the camera along the winding curve at the current progress. */
+  private positionCamera(): void {
     if (!this.camera) return;
-    const ringLen = this.WP_SPACING * this.WP_COUNT;
-    const u = ((travel % ringLen) + ringLen) % ringLen; // 0..ringLen
-    const seg = u / this.WP_SPACING; // float segment index
-    const i1 = Math.floor(seg) % this.WP_COUNT;
-    const f = seg - Math.floor(seg);
-    const i0 = (i1 - 1 + this.WP_COUNT) % this.WP_COUNT;
-    const i2 = (i1 + 1) % this.WP_COUNT;
-    const i3 = (i1 + 2) % this.WP_COUNT;
-    // Catmull-Rom for the lateral (x) + height (y) sway only; z is the smooth
-    // forward march so the world scrolls toward the camera (objects move, camera
-    // holds near z so recycling stays simple).
-    const x = catmull(this.waypoints[i0].x, this.waypoints[i1].x, this.waypoints[i2].x, this.waypoints[i3].x, f);
-    const y = catmull(this.waypoints[i0].y, this.waypoints[i1].y, this.waypoints[i2].y, this.waypoints[i3].y, f);
-
+    this.curvePoint(this.progress, this.vPos);
+    // Eye height above the path + the smoothed shake nudge.
     this.camera.position.set(
-      x + this.shakeOffset.x,
-      y + this.shakeOffset.y,
-      CORRIDOR_NEAR - 2 + this.shakeOffset.z,
+      this.vPos.x + this.shakeOffset.x,
+      this.vPos.y + 8 + this.shakeOffset.y,
+      this.vPos.z + this.shakeOffset.z,
     );
-    // Smooth look-ahead target a little down the path, swaying with the next WP.
-    const ax = catmull(
-      this.waypoints[i1].x,
-      this.waypoints[i2].x,
-      this.waypoints[i3].x,
-      this.waypoints[(i3 + 1) % this.WP_COUNT].x,
-      f,
+    // Look ahead down the path so the camera turns to FOLLOW the bends.
+    this.curvePoint(this.progress + CAM_LOOK_AHEAD, this.vLook);
+    this.vLook.y += 6;
+    this.camera.up.copy(this.vUp);
+    this.camera.lookAt(this.vLook);
+
+    // Billboard the sun to sit behind the look direction (kept high + distant).
+    const ahead = this.vLook.clone().sub(this.camera.position).setY(0).normalize();
+    this.sun.position.set(
+      this.camera.position.x + ahead.x * 280,
+      62,
+      this.camera.position.z + ahead.z * 280,
     );
-    this.camera.lookAt(ax * 0.5, 8, -90);
+    this.sun.lookAt(this.camera.position.x, 62, this.camera.position.z);
   }
 
   update(dt: number, _audioTime: number): void {
@@ -573,18 +621,11 @@ class Bg04 implements EddieBackgroundVariant {
     if (this.beat > 0) this.beat = Math.max(0, this.beat - dt * this.beatDecay);
     const g = this.corruption();
 
-    // Gentle, steady forward glide. Speed barely lifts with morph so the ride
-    // stays graceful even during meltdown.
-    const speed = 13 + this.morph * 4;
-    this.travel += dt * speed;
-
-    // Scroll the world toward the camera; recycle rooms behind→front.
-    for (const room of this.rooms) {
-      room.root.position.z += dt * speed;
-      if (room.root.position.z > CORRIDOR_NEAR + ROOM_SPACING * 0.5) {
-        room.root.position.z -= CORRIDOR_LEN;
-      }
-    }
+    // Advance smoothly along the loop. Curve length is large; tune so the glide
+    // is gentle. Speed barely lifts with morph so the ride stays graceful.
+    const loopLen = this.curve.getLength();
+    const worldSpeed = 13 + this.morph * 4; // world units / sec
+    this.progress = (this.progress + (dt * worldSpeed) / loopLen) % 1;
 
     this.animateRooms(dt, g);
     this.animatePath(g);
@@ -593,17 +634,17 @@ class Bg04 implements EddieBackgroundVariant {
     this.pathTex.needsUpdate = true;
     this.sunMat.opacity = 0.85 + Math.sin(this.t) * 0.05;
 
-    // Smooth shake: decay magnitude, and ease a small offset toward a slow target
-    // (no per-frame random thrash — a gentle drift nudge only).
+    // Smooth shake: decay magnitude; ease a small sinusoidal offset (no thrash).
     if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 3);
     const targetOff = this.shake * 1.6;
     const sx = Math.sin(this.t * 6.1) * targetOff;
     const sy = Math.cos(this.t * 5.3) * targetOff * 0.7;
-    this.shakeOffset.x += (sx - this.shakeOffset.x) * Math.min(1, dt * 6);
-    this.shakeOffset.y += (sy - this.shakeOffset.y) * Math.min(1, dt * 6);
-    this.shakeOffset.z += (0 - this.shakeOffset.z) * Math.min(1, dt * 6);
+    const k = Math.min(1, dt * 6);
+    this.shakeOffset.x += (sx - this.shakeOffset.x) * k;
+    this.shakeOffset.y += (sy - this.shakeOffset.y) * k;
+    this.shakeOffset.z += (0 - this.shakeOffset.z) * k;
 
-    this.positionCamera(this.travel);
+    this.positionCamera();
   }
 
   private animateRooms(dt: number, g: number): void {
@@ -616,7 +657,7 @@ class Bg04 implements EddieBackgroundVariant {
         for (const s of room.shatter) {
           const pos = s.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
           const arr = pos.array as Float32Array;
-          for (let k = 0; k < arr.length; k++) arr[k] = s.base[k] + s.rand[k] * amp;
+          for (let kk = 0; kk < arr.length; kk++) arr[kk] = s.base[kk] + s.rand[kk] * amp;
           pos.needsUpdate = true;
         }
         room.dirty = wantShatter;
@@ -625,8 +666,8 @@ class Bg04 implements EddieBackgroundVariant {
       for (const e of room.emissives) {
         if (g > 0.45) {
           const strobe = Math.sin(this.t * 22 + e.seed) > 0 ? 1 : 0.45;
-          const hex = CORRUPT_HEX[(Math.floor(this.t * (2 + g * 6) + e.seed) % CORRUPT_HEX.length + CORRUPT_HEX.length) % CORRUPT_HEX.length];
-          e.mat.color.setHex(hex).multiplyScalar(strobe);
+          const idx = ((Math.floor(this.t * (2 + g * 6) + e.seed) % CORRUPT_HEX.length) + CORRUPT_HEX.length) % CORRUPT_HEX.length;
+          e.mat.color.setHex(CORRUPT_HEX[idx]).multiplyScalar(strobe);
         }
       }
 
@@ -640,7 +681,6 @@ class Bg04 implements EddieBackgroundVariant {
       const vel = f.vel;
       const life = f.life;
       const n = life.length;
-      // Erratic spray at high corruption: extra outward kick + gravity wobble.
       const spread = g;
       for (let i = 0; i < n; i++) {
         life[i] -= dt;
@@ -648,31 +688,30 @@ class Bg04 implements EddieBackgroundVariant {
           this.seedDroplet(pos, vel, life, i, f.origin, spread);
           continue;
         }
-        vel[i * 3 + 1] -= 18 * dt; // gravity
+        vel[i * 3 + 1] -= 18 * dt;
         pos[i * 3] += vel[i * 3] * dt;
         pos[i * 3 + 1] += vel[i * 3 + 1] * dt;
         pos[i * 3 + 2] += vel[i * 3 + 2] * dt;
-        // Reset droplets that fall back into the basin.
         if (pos[i * 3 + 1] < f.origin.y - 5) this.seedDroplet(pos, vel, life, i, f.origin, spread);
       }
       (f.spout.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       const mat = f.spout.material as THREE.PointsMaterial;
-      mat.opacity = 0.85;
-      mat.color.setHex(g > 0.6 ? CORRUPT_HEX[(Math.floor(this.t * 8)) % CORRUPT_HEX.length] : WATER);
+      mat.color.setHex(g > 0.6 ? CORRUPT_HEX[Math.floor(this.t * 8) % CORRUPT_HEX.length] : WATER);
     }
   }
 
   private animatePath(g: number): void {
-    const geo = this.path.geometry as THREE.PlaneGeometry;
+    // Heave the path ribbon vertices on a travelling sine wave as it corrupts.
+    const geo = this.path.geometry;
     const pos = geo.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
-    const amp = g * 3;
+    const amp = g * 2.5;
     for (let k = 0; k < arr.length; k += 3) {
       const bx = this.pathBase[k];
-      const by = this.pathBase[k + 1];
+      const bz = this.pathBase[k + 2];
       arr[k] = bx;
-      arr[k + 1] = by;
-      arr[k + 2] = this.pathBase[k + 2] + (amp > 0.001 ? Math.sin(this.t * 2 + bx * 0.1 + by * 0.05) * amp : 0);
+      arr[k + 1] = this.pathBase[k + 1] + (amp > 0.001 ? Math.sin(this.t * 2 + bx * 0.1 + bz * 0.1) * amp : 0);
+      arr[k + 2] = bz;
     }
     pos.needsUpdate = true;
     this.pathMat.color.setScalar(1 + g * 0.3);
@@ -701,25 +740,14 @@ class Bg04 implements EddieBackgroundVariant {
     this.materials = [];
     this.textures = [];
     this.rooms = [];
-    this.waypoints = [];
     this.camera = null;
   }
-}
-
-/** Centripetal-ish Catmull-Rom scalar interpolation (uniform). */
-function catmull(p0: number, p1: number, p2: number, p3: number, t: number): number {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return (
-    0.5 *
-    (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
-  );
 }
 
 const def: EddieBackgroundDef = {
   id: "bg04",
   label: "Roman Garden → Meltdown",
-  blurb: "A formal endless Roman villa garden — marble busts, statues, columns, hedges and fountains along a checkerboard path — that the camera glides through on a smooth spline before it tastefully datamoshes at high intensity.",
+  blurb: "A formal Roman villa garden whose checkerboard path winds through busts, statues, colonnades and fountains — the camera steers smoothly along the bends before it tastefully datamoshes at high intensity.",
   create: () => new Bg04(),
 };
 

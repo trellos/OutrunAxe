@@ -10,6 +10,11 @@
 // (mesas / buttes / arches) live FAR on the horizon as a sparse silhouette band,
 // not lining the road. A gradient desert sky sits behind the horizon.
 //
+// Roadside treat: every several "blocks" of travel a VIGNETTE streams past — a
+// huge boulder with a GUITAR leaning against it and a pair of COWBOY BOOTS beside
+// it (one chunky pixel billboard). It's gated by travelled distance so it stays
+// rare, not a fixture.
+//
 // An eased `morph` (0..1) drives the transformation:
 //   morph 0  -> calm dusk desert drive: warm sky, dry road + sand, open vistas,
 //               distant monument silhouettes, no rain.
@@ -40,6 +45,9 @@ const PROP_COUNT = 12; // sparse near props beside the road
 const FAR_Z = -300; // recycle horizon (props spawn here)
 const NEAR_Z = 30; // props recycle once they pass this (behind camera)
 const ROAD_HALF_W = 11; // road half-width in world units (at the surface)
+// Rare roadside vignette (guitar + cowboy boots leaning on a huge boulder):
+// re-appears only after this much travelled distance, so it's a treat not a fixture.
+const VIGNETTE_GAP = 900;
 
 type PropKind = "cactus" | "smallrock";
 
@@ -95,6 +103,15 @@ class Bg06 implements EddieBackgroundVariant {
   private smallRockMat!: THREE.MeshBasicMaterial;
   private cactusGeo!: THREE.PlaneGeometry;
   private rockGeo!: THREE.PlaneGeometry;
+
+  // Rare roadside vignette: huge boulder + guitar + cowboy boots (one billboard).
+  private vignetteTex!: THREE.CanvasTexture;
+  private vignetteMat!: THREE.MeshBasicMaterial;
+  private vignetteGeo!: THREE.PlaneGeometry;
+  private vignetteMesh!: THREE.Mesh;
+  private vignetteSide = 1;
+  private vignetteActive = false;
+  private distSinceVignette = 0;
 
   // Rain.
   private rain!: THREE.LineSegments;
@@ -172,7 +189,6 @@ class Bg06 implements EddieBackgroundVariant {
       depthTest: false,
       fog: false,
     });
-    // Sits just above the horizon, far back so it reads as distance.
     this.monMesh = new THREE.Mesh(new THREE.PlaneGeometry(720, 70), this.monMat);
     this.monMesh.position.set(0, 18, -296);
     this.monMesh.renderOrder = -28;
@@ -206,8 +222,6 @@ class Bg06 implements EddieBackgroundVariant {
     this.group.add(this.groundMesh);
 
     // --- Winding road -----------------------------------------------------
-    // A long strip of cross-rows from just behind the camera to the horizon;
-    // each row's X is shifted by roadCurve() every frame so the road winds.
     this.roadCanvas = document.createElement("canvas");
     this.roadCanvas.width = 32;
     this.roadCanvas.height = 128;
@@ -226,7 +240,6 @@ class Bg06 implements EddieBackgroundVariant {
       depthWrite: false,
       fog: true,
     });
-    // Build a tessellated plane lying flat; we'll bend its vertices in update().
     const ROAD_ROWS = 64;
     this.roadGeo = new THREE.PlaneGeometry(1, 1, 1, ROAD_ROWS);
     this.roadMesh = new THREE.Mesh(this.roadGeo, this.roadMat);
@@ -235,7 +248,6 @@ class Bg06 implements EddieBackgroundVariant {
     this.roadMesh.renderOrder = -24;
     this.roadMesh.frustumCulled = false;
     this.group.add(this.roadMesh);
-    // Precompute the z of each row (camera-near -> far), nonlinear for perspective.
     for (let r = 0; r <= ROAD_ROWS; r++) {
       const f = r / ROAD_ROWS;
       this.roadSegZ.push(NEAR_Z - f * (NEAR_Z - FAR_Z));
@@ -271,7 +283,7 @@ class Bg06 implements EddieBackgroundVariant {
       const p: Prop = {
         mesh,
         side: this.rng() < 0.5 ? -1 : 1,
-        offset: 8 + this.rng() * 40, // beyond the road edge, into open desert
+        offset: 8 + this.rng() * 40,
         baseScale: 0.7 + this.rng() * 0.9,
         kind,
       };
@@ -279,6 +291,21 @@ class Bg06 implements EddieBackgroundVariant {
       this.group.add(mesh);
       this.props.push(p);
     }
+
+    // --- Rare vignette: boulder + guitar + cowboy boots -------------------
+    this.vignetteTex = this.buildVignetteTexture();
+    this.vignetteMat = new THREE.MeshBasicMaterial({
+      map: this.vignetteTex,
+      transparent: true,
+      alphaTest: 0.5,
+      depthWrite: true,
+      fog: true,
+    });
+    this.vignetteGeo = new THREE.PlaneGeometry(34, 28);
+    this.vignetteMesh = new THREE.Mesh(this.vignetteGeo, this.vignetteMat);
+    this.vignetteMesh.frustumCulled = false;
+    this.vignetteMesh.visible = false;
+    this.group.add(this.vignetteMesh);
 
     // --- Rain -------------------------------------------------------------
     this.rainGeo = new THREE.BufferGeometry();
@@ -365,12 +392,9 @@ class Bg06 implements EddieBackgroundVariant {
     return (this.rngState % 100000) / 100000;
   }
 
-  /** Lateral X (world units) of the road centerline at world depth z, given the
-   *  current travelled distance. A sum of sines that scrolls as we drive so the
-   *  road appears to wind left and right into the distance. */
+  /** Lateral X (world units) of the road centerline at world depth z. */
   private roadCurve(z: number): number {
-    // Use absolute travelled-depth so the curve streams toward the camera.
-    const d = this.roadPhase - z; // larger ahead (more negative z => larger d)
+    const d = this.roadPhase - z;
     return (
       Math.sin(d * 0.012) * 22 +
       Math.sin(d * 0.027 + 1.3) * 11 +
@@ -385,6 +409,15 @@ class Bg06 implements EddieBackgroundVariant {
     p.mesh.scale.setScalar(p.baseScale);
     p.mesh.position.set(cx + p.side * (ROAD_HALF_W + p.offset), h / 2, z);
     p.mesh.rotation.set(0, 0, 0);
+  }
+
+  /** Position the vignette billboard beside the road at depth z, on the ground. */
+  private placeVignette(z: number): void {
+    const cx = this.roadCurve(z);
+    const h = this.vignetteGeo.parameters.height ?? 28;
+    // Sits a bit further off the road than ordinary props (it's big).
+    this.vignetteMesh.position.set(cx + this.vignetteSide * (ROAD_HALF_W + 20), h / 2, z);
+    this.vignetteMesh.rotation.set(0, 0, 0);
   }
 
   private respawnRain(i: number, scatter: boolean): void {
@@ -492,28 +525,23 @@ class Bg06 implements EddieBackgroundVariant {
     this.groundTex.needsUpdate = true;
   }
 
-  /** Road surface stripe texture: asphalt + dashed centerline + edge lines.
-   *  Reddens/wets darker with morph; reflective sheen specks once raining. */
+  /** Road surface stripe texture: asphalt + dashed centerline + edge lines. */
   private paintRoad(): void {
     const ctx = this.roadCtx;
     const m = this.morph;
     const W = 32;
     const H = 128;
-    // Asphalt — dusty tan (dry) toward slick dark grey (wet).
     const aR = Math.floor(70 - m * 40);
     const aG = Math.floor(60 - m * 36);
     const aB = Math.floor(58 - m * 30);
     ctx.fillStyle = `rgb(${Math.max(8, aR)},${Math.max(8, aG)},${Math.max(8, aB)})`;
     ctx.fillRect(0, 0, W, H);
-    // Edge lines.
     const edge = Math.max(0.25, 1 - m * 0.5);
     ctx.fillStyle = `rgba(210,200,170,${edge})`;
     ctx.fillRect(2, 0, 2, H);
     ctx.fillRect(W - 4, 0, 2, H);
-    // Dashed centerline.
     ctx.fillStyle = `rgba(240,225,150,${edge})`;
     for (let y = 0; y < H; y += 18) ctx.fillRect(W / 2 - 1, y, 2, 9);
-    // Wet reflective specks.
     if (m > 0.3) {
       const wet = (m - 0.3) / 0.7;
       for (let i = 0; i < 40; i++) {
@@ -527,8 +555,6 @@ class Bg06 implements EddieBackgroundVariant {
   }
 
   private buildMonumentTexture(): THREE.CanvasTexture {
-    // Sparse mesa/butte/arch silhouettes spread across a wide strip with big
-    // gaps, so the horizon reads open, not a wall of rock.
     const W = 360;
     const H = 64;
     const c = document.createElement("canvas");
@@ -540,20 +566,16 @@ class Bg06 implements EddieBackgroundVariant {
     g.fillStyle = "#3a2230";
     let x = 6;
     while (x < W) {
-      // Mostly gap; occasionally a formation.
       if (this.rng() < 0.45) {
         const kind = this.rng();
         const w = 18 + Math.floor(this.rng() * 40);
         const h = 14 + Math.floor(this.rng() * 34);
         if (kind < 0.5) {
-          // Mesa: flat-topped block.
           g.fillRect(x, H - h, w, h);
         } else if (kind < 0.8) {
-          // Butte: narrower, taller.
           const bw = Math.floor(w * 0.5);
           g.fillRect(x, H - h, bw, h);
         } else {
-          // Arch: block with a hole near the base.
           g.fillRect(x, H - h, w, h);
           g.clearRect(x + Math.floor(w * 0.35), H - Math.floor(h * 0.5), Math.floor(w * 0.3), Math.floor(h * 0.5));
         }
@@ -613,26 +635,84 @@ class Bg06 implements EddieBackgroundVariant {
     return tex;
   }
 
-  /** Bend the road strip so each cross-row follows roadCurve(z). The plane was
-   *  built in local XY (then rotated flat): local Y maps to world -Z, local X to
-   *  world X. We offset each row's X by the curve at that row's world z. */
+  /** Composite billboard: a HUGE boulder with a guitar leaning on it and a pair
+   *  of cowboy boots beside it. Chunky pixels (NearestFilter). 48x40 canvas. */
+  private buildVignetteTexture(): THREE.CanvasTexture {
+    const W = 48;
+    const H = 40;
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const g = c.getContext("2d")!;
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, W, H);
+
+    // --- Boulder (big rounded sandstone mass filling the right ~2/3). ------
+    g.fillStyle = "#8a6a4a";
+    g.fillRect(16, 8, 28, 30);
+    g.fillRect(20, 4, 20, 6); // rounded top
+    g.fillRect(14, 14, 4, 22); // left bulge
+    g.fillStyle = "#6e5238";
+    g.fillRect(16, 30, 28, 8); // shadowed base
+    g.fillRect(30, 8, 2, 24); // crack
+    g.fillRect(24, 16, 6, 2);
+    g.fillStyle = "#a07e58";
+    g.fillRect(20, 8, 8, 3); // highlight
+
+    // --- Guitar leaning against the boulder (tilted, on the left face). ----
+    g.fillStyle = "#c0392b"; // red guitar body
+    g.fillRect(6, 26, 9, 10); // body
+    g.fillRect(8, 24, 6, 2); // upper bout
+    g.fillStyle = "#7a2018";
+    g.fillRect(9, 29, 3, 3); // sound hole (dark)
+    // Neck: a tan diagonal staircase from the body up toward the boulder.
+    g.fillStyle = "#d8b070";
+    g.fillRect(13, 22, 3, 3);
+    g.fillRect(15, 19, 3, 3);
+    g.fillRect(17, 16, 3, 3);
+    g.fillRect(19, 13, 3, 3);
+    g.fillStyle = "#4a2f1a";
+    g.fillRect(20, 10, 4, 3); // headstock
+    g.fillStyle = "#efe6c8";
+    g.fillRect(8, 27, 1, 8); // strings hint
+
+    // --- Cowboy boots beside the guitar (a pair, on the ground). ----------
+    g.fillStyle = "#8b5a2b";
+    g.fillRect(1, 31, 4, 7); // shaft
+    g.fillRect(1, 36, 7, 2); // foot
+    g.fillStyle = "#5e3a18";
+    g.fillRect(1, 38, 7, 1); // sole
+    g.fillStyle = "#caa46a";
+    g.fillRect(2, 32, 2, 1); // stitch detail
+    g.fillStyle = "#7a4d24";
+    g.fillRect(5, 30, 4, 8); // boot 2 shaft
+    g.fillRect(5, 36, 7, 2);
+    g.fillStyle = "#553314";
+    g.fillRect(5, 38, 7, 1);
+    g.fillStyle = "#b8945c";
+    g.fillRect(6, 31, 2, 1);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  }
+
+  /** Bend the road strip so each cross-row follows roadCurve(z). */
   private bendRoad(): void {
     const pos = this.roadGeo.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
-    const rows = this.roadSegZ.length; // ROAD_ROWS + 1
-    // PlaneGeometry(1,1,1,rows-1) has 2 verts per row (left,right), rows total,
-    // ordered top(+Y)->bottom. Top row = far, bottom row = near.
+    const rows = this.roadSegZ.length;
     for (let r = 0; r < rows; r++) {
-      // Row 0 in geometry is +Y (top). Map top->far so far = roadSegZ[last].
       const zIndex = rows - 1 - r;
       const z = this.roadSegZ[zIndex];
       const cx = this.roadCurve(z);
-      // Width tapers slightly with distance for a touch of perspective.
-      const f = zIndex / (rows - 1); // 0 near .. 1 far
+      const f = zIndex / (rows - 1);
       const halfW = ROAD_HALF_W * (1 - f * 0.15);
       const li = (r * 2) * 3;
       const ri = (r * 2 + 1) * 3;
-      // Local X (index +0), local Y (index +1) = -z in world after rot.
       arr[li] = cx - halfW;
       arr[li + 1] = -z;
       arr[ri] = cx + halfW;
@@ -651,24 +731,22 @@ class Bg06 implements EddieBackgroundVariant {
     if (this.beat > 0) this.beat = Math.max(0, this.beat - dt * this.beatDecay);
 
     const speed = this.flySpeed * (1 + m * 0.5) + this.beat * 26;
-    this.roadPhase += speed * dt;
+    const travel = speed * dt;
+    this.roadPhase += travel;
 
-    // Bend the winding road to the current phase + scroll its dashes.
     this.bendRoad();
     this.roadScroll = (this.roadScroll + dt * speed * 0.05) % 1;
     this.roadTex.offset.y = -this.roadScroll;
 
-    // Stream props toward the camera; recycle to the far horizon. Their lateral
-    // placement re-snaps to the road curve every frame so they hug the road.
+    // Ordinary props stream toward the camera; recycle to the far horizon.
     for (const p of this.props) {
-      p.mesh.position.z += speed * dt;
+      p.mesh.position.z += travel;
       if (p.mesh.position.z > NEAR_Z) {
         p.baseScale = 0.7 + this.rng() * 0.9;
         p.side = this.rng() < 0.5 ? -1 : 1;
         p.offset = 8 + this.rng() * 40;
         this.placeProp(p, FAR_Z - this.rng() * 50);
       } else {
-        // Keep hugging the (now-shifted) road curve at this depth.
         const cx = this.roadCurve(p.mesh.position.z);
         p.mesh.position.x = cx + p.side * (ROAD_HALF_W + p.offset);
       }
@@ -676,7 +754,28 @@ class Bg06 implements EddieBackgroundVariant {
       p.mesh.rotation.z = sway * (p.kind === "cactus" ? 1 : 0.2);
     }
 
-    // Ground scroll for forward motion.
+    // Rare vignette: spawn once enough distance has passed; it streams in from
+    // the far horizon, then recycles (hidden) once past the camera.
+    if (this.vignetteActive) {
+      this.vignetteMesh.position.z += travel;
+      if (this.vignetteMesh.position.z > NEAR_Z) {
+        this.vignetteActive = false;
+        this.vignetteMesh.visible = false;
+        this.distSinceVignette = 0;
+      } else {
+        const cx = this.roadCurve(this.vignetteMesh.position.z);
+        this.vignetteMesh.position.x = cx + this.vignetteSide * (ROAD_HALF_W + 20);
+      }
+    } else {
+      this.distSinceVignette += travel;
+      if (this.distSinceVignette >= VIGNETTE_GAP) {
+        this.vignetteActive = true;
+        this.vignetteMesh.visible = true;
+        this.vignetteSide = this.rng() < 0.5 ? -1 : 1;
+        this.placeVignette(FAR_Z - this.rng() * 30);
+      }
+    }
+
     this.groundScroll = (this.groundScroll + dt * speed * 0.02) % 1;
     this.groundTex.offset.y = -this.groundScroll;
 
@@ -684,8 +783,9 @@ class Bg06 implements EddieBackgroundVariant {
     this.paintGround();
     this.paintRoad();
     this.groundMat.color.setRGB(1 - m * 0.2, 1 - m * 0.2, 1 - m * 0.1);
-    // Distant monuments darken under the storm.
     this.monMat.color.setRGB(1 - m * 0.4, 1 - m * 0.45, 1 - m * 0.4);
+    // Vignette darkens under the storm like the rest of the scenery.
+    this.vignetteMat.color.setRGB(1 - m * 0.3, 1 - m * 0.32, 1 - m * 0.3);
 
     // --- Rain ----------------------------------------------------------------
     const rainAmt = Math.max(0, (m - 0.18) / 0.82);
@@ -737,10 +837,9 @@ class Bg06 implements EddieBackgroundVariant {
       this.scene.fog.far = 260 - m * 90;
     }
 
-    // Camera: FOLLOW the winding road. X tracks the road centerline a little
-    // ahead of the camera; the look target tracks the curve further down.
+    // Camera: FOLLOW the winding road.
     if (this.camera) {
-      const followZ = this.camBaseZ - 18; // a touch ahead of the camera
+      const followZ = this.camBaseZ - 18;
       const roadX = this.roadCurve(followZ);
       const lookX = this.roadCurve(-120);
       const bob = Math.sin(this.t * 5) * (0.3 + m * 0.5) + this.beat * 1.0;
@@ -799,6 +898,10 @@ class Bg06 implements EddieBackgroundVariant {
     this.smallRockTex.dispose();
     this.props = [];
 
+    this.vignetteGeo.dispose();
+    this.vignetteMat.dispose();
+    this.vignetteTex.dispose();
+
     this.rainGeo.dispose();
     this.rainMat.dispose();
 
@@ -814,7 +917,7 @@ class Bg06 implements EddieBackgroundVariant {
 const def: EddieBackgroundDef = {
   id: "bg06",
   label: "Desert Drive -> Rainstorm",
-  blurb: "Driving a winding desert road through wide-open desert at dusk, distant rock monuments on the horizon; rising intensity rolls in storm clouds, slants rain onto the wet reflective road, and cracks lightning on the beat into a torrential downpour.",
+  blurb: "Driving a winding desert road through wide-open desert at dusk, distant rock monuments on the horizon and the occasional roadside guitar-and-boots-on-a-boulder; rising intensity rolls in storm clouds, slants rain onto the wet reflective road, and cracks lightning on the beat into a torrential downpour.",
   create: () => new Bg06(),
 };
 

@@ -115,7 +115,6 @@ class Bg01 implements EddieBackgroundVariant {
   private intensityTarget = 0;
   private pulse = 0; // decaying beat pump
   private downbeatPulse = 0; // decaying downbeat pump (stronger)
-  private shake = 0; // external eddieShake jolt (decays)
   private t = 0;
   private rng = this.makeRng(0xc0ffee);
 
@@ -301,8 +300,11 @@ class Bg01 implements EddieBackgroundVariant {
       // Queue a burst of upward embers (the fire SPITS on the beat).
       this.spitQueued += (e.downbeat ? 26 : 12) * (0.25 + this.morph);
     });
-    this.offShake = ctx.juice.on("eddieShake", (e) => {
-      this.shake = Math.max(this.shake, e.magnitude);
+    // Intentional NO-OP: the camera never shakes (design choice — a calm, steady
+    // road camera even at full inferno). We still subscribe so the listener is
+    // accounted for and cleanly unsubscribed in dispose, but it does nothing.
+    this.offShake = ctx.juice.on("eddieShake", () => {
+      /* no camera shake */
     });
     this.offIntensity = ctx.juice.on("eddieIntensity", (e) => {
       this.intensityTarget = Math.min(1, Math.max(0, e.value));
@@ -637,7 +639,6 @@ class Bg01 implements EddieBackgroundVariant {
 
     if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - sdt * 3.2);
     if (this.downbeatPulse > 0) this.downbeatPulse = Math.max(0, this.downbeatPulse - sdt * 2.6);
-    if (this.shake > 0) this.shake = Math.max(0, this.shake - sdt * 6);
 
     // --- Drive the route (turning at corners). Faster as the inferno builds.
     const speed = DRIVE_SPEED * (1 + m * 0.7);
@@ -746,15 +747,13 @@ class Bg01 implements EddieBackgroundVariant {
       if (this.camera) e.mesh.quaternion.copy(this.camera.quaternion);
     }
 
-    // --- Camera: ride the route at eye height, look down the heading. Banking
-    //     into corners + beat shudder + external shake.
+    // --- Camera: ride the route at eye height, look down the heading. The ONLY
+    //     camera motion is the smooth drive along the roads (and a slight roll
+    //     into corners) — NO shake, NO inferno rumble, steady even at full fire.
     if (this.camera) {
       const lookX = this.posX + Math.cos(this.heading) * 20;
       const lookZ = this.posZ + Math.sin(this.heading) * 20;
-      const infernoShudder = m * (0.12 + this.downbeatPulse * 0.3);
-      const sx = (Math.random() - 0.5) * (this.shake * 2.0 + infernoShudder);
-      const sy = (Math.random() - 0.5) * (this.shake * 1.5 + infernoShudder * 0.7);
-      this.camera.position.set(this.posX + sx, this.camBaseY + sy, this.posZ);
+      this.camera.position.set(this.posX, this.camBaseY, this.posZ);
       this.camera.lookAt(lookX, this.camBaseY - 1, lookZ);
       // A little roll when taking a corner for a driving feel.
       if (this.turning) this.camera.rotateZ(-this.turnSign * 0.1);

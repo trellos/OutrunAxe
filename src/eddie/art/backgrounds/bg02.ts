@@ -8,19 +8,21 @@
 // boat in a tempest. At morph 1 it is a raging storm: towering chaotic waves,
 // near-constant lightning, blood-red sky, waterspouts.
 //
-// Sea creatures key off the weather. In the CALM / SUNNY state (low morph),
-// pixely neon DOLPHINS leap out of the swell in joyful parabolic arcs (chunky
-// silhouettes with a neon rim + a splash) — frequent and in big pods at max sun,
-// tapering off as the storm builds. In the STORM (rising morph), chaotic neon
-// MERMAIDS surface and thrash — whipping hair, flailing arms, a lashing tail
-// flicking up spray (a "hot mess") — appearing progressively: ONE, then TWO,
-// then THREE, and SCHOOLS at max storm. Both are pooled/recycled (no per-event
-// allocation).
+// Sea creatures key off the weather with a CLEAN SEPARATION — calm = dolphins
+// only, rain = mermaids only. In the CALM / SUNNY state, pixely neon DOLPHINS
+// leap out of the swell in joyful parabolic arcs (chunky silhouettes with a neon
+// rim + a splash) — frequent, in big pods at max sun (morph 0), tapering off as
+// the sky greys and dropping to ZERO once it starts to rain (morph >= RAIN_ONSET,
+// ~0.2). In the STORM (rising morph), chaotic neon MERMAIDS surface and thrash —
+// whipping hair, flailing arms, a lashing tail flicking up spray (a "hot mess") —
+// appearing progressively: ONE, then TWO, then THREE, and SCHOOLS at max storm.
+// Both are pooled/recycled (no per-event allocation).
 //
 // Juice contract (all three events handled):
-//  - eddieBeatPulse  -> wave surge + lightning strike + a dolphin pod leap
-//    (sunny: chance/pod grow as morph FALLS) and a mermaid surfacing
-//    (stormy: chance/count grow as morph rises). Downbeats stronger.
+//  - eddieBeatPulse  -> wave surge + lightning strike + either a dolphin pod
+//    leap (CALM-ONLY: chance/pod grow as morph falls, ZERO once raining) OR a
+//    mermaid surfacing (STORM-ONLY: chance/count grow as morph rises). Never
+//    both — the two are cleanly separated by RAIN_ONSET. Downbeats stronger.
 //  - eddieShake      -> camera jolt that decays.
 //  - eddieIntensity  -> target morph; eased each frame (never snapped).
 //
@@ -35,6 +37,10 @@ import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
 const SEA_W = 200; // sea/sky canvas px (low-res, NearestFilter => chunky)
 const SEA_H = 140;
+
+// Morph at which rain begins. Dolphins are CALM-ONLY: their activity ramps to
+// zero by here and is fully cut off above it (storm => mermaids only).
+const RAIN_ONSET = 0.2;
 
 // Calm and storm palettes; we lerp between them by morph.
 const CALM = {
@@ -205,13 +211,17 @@ class Bg02 implements EddieBackgroundVariant {
       const chance = this.morph * (e.downbeat ? 1.1 : 0.6);
       if (Math.random() < chance) this.strike(e.downbeat);
 
-      // Dolphins are a CALM/SUNNY thing: joyful and frequent at max sun
-      // (morph ~0), tapering off as the storm builds. sun = 1 - morph.
-      const sun = 1 - this.morph;
-      const dolphinChance = (e.downbeat ? 0.45 : 0.15) + sun * 0.5;
-      if (Math.random() < dolphinChance) {
-        const pod = 1 + Math.floor(sun * 3) + (e.downbeat ? 1 : 0);
-        this.launchPod(pod, e.downbeat);
+      // Dolphins are a CALM/SUNNY-ONLY thing: they go to ZERO once it starts to
+      // rain. `calm` ramps 1 -> 0 across morph 0 .. RAIN_ONSET and is clamped to
+      // 0 above it, so no dolphins ever appear in the rain/storm. Full joyful
+      // pods only happen near morph 0.
+      const calm = this.calmFactor();
+      if (calm > 0) {
+        const dolphinChance = calm * (e.downbeat ? 0.95 : 0.6);
+        if (Math.random() < dolphinChance) {
+          const pod = 1 + Math.floor(calm * 3) + (e.downbeat ? 1 : 0);
+          this.launchPod(pod, e.downbeat);
+        }
       }
 
       // Mermaids are a STORM thing: a chaotic hot mess that surfaces during the
@@ -290,6 +300,14 @@ class Bg02 implements EddieBackgroundVariant {
     d.dur = 0.7 + Math.random() * 0.25 - this.morph * 0.15; // snappier at high energy
     d.hue = Math.random();
     d.splash = 0;
+  }
+
+  /** Dolphin "calm" factor: 1 at max sun (morph 0), ramping linearly to 0 by
+   *  RAIN_ONSET, and HARD ZERO at/above it. Dolphins appear only when calm > 0,
+   *  so they stop entirely once it starts to rain. */
+  private calmFactor(): number {
+    if (this.morph >= RAIN_ONSET) return 0;
+    return 1 - this.morph / RAIN_ONSET; // 1 -> 0 across [0, RAIN_ONSET)
   }
 
   /** Progressive mermaid count: storm onset shows ONE, then TWO, then THREE,
@@ -489,15 +507,18 @@ class Bg02 implements EddieBackgroundVariant {
    *  recycle finished slots. Splash pops fire as a dolphin crosses the surface
    *  on the way up (exit) and back down (entry). */
   private updateDolphins(dt: number): void {
-    // Ambient leaps are a SUNNY thing: frequent + joyful at max sun (morph ~0),
-    // tapering off as the storm builds. sun = 1 - morph.
-    const sun = 1 - this.morph;
+    // Ambient leaps are CALM/SUNNY-ONLY: frequent + joyful at max sun (morph 0),
+    // and ZERO once it rains. `calm` ramps 1 -> 0 across [0, RAIN_ONSET) and is
+    // hard-zero above it, so no ambient leaps ever fire in the rain/storm.
+    const calm = this.calmFactor();
     this.dolphinTimer -= dt;
     if (this.dolphinTimer <= 0) {
-      const pod = 1 + Math.floor(sun * 2);
-      this.launchPod(pod, false);
-      // Interval shrinks with sun (storm ~3.2s rare, calm ~0.8s frequent) + jitter.
-      this.dolphinTimer = this.lerp(3.2, 0.8, sun) * (0.6 + Math.random() * 0.8);
+      if (calm > 0) {
+        const pod = 1 + Math.floor(calm * 2);
+        this.launchPod(pod, false);
+      }
+      // Interval shrinks with calm (near-rain ~3.2s rare, full sun ~0.8s) + jitter.
+      this.dolphinTimer = this.lerp(3.2, 0.8, calm) * (0.6 + Math.random() * 0.8);
     }
 
     for (const d of this.dolphins) {

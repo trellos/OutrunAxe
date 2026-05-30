@@ -113,6 +113,15 @@ export class EddieArtDebugState implements GameState {
     this.overlay.innerHTML = this.hudText();
     this.hudParent.appendChild(this.overlay);
 
+    // ?nohud=1 hides the DOM HUD (grid/fire/particles/score/play + caption) so the
+    // Three.js background can be reviewed unobstructed.
+    if (params.get("nohud") === "1") {
+      const root = this.hudParent.querySelector<HTMLElement>(".eddie-root");
+      if (root) root.style.display = "none";
+      if (this.settingsRoot) this.settingsRoot.style.display = "none";
+      this.overlay.style.display = "none";
+    }
+
     window.addEventListener("keydown", this.onKey);
   }
 
