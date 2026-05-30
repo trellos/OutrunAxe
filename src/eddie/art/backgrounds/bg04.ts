@@ -404,7 +404,7 @@ class Bg04 implements EddieBackgroundVariant {
   private makeRoom(index: number): Room {
     const root = new THREE.Group();
     const room: Room = { root, shatter: [], emissives: [], fountains: [], dirty: false };
-    const feature = index % 3;
+    const feature = index % 4;
 
     // Low hedges line both sides of the path.
     const hedgeMat = this.stoneMaterial(HEDGE);
@@ -422,10 +422,14 @@ class Bg04 implements EddieBackgroundVariant {
     } else if (feature === 1) {
       this.addFountain(room, 0);
       for (const side of [-1, 1]) this.addStatue(room, side * LANE_X);
-    } else {
+    } else if (feature === 2) {
       for (const side of [-1, 1]) {
         for (let z = -12; z <= 12; z += 12) this.addColumn(room, side * (LANE_X - 4), z);
       }
+    } else {
+      // Venus Genetrix centerpiece, flanked by a pair of columns framing her.
+      this.addVenus(room, 0);
+      for (const side of [-1, 1]) this.addColumn(room, side * LANE_X, -10);
     }
     return room;
   }
@@ -490,6 +494,133 @@ class Bg04 implements EddieBackgroundVariant {
     spine.position.set(x, 13, 1.6);
     this.registerShatter(room, spine);
     room.root.add(spine);
+  }
+
+  /** Venus Genetrix — the classical draped-Venus type: a standing female figure
+   *  in clinging drapery, weight on one leg (contrapposto), one arm raised, one
+   *  shoulder/breast bared. Low-poly/pixely marble on a plinth with a neon ring,
+   *  matching the other statues. Built in the room's local space (faces +Z toward
+   *  the path) with a slight contrapposto lean. */
+  private addVenus(room: Room, x: number): void {
+    this.addPlinth(room, x);
+    const marble = this.stoneMaterial(MARBLE);
+    const drape = this.stoneMaterial(0xdad3f2); // faintly distinct drapery marble
+
+    // A small subgroup so the whole figure can carry the contrapposto S-curve.
+    const fig = new THREE.Group();
+    fig.position.set(x, 6, 0); // sit on top of the 6-tall plinth
+    fig.rotation.y = Math.PI; // face the path (+Z in room space)
+    room.root.add(fig);
+
+    // Weight leg (straight, supporting) — slightly toward +X.
+    const legW = new THREE.CylinderGeometry(1.0, 1.2, 8, 6, 1);
+    this.geometries.push(legW);
+    const weightLeg = new THREE.Mesh(legW, drape);
+    weightLeg.position.set(1.1, 4, 0);
+    this.registerShatter(room, weightLeg);
+    fig.add(weightLeg);
+
+    // Free leg (relaxed, knee pushed forward + outward) — gives contrapposto.
+    const legF = new THREE.CylinderGeometry(0.9, 1.1, 7.5, 6, 1);
+    this.geometries.push(legF);
+    const freeLeg = new THREE.Mesh(legF, drape);
+    freeLeg.position.set(-1.3, 3.9, 0.7);
+    freeLeg.rotation.x = 0.18;
+    freeLeg.rotation.z = 0.12;
+    this.registerShatter(room, freeLeg);
+    fig.add(freeLeg);
+
+    // Clinging drapery skirt: tapered, slightly fluted lower body over the legs,
+    // tilted so the hip swings over the weight leg (the Venus S-curve).
+    const skirtGeo = new THREE.CylinderGeometry(2.0, 3.0, 9, 8, 2);
+    this.geometries.push(skirtGeo);
+    const skirt = new THREE.Mesh(skirtGeo, drape);
+    skirt.position.set(0.4, 9, 0);
+    skirt.rotation.z = -0.08; // hip shifts toward the weight leg
+    this.registerShatter(room, skirt);
+    fig.add(skirt);
+
+    // Torso: tilts the opposite way to the hips (counter-balance of contrapposto).
+    const torsoGeo = new THREE.CylinderGeometry(1.5, 2.0, 7, 8, 1);
+    this.geometries.push(torsoGeo);
+    const torso = new THREE.Mesh(torsoGeo, marble);
+    torso.position.set(0.0, 15.5, 0);
+    torso.rotation.z = 0.1;
+    this.registerShatter(room, torso);
+    fig.add(torso);
+
+    // Drapery strap across one shoulder, leaving the other shoulder/breast bared
+    // — a thin angled box from the left hip up over the right shoulder.
+    const strapGeo = new THREE.BoxGeometry(0.7, 9, 0.7);
+    this.geometries.push(strapGeo);
+    const strap = new THREE.Mesh(strapGeo, drape);
+    strap.position.set(-0.4, 15.5, 1.4);
+    strap.rotation.z = -0.5;
+    this.registerShatter(room, strap);
+    fig.add(strap);
+
+    // Bared shoulder/breast accent: a small marble sphere proud of the torso on
+    // the uncovered side, so the figure reads as the half-draped Venus.
+    const breastGeo = new THREE.IcosahedronGeometry(0.9, 0);
+    this.geometries.push(breastGeo);
+    const breast = new THREE.Mesh(breastGeo, marble);
+    breast.position.set(1.2, 16.5, 1.4);
+    this.registerShatter(room, breast);
+    fig.add(breast);
+
+    // Neck + head.
+    const neckGeo = new THREE.CylinderGeometry(0.5, 0.7, 1.6, 6);
+    this.geometries.push(neckGeo);
+    const neck = new THREE.Mesh(neckGeo, marble);
+    neck.position.set(-0.1, 19.6, 0);
+    this.registerShatter(room, neck);
+    fig.add(neck);
+    const headGeo = new THREE.IcosahedronGeometry(1.7, 1);
+    this.geometries.push(headGeo);
+    const head = new THREE.Mesh(headGeo, marble);
+    head.position.set(-0.2, 21.4, 0);
+    head.scale.set(0.85, 1.05, 0.85);
+    head.rotation.y = 0.3; // gaze turned slightly, as the type often is
+    this.registerShatter(room, head);
+    fig.add(head);
+
+    // Raised arm (upper + fore-arm), lifted to the side as in the Venus Genetrix
+    // gesture; the other arm rests lower across the body.
+    const upArmGeo = new THREE.CylinderGeometry(0.5, 0.6, 4.5, 6);
+    this.geometries.push(upArmGeo);
+    const upperArm = new THREE.Mesh(upArmGeo, marble);
+    upperArm.position.set(-2.2, 17.8, 0);
+    upperArm.rotation.z = 0.9; // lifts outward/up
+    this.registerShatter(room, upperArm);
+    fig.add(upperArm);
+    const foreArmGeo = new THREE.CylinderGeometry(0.4, 0.5, 4, 6);
+    this.geometries.push(foreArmGeo);
+    const foreArm = new THREE.Mesh(foreArmGeo, marble);
+    foreArm.position.set(-3.6, 20.4, 0.2);
+    foreArm.rotation.z = 0.35;
+    this.registerShatter(room, foreArm);
+    fig.add(foreArm);
+
+    // Resting arm across the lower torso (holds the drape).
+    const restArmGeo = new THREE.CylinderGeometry(0.5, 0.55, 5, 6);
+    this.geometries.push(restArmGeo);
+    const restArm = new THREE.Mesh(restArmGeo, drape);
+    restArm.position.set(1.8, 14.5, 1.0);
+    restArm.rotation.z = -0.5;
+    restArm.rotation.x = 0.3;
+    this.registerShatter(room, restArm);
+    fig.add(restArm);
+
+    // Neon accent ring on the plinth, like the other statues.
+    const ringMat = this.neonMaterial(NEON_MAGENTA);
+    room.emissives.push({ mat: ringMat, seed: Math.random() * 6.28 });
+    const ringGeo = new THREE.TorusGeometry(4, 0.25, 6, 16);
+    this.geometries.push(ringGeo);
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(x, 6.2, 0);
+    this.registerShatter(room, ring);
+    room.root.add(ring);
   }
 
   private addColumn(room: Room, x: number, z: number): void {
