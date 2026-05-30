@@ -254,6 +254,24 @@ touch PitchEngine.
 - `outrunaxe.best.<levelName>` — integer best score per level; drives the
   Boot/LevelSelect "BEST" rows and the Results "NEW BEST!" badge.
 
+## Infinite Eddie mode — hard rules (learned corrections, do NOT regress)
+
+1. **Grid cells are note timelines, not labels.** Each measure cell in the
+   Infinite Eddie grid plots the *notes the player actually played* in that
+   measure, positioned by beat across the cell width. NEVER fill a cell with text
+   like "INTRO 1" or measure numbers ("1".."16") as its body — the played notes
+   go there. The only text on the grid is the bass-chord label *above* a cell and
+   the 8th/16th tag badges; the cell body is a note plot. (A new `eddieNote` juice
+   event carries played notes to the grid.)
+2. **No PLAY button on the play screen.** `InfiniteEddieState` is already
+   recording the moment it loads — it must NOT show a PLAY/record button. The PLAY
+   button belongs ONLY to the settings screen (`EddieSettingsState`), which starts
+   the run. The art debug gallery (`?eddieart=1`) mounts the button only to review
+   that asset; that is not the game screen.
+3. **Background & particles are registries** under `src/eddie/art/backgrounds/`
+   and `src/eddie/art/particles/` (6 options each), reviewable via
+   `?eddieart=1&bg=N` / `&fx=N`. Settings themes via `?eddie=1&theme=N`.
+
 ## Glossary
 
 - **pitchFired** — `KeyResolver` event: a played pitch class plus a

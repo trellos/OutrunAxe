@@ -28,7 +28,6 @@ const COUNT_IN_BEATS = 4;
 // back-to-back. The four-chord BackingTrack progression loops eight times
 // across the window.
 const PLAY_MEASURES = 32;
-const PLAY_BEATS = PLAY_MEASURES * 4;
 export const MIN_BPM = 60;
 export const MAX_BPM = 120;
 
@@ -37,6 +36,22 @@ export const MAX_BPM = 120;
 export const BEAT_PROXIMITY_WINDOW = 0.05;
 /** Beat subdivisions as fractions of a beat (1 = quarter, 0.5 = 8th, 1/3 = triplet 8th). */
 export const BEAT_PROXIMITY_SUBS_OF_BEAT = [1, 0.5, 1 / 3] as const;
+
+/**
+ * Additive constructor config so the phase machine can be reconfigured per use
+ * without changing default combat behavior. Every field defaults to the
+ * existing module constant, so callers that pass nothing (every combat caller
+ * and MenuPulse) get byte-for-byte identical behavior. The ONE allowed edit to
+ * a sacred-audio file (GDD §3): it adds configurability, not a new algorithm.
+ */
+export interface ConductorOptions {
+  /** Beats of count-in before the play window. Default 4 (combat). */
+  countInBeats?: number;
+  /** Measures in the scored/play window. Default 32 (combat). */
+  playMeasures?: number;
+  /** Upper BPM clamp. Default 120. Eddie passes 200 so fast jams are allowed. */
+  maxBpm?: number;
+}
 
 export class Conductor {
   private ctx: AudioContext;
@@ -55,13 +70,24 @@ export class Conductor {
   private listeners = new Set<(b: BeatInfo) => void>();
   private phaseListeners = new Set<(p: Phase) => void>();
 
-  constructor() {
+  // Phase-machine sizing. Defaults reproduce the combat module constants
+  // exactly; Infinite Eddie overrides them via ConductorOptions (GDD §3).
+  private readonly countInBeats: number;
+  private readonly playMeasures: number;
+  private readonly playBeats: number;
+  private readonly maxBpm: number;
+
+  constructor(opts?: ConductorOptions) {
     this.ctx = getAudioContext();
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.7;
     this.master.connect(this.ctx.destination);
     this.drums = new DrumSynth(this.ctx, this.master);
     this.beeps = new BeepSynth(this.ctx, this.master);
+    this.countInBeats = opts?.countInBeats ?? COUNT_IN_BEATS;
+    this.playMeasures = opts?.playMeasures ?? PLAY_MEASURES;
+    this.playBeats = this.playMeasures * 4;
+    this.maxBpm = opts?.maxBpm ?? MAX_BPM;
   }
 
   get currentBpm() { return this.bpm; }
@@ -75,7 +101,7 @@ export class Conductor {
 
   setBpm(bpm: number) {
     if (this.phase !== "idle" && this.phase !== "preroll") return;
-    const clamped = Math.max(MIN_BPM, Math.min(MAX_BPM, bpm));
+    const clamped = Math.max(MIN_BPM, Math.min(this.maxBpm, bpm));
     if (this.phase === "preroll") {
       // Re-anchor so the next scheduled beat lands at the same audio time but
       // future beats use the new spacing.
@@ -138,14 +164,14 @@ export class Conductor {
   /** Wall-clock measure index (0..3) the playhead is currently inside, or -1. */
   currentPlayMeasure(): number {
     if (this.phase !== "playing" || this.playStartBeat < 0) return -1;
-    const playedBeat = this.beatsElapsed() - (this.playStartBeat + COUNT_IN_BEATS);
-    if (playedBeat < 0 || playedBeat >= PLAY_BEATS) return -1;
+    const playedBeat = this.beatsElapsed() - (this.playStartBeat + this.countInBeats);
+    if (playedBeat < 0 || playedBeat >= this.playBeats) return -1;
     return Math.floor(playedBeat / 4);
   }
 
   /** Audio-clock time at which the given play measure (0..3) begins. */
   measureStartTime(measureIdx: number): number {
-    const beat = this.playStartBeat + COUNT_IN_BEATS + measureIdx * 4;
+    const beat = this.playStartBeat + this.countInBeats + measureIdx * 4;
     return this.startTime + beat * (60 / this.bpm);
   }
 
@@ -161,7 +187,7 @@ export class Conductor {
     const beatDur = 60 / this.bpm;
     const playStart = this.measureStartTime(0);
     const into = audioTime - playStart;
-    if (into < 0 || into > PLAY_BEATS * beatDur) return 0;
+    if (into < 0 || into > this.playBeats * beatDur) return 0;
 
     let minDist = Infinity;
     for (const frac of BEAT_PROXIMITY_SUBS_OF_BEAT) {
@@ -192,7 +218,7 @@ export class Conductor {
     const into = audioTime - (playStart - grace);
     if (into < 0) return -1;
     const beat = Math.floor(into / beatDur);
-    if (beat >= PLAY_BEATS) return -1;
+    if (beat >= this.playBeats) return -1;
     return Math.floor(beat / 4);
   }
 
@@ -224,7 +250,7 @@ export class Conductor {
 
       this.nextBeat++;
 
-      if (info.phase === "playing" && info.measureInPlay === PLAY_MEASURES - 1 && info.beatInPhase === 3) {
+      if (info.phase === "playing" && info.measureInPlay === this.playMeasures - 1 && info.beatInPhase === 3) {
         // Last beat of the last measure has been scheduled. Let it ring out,
         // then transition to done.
         const endAt = time + spb;
@@ -243,12 +269,12 @@ export class Conductor {
 
     if (this.playStartBeat >= 0 && beat >= this.playStartBeat) {
       const sincePlay = beat - this.playStartBeat;
-      if (sincePlay < COUNT_IN_BEATS) {
+      if (sincePlay < this.countInBeats) {
         phase = "countIn";
         beatInPhase = sincePlay;
-      } else if (sincePlay < COUNT_IN_BEATS + PLAY_BEATS) {
+      } else if (sincePlay < this.countInBeats + this.playBeats) {
         phase = "playing";
-        const playedBeat = sincePlay - COUNT_IN_BEATS;
+        const playedBeat = sincePlay - this.countInBeats;
         measureInPlay = Math.floor(playedBeat / 4);
         beatInPhase = playedBeat % 4;
       }
@@ -263,8 +289,8 @@ export class Conductor {
     const sincePlay = elapsed - this.playStartBeat;
     let next: Phase = this.phase;
     if (sincePlay < 0) next = "preroll";
-    else if (sincePlay < COUNT_IN_BEATS) next = "countIn";
-    else if (sincePlay < COUNT_IN_BEATS + PLAY_BEATS) next = "playing";
+    else if (sincePlay < this.countInBeats) next = "countIn";
+    else if (sincePlay < this.countInBeats + this.playBeats) next = "playing";
     if (next !== this.phase) {
       this.phase = next;
       this.emitPhase();

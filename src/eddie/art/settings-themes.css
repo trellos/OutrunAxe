@@ -1,0 +1,783 @@
+/* Infinite Eddie — SETTINGS screen themes (Apple IIgs / Mac System 7 / retro-GUI
+ * family, all PIXELY + GLITCHY, six distinct flavors).
+ *
+ * The lead adds ONE of `.eddie-theme-1` … `.eddie-theme-6` onto the same element
+ * that already carries `.outrun-levelselect.eddie-settings`. Every rule below is
+ * scoped under its theme class so the six are fully independent and none touch
+ * the shared `.outrun-*` rules.
+ *
+ * BEAT GLITCH: the lead's JS toggles `.eddie-beat` on every beat and
+ * `.eddie-beat-down` on the downbeat (added ~110ms then removed). Each theme
+ * reacts on `.eddie-theme-N.eddie-beat` (light) and `.eddie-theme-N.eddie-beat-down`
+ * (heavier): an RGB-split/translate, scanline jump, 1px tear, strip-invert, or
+ * dither-shimmer. CSS transitions snap it on the beat and let it settle (fires
+ * 2-4×/sec, kept tasteful).
+ *
+ * DOM being styled (confirmed against src/states/EddieSettingsState.ts):
+ *   .outrun-levelselect.eddie-settings.eddie-theme-N   (root overlay; flex-centered)
+ *     .levelselect-inner                               (the window/card)
+ *       .levelselect-title  "INFINITE EDDIE"
+ *       .eddie-settings-row  ×3  [ .eddie-settings-label  .eddie-settings-btn
+ *                                  .eddie-settings-value   .eddie-settings-btn … ]
+ *       .eddie-settings-timeline   (the GUITAR canvas window; .menupulse-label inside
+ *                                   now reads "GUITAR", was "SIGNAL CHAIN")
+ *       .eddie-settings-play       (Mac System 7 PLAY button mounts here)
+ *
+ * Self-contained: no remote @import, no external font/image URLs. Decoration is
+ * gradients, box-shadows and ::before/::after only. Dither via repeating-conic /
+ * repeating-linear gradients; bevels via inset box-shadows (hard, no blur).
+ *
+ * THE SIX THEMES
+ *   theme-1  SYSTEM 7 PLATINUM — gray platinum window, pinstriped title bar,
+ *            beveled controls, dither well. Beat = horizontal scanline jump.
+ *   theme-2  1-BIT B/W MAC — pure black/white, 50% checkerboard dither for
+ *            "gray", Chicago chrome. Beat = invert a horizontal strip.
+ *   theme-3  APPLE IIgs COLOR — gray window on a blue desktop, 16-color accents
+ *            (blue/orange/green/magenta), beveled color buttons. Beat = RGB split.
+ *   theme-4  AMBER TERMINAL — black CRT, amber phosphor text + scanlines, no
+ *            bevels (glow instead). Beat = phosphor flicker + 1px tear.
+ *   theme-5  GREEN/CORRUPTED DESKTOP — green phosphor GUI that "glitch-corrupts"
+ *            on the beat: torn title, datamosh block bands. Beat = hard tear + shift.
+ *   theme-6  DITHERED PASTEL — soft mint/peach/lavender platinum, ordered-dither
+ *            matte, rounded pixel bevels. Beat = gentle dither shimmer + RGB ghost.
+ *
+ * Research notes: Chicago typeface used 9×7 bitmap glyphs and a checkerboard
+ * pixel pattern to fake gray on 1-bit displays (Wikipedia "Chicago (typeface)");
+ * System 6/7 chrome used faux-3D angled/inset bevels rather than soft shadows
+ * (versionmuseum.com classic Mac OS history); IIgs Super Hi-Res ran a 16-color
+ * palette from a 4096-color space; amber/green monochrome phosphor + scanlines
+ * are the canonical CRT-terminal look. Datamosh / RGB-split / strip-invert are
+ * the standard CSS vocabulary for "corrupted GUI" glitch (speckyboy synthwave
+ * CSS snippets; aesthetics.fandom Glitchcore / Synthwave VHS notes).
+ */
+
+/* ======================================================================= */
+/* THEME 1 — SYSTEM 7 PLATINUM                                             */
+/* ======================================================================= */
+
+.eddie-theme-1 {
+  --p-paper: #dcdcde;
+  --p-light: #fff;
+  --p-shadow: #8a8a92;
+  --p-dark: #555;
+  --p-ink: #111;
+  --p-accent: #000088;
+  --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-1 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--p-paper);
+  border: 1px solid var(--p-ink);
+  border-radius: 0;
+  box-shadow:
+    inset 2px 2px 0 var(--p-light),
+    inset -2px -2px 0 var(--p-shadow),
+    4px 4px 0 rgba(0, 0, 0, 0.4);
+  image-rendering: pixelated;
+  transition: transform 0.04s steps(1), filter 0.04s steps(1);
+}
+
+/* Pinstriped title bar + close box. */
+.eddie-theme-1 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--p-ink);
+  text-shadow: none;
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--p-ink) 0 1px, var(--p-paper) 1px 3px);
+  border-bottom: 2px solid var(--p-ink);
+}
+.eddie-theme-1 .levelselect-title::after {
+  content: "";
+  position: absolute;
+  inset: 4px 16px 5px 16px;
+  background: var(--p-paper);
+  z-index: -1;
+}
+.eddie-theme-1 .levelselect-title::before {
+  content: "";
+  position: absolute;
+  left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--p-light);
+  border: 1px solid var(--p-ink);
+  box-shadow: inset 1px 1px 0 var(--p-shadow);
+}
+
+.eddie-theme-1 .eddie-settings-row { padding: 0 18px; }
+
+.eddie-theme-1 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--p-ink);
+  text-shadow: none;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+.eddie-theme-1 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--p-ink);
+  background: var(--p-light);
+  border: 1px solid var(--p-ink);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--p-shadow);
+  text-shadow: none;
+}
+.eddie-theme-1 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--p-ink);
+  background: linear-gradient(180deg, var(--p-light), var(--p-paper));
+  border: 1px solid var(--p-ink);
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 0 var(--p-light), inset -1px -1px 0 var(--p-shadow);
+  text-shadow: none;
+  transition: none;
+}
+.eddie-theme-1 .eddie-settings-btn:hover { background: var(--p-light); }
+.eddie-theme-1 .eddie-settings-btn:active {
+  color: var(--p-light);
+  background: var(--p-ink);
+  box-shadow: inset 1px 1px 0 #000, inset -1px -1px 0 var(--p-dark);
+}
+.eddie-theme-1 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 1px solid var(--p-ink);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--p-shadow) 0 25%, var(--p-paper) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--p-shadow), inset -1px -1px 0 var(--p-light);
+}
+.eddie-theme-1 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--p-ink);
+  text-shadow: none;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+/* BEAT: a scanline jump — the whole window nudges + brightens. */
+.eddie-theme-1.eddie-beat .levelselect-inner { transform: translateY(-1px); }
+.eddie-theme-1.eddie-beat-down .levelselect-inner {
+  transform: translateY(-2px);
+  filter: contrast(1.15) brightness(1.08);
+}
+.eddie-theme-1.eddie-beat-down .levelselect-title {
+  background: repeating-linear-gradient(0deg, var(--p-accent) 0 1px, var(--p-paper) 1px 3px);
+}
+
+/* ======================================================================= */
+/* THEME 2 — 1-BIT BLACK & WHITE MAC                                       */
+/* ======================================================================= */
+
+.eddie-theme-2 {
+  --bw-ink: #000;
+  --bw-paper: #fff;
+  --mac-font: "Chicago", "Geneva", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-2 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  box-shadow: 0 0 0 2px var(--bw-paper), 0 0 0 4px var(--bw-ink);
+  image-rendering: pixelated;
+}
+/* Striped title bar (solid 1-bit lines) + close box. */
+.eddie-theme-2 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--bw-ink);
+  text-shadow: none;
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--bw-ink) 0 2px, var(--bw-paper) 2px 4px);
+  border-bottom: 2px solid var(--bw-ink);
+}
+.eddie-theme-2 .levelselect-title::after {
+  content: "";
+  position: absolute;
+  inset: 3px 16px 4px 16px;
+  background: var(--bw-paper);
+  z-index: -1;
+}
+.eddie-theme-2 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+}
+.eddie-theme-2 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-2 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-2 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  text-shadow: none;
+}
+.eddie-theme-2 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  border: 2px solid var(--bw-ink);
+  border-radius: 6px;
+  text-shadow: none;
+  transition: none;
+}
+/* "gray" hover = 50% checkerboard dither. */
+.eddie-theme-2 .eddie-settings-btn:hover {
+  background:
+    repeating-conic-gradient(var(--bw-ink) 0 25%, var(--bw-paper) 0 50%) 0 0 / 2px 2px;
+}
+.eddie-theme-2 .eddie-settings-btn:active {
+  color: var(--bw-paper);
+  background: var(--bw-ink);
+}
+.eddie-theme-2 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 2px solid var(--bw-ink);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--bw-ink) 0 25%, var(--bw-paper) 0 50%) 0 0 / 3px 3px;
+}
+.eddie-theme-2 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--bw-ink);
+  background: var(--bw-paper);
+  padding: 0 4px;
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: invert a horizontal strip across the window (classic 1-bit glitch). */
+.eddie-theme-2.eddie-beat .levelselect-inner::after,
+.eddie-theme-2.eddie-beat-down .levelselect-inner::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  height: 14%;
+  top: 42%;
+  background: var(--bw-ink);
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+.eddie-theme-2.eddie-beat-down .levelselect-inner::after {
+  height: 26%;
+  top: 30%;
+}
+
+/* ======================================================================= */
+/* THEME 3 — APPLE IIgs COLOR                                              */
+/* ======================================================================= */
+
+.eddie-theme-3 {
+  --gs-desk: #20338f;       /* IIgs default blue desktop */
+  --gs-paper: #c7c7c7;
+  --gs-light: #fff;
+  --gs-shadow: #6b6b6b;
+  --gs-ink: #000;
+  --gs-blue: #0040ff;
+  --gs-orange: #ff7a18;
+  --gs-green: #28a428;
+  --gs-magenta: #d020a0;
+  --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-3 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--gs-paper);
+  border: 2px solid var(--gs-ink);
+  border-radius: 0;
+  box-shadow:
+    inset 2px 2px 0 var(--gs-light),
+    inset -2px -2px 0 var(--gs-shadow),
+    0 0 0 4px var(--gs-desk),
+    6px 6px 0 rgba(0, 0, 0, 0.45);
+  image-rendering: pixelated;
+  transition: filter 0.05s steps(2), transform 0.04s steps(1);
+}
+/* Color title bar: striped blue→magenta "active window" bar + orange close box. */
+.eddie-theme-3 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--gs-light);
+  text-shadow: 1px 1px 0 var(--gs-ink);
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background:
+    repeating-linear-gradient(0deg,
+      rgba(255,255,255,0.35) 0 1px, transparent 1px 3px),
+    linear-gradient(90deg, var(--gs-blue), var(--gs-magenta));
+  border-bottom: 2px solid var(--gs-ink);
+}
+.eddie-theme-3 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--gs-orange);
+  border: 1px solid var(--gs-ink);
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,0.7);
+}
+.eddie-theme-3 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-3 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--gs-blue);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-3 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--gs-ink);
+  background: var(--gs-light);
+  border: 1px solid var(--gs-ink);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--gs-shadow);
+  text-shadow: none;
+}
+.eddie-theme-3 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--gs-ink);
+  background: linear-gradient(180deg, #e9f0ff, #b9c8f0);
+  border: 1px solid var(--gs-ink);
+  border-radius: 5px;
+  box-shadow: inset 1px 1px 0 var(--gs-light), inset -1px -1px 0 var(--gs-shadow);
+  text-shadow: none;
+  transition: none;
+}
+.eddie-theme-3 .eddie-settings-btn:hover {
+  background: linear-gradient(180deg, #ffe6cf, var(--gs-orange));
+}
+.eddie-theme-3 .eddie-settings-btn:active {
+  color: var(--gs-light);
+  background: var(--gs-blue);
+  box-shadow: inset 1px 1px 0 #001a66, inset -1px -1px 0 #3a6bff;
+}
+.eddie-theme-3 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 1px solid var(--gs-ink);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--gs-green) 0 25%, var(--gs-ink) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--gs-shadow);
+}
+.eddie-theme-3 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--gs-orange);
+  text-shadow: 1px 1px 0 var(--gs-ink);
+  letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: RGB channel split — cyan/magenta drop-shadow ghosts on the window. */
+.eddie-theme-3.eddie-beat .levelselect-inner {
+  filter: drop-shadow(-1px 0 0 rgba(255,0,200,0.55))
+    drop-shadow(1px 0 0 rgba(0,220,255,0.55));
+}
+.eddie-theme-3.eddie-beat-down .levelselect-inner {
+  filter: drop-shadow(-3px 0 0 rgba(255,0,200,0.85))
+    drop-shadow(3px 0 0 rgba(0,220,255,0.85)) saturate(1.3);
+  transform: translateX(1px);
+}
+
+/* ======================================================================= */
+/* THEME 4 — AMBER TERMINAL (CRT phosphor)                                 */
+/* ======================================================================= */
+
+.eddie-theme-4 {
+  --amb-bg: #100b00;
+  --amb-fg: #ffb000;
+  --amb-dim: #a36b00;
+  --amb-hot: #ffd47a;
+  --mac-font: "Lucida Console", "Consolas", ui-monospace, monospace;
+}
+
+.eddie-theme-4 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 22px 30px 26px;
+  font-family: var(--mac-font);
+  color: var(--amb-fg);
+  background: radial-gradient(120% 90% at 50% 40%, #1a1200 0%, var(--amb-bg) 100%);
+  border: 2px solid var(--amb-dim);
+  border-radius: 10px / 14px;
+  box-shadow:
+    0 0 0 2px #000,
+    0 0 36px rgba(255, 176, 0, 0.25),
+    inset 0 0 60px rgba(255, 176, 0, 0.08);
+}
+/* CRT scanline overlay. */
+.eddie-theme-4 .levelselect-inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg,
+    rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.35) 2px 3px);
+}
+.eddie-theme-4 .levelselect-title {
+  font-family: var(--mac-font);
+  font-size: 26px; font-weight: 700; letter-spacing: 4px;
+  color: var(--amb-hot);
+  text-shadow: 0 0 8px var(--amb-fg), 0 0 18px rgba(255,176,0,0.7);
+  margin-bottom: 20px;
+}
+.eddie-theme-4 .levelselect-title::after {
+  content: "_";
+  animation: eddie-t4-caret 1s steps(1) infinite;
+}
+@keyframes eddie-t4-caret { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
+.eddie-theme-4 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--amb-dim);
+  text-shadow: 0 0 6px rgba(255,176,0,0.4);
+  letter-spacing: 3px; font-weight: 700;
+}
+.eddie-theme-4 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--amb-hot);
+  background: rgba(255,176,0,0.06);
+  border: 1px solid var(--amb-dim);
+  border-radius: 2px;
+  text-shadow: 0 0 8px var(--amb-fg);
+}
+.eddie-theme-4 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--amb-bg);
+  background: var(--amb-fg);
+  border: 1px solid var(--amb-hot);
+  border-radius: 3px;
+  text-shadow: none;
+  box-shadow: 0 0 10px rgba(255,176,0,0.5);
+  transition: none;
+}
+.eddie-theme-4 .eddie-settings-btn:hover {
+  background: var(--amb-hot);
+  box-shadow: 0 0 18px rgba(255,176,0,0.9);
+}
+.eddie-theme-4 .eddie-settings-btn:active {
+  color: var(--amb-hot);
+  background: var(--amb-bg);
+  box-shadow: inset 0 0 12px rgba(255,176,0,0.5);
+}
+.eddie-theme-4 .eddie-settings-timeline {
+  position: relative;
+  border: 1px solid var(--amb-dim);
+  border-radius: 4px;
+  background: #060400;
+  box-shadow: inset 0 0 24px rgba(255,176,0,0.12);
+}
+.eddie-theme-4 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--amb-fg);
+  text-shadow: 0 0 8px var(--amb-fg);
+  letter-spacing: 3px; font-weight: 700;
+}
+/* BEAT: phosphor flicker + a 1px scanline tear nudges the whole screen. */
+.eddie-theme-4.eddie-beat .levelselect-inner { filter: brightness(1.12); }
+.eddie-theme-4.eddie-beat-down .levelselect-inner {
+  filter: brightness(1.3) contrast(1.15);
+  transform: translateY(-1px) skewX(-0.4deg);
+}
+.eddie-theme-4.eddie-beat-down .levelselect-inner::before {
+  background: repeating-linear-gradient(0deg,
+    rgba(255,176,0,0.05) 0 2px, rgba(0,0,0,0.45) 2px 3px);
+}
+
+/* ======================================================================= */
+/* THEME 5 — GREEN / CORRUPTED DESKTOP (datamosh glitch)                   */
+/* ======================================================================= */
+
+.eddie-theme-5 {
+  --grn-bg: #021207;
+  --grn-fg: #39ff7a;
+  --grn-dim: #1f8f47;
+  --grn-hot: #b6ffce;
+  --grn-paper: #06240f;
+  --mac-font: "Lucida Console", "Consolas", ui-monospace, monospace;
+}
+
+.eddie-theme-5 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  color: var(--grn-fg);
+  background: var(--grn-bg);
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  box-shadow:
+    0 0 0 2px #000,
+    0 0 28px rgba(57,255,122,0.2),
+    inset 0 0 50px rgba(57,255,122,0.06);
+  transition: transform 0.04s steps(1), filter 0.04s steps(1);
+}
+/* Datamosh block bands overlay — faint horizontal color bands. */
+.eddie-theme-5 .levelselect-inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent 0 7px, rgba(57,255,122,0.05) 7px 8px),
+    repeating-linear-gradient(0deg,
+      transparent 0 23px, rgba(57,255,122,0.08) 23px 26px);
+}
+.eddie-theme-5 .levelselect-title {
+  position: relative;
+  font-family: var(--mac-font);
+  font-size: 22px; font-weight: 700; letter-spacing: 3px;
+  color: var(--grn-hot);
+  text-shadow: 0 0 8px var(--grn-fg);
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background: repeating-linear-gradient(0deg, var(--grn-dim) 0 1px, transparent 1px 3px);
+  border-bottom: 1px solid var(--grn-dim);
+}
+.eddie-theme-5 .eddie-settings-row { padding: 0 18px; }
+.eddie-theme-5 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--grn-dim);
+  text-shadow: 0 0 5px rgba(57,255,122,0.4);
+  letter-spacing: 2px; font-weight: 700;
+}
+.eddie-theme-5 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--grn-hot);
+  background: var(--grn-paper);
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  text-shadow: 0 0 6px var(--grn-fg);
+}
+.eddie-theme-5 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--grn-bg);
+  background: var(--grn-fg);
+  border: 1px solid var(--grn-hot);
+  border-radius: 2px;
+  text-shadow: none;
+  box-shadow: 0 0 8px rgba(57,255,122,0.4);
+  transition: none;
+}
+.eddie-theme-5 .eddie-settings-btn:hover {
+  background: var(--grn-hot);
+  box-shadow: 0 0 16px rgba(57,255,122,0.8);
+}
+.eddie-theme-5 .eddie-settings-btn:active {
+  color: var(--grn-hot);
+  background: var(--grn-paper);
+  box-shadow: inset 0 0 10px rgba(57,255,122,0.5);
+}
+.eddie-theme-5 .eddie-settings-timeline {
+  margin: 18px 18px 8px;
+  border: 1px solid var(--grn-dim);
+  border-radius: 0;
+  background:
+    repeating-conic-gradient(var(--grn-dim) 0 25%, var(--grn-bg) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 0 0 18px rgba(57,255,122,0.15);
+}
+.eddie-theme-5 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--grn-fg);
+  text-shadow: 0 0 8px var(--grn-fg);
+  letter-spacing: 2px; font-weight: 700;
+}
+/* BEAT: hard datamosh — title tears sideways, window shifts + RGB ghost. */
+.eddie-theme-5.eddie-beat .levelselect-title { transform: translateX(2px); }
+.eddie-theme-5.eddie-beat-down .levelselect-inner {
+  transform: translateX(-2px);
+  filter: drop-shadow(-2px 0 0 rgba(255,0,200,0.7))
+    drop-shadow(2px 0 0 rgba(0,220,255,0.7));
+}
+.eddie-theme-5.eddie-beat-down .levelselect-title {
+  transform: translateX(-6px) skewX(-3deg);
+  text-shadow: 3px 0 0 rgba(255,0,200,0.8), -3px 0 0 rgba(0,220,255,0.8),
+    0 0 8px var(--grn-fg);
+}
+/* A tearing band that snaps in on the downbeat. */
+.eddie-theme-5.eddie-beat-down .levelselect-inner::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  top: 56%;
+  height: 9%;
+  background: rgba(57,255,122,0.18);
+  border-top: 1px solid var(--grn-hot);
+  border-bottom: 1px solid var(--grn-hot);
+  transform: translateX(5px);
+  pointer-events: none;
+}
+
+/* ======================================================================= */
+/* THEME 6 — DITHERED PASTEL                                               */
+/* ======================================================================= */
+
+.eddie-theme-6 {
+  --ps-paper: #efeaf6;
+  --ps-mint: #b8f0dd;
+  --ps-peach: #ffd9c2;
+  --ps-lav: #d8c8ff;
+  --ps-light: #fff;
+  --ps-shadow: #b0a6c0;
+  --ps-ink: #3a2f4a;
+  --ps-accent: #b06bd8;
+  --mac-font: "Geneva", "Chicago", "Lucida Console", ui-monospace, monospace;
+}
+
+.eddie-theme-6 .levelselect-inner {
+  position: relative;
+  overflow: hidden;
+  padding: 0 0 24px;
+  font-family: var(--mac-font);
+  background: var(--ps-paper);
+  border: 2px solid var(--ps-ink);
+  border-radius: 6px;
+  box-shadow:
+    inset 2px 2px 0 var(--ps-light),
+    inset -2px -2px 0 var(--ps-shadow),
+    5px 5px 0 rgba(58,47,74,0.3);
+  image-rendering: pixelated;
+  transition: filter 0.06s steps(2), transform 0.06s steps(1);
+  z-index: 0;
+}
+/* Ordered-dither pastel matte behind everything. */
+.eddie-theme-6 .levelselect-inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    repeating-conic-gradient(rgba(184,240,221,0.5) 0 25%, transparent 0 50%) 0 0 / 6px 6px,
+    repeating-conic-gradient(rgba(216,200,255,0.4) 0 25%, transparent 0 50%) 3px 3px / 6px 6px;
+  opacity: 0.5;
+}
+/* Pastel pinstriped title bar + close box. */
+.eddie-theme-6 .levelselect-title {
+  position: relative;
+  z-index: 1;
+  font-family: var(--mac-font);
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  color: var(--ps-ink);
+  text-shadow: none;
+  margin: 0 0 22px;
+  padding: 7px 0;
+  background:
+    repeating-linear-gradient(0deg, var(--ps-accent) 0 1px, transparent 1px 3px),
+    linear-gradient(90deg, var(--ps-mint), var(--ps-lav));
+  border-bottom: 2px solid var(--ps-ink);
+}
+.eddie-theme-6 .levelselect-title::after {
+  content: "";
+  position: absolute;
+  inset: 4px 16px 5px 16px;
+  background: var(--ps-paper);
+  z-index: 0;
+}
+.eddie-theme-6 .levelselect-title::before {
+  content: "";
+  position: absolute; left: 9px; top: 50%;
+  transform: translateY(-50%);
+  width: 11px; height: 11px;
+  background: var(--ps-peach);
+  border: 1px solid var(--ps-ink);
+  z-index: 2;
+}
+.eddie-theme-6 .eddie-settings-row { position: relative; z-index: 1; padding: 0 18px; }
+.eddie-theme-6 .eddie-settings-label {
+  font-family: var(--mac-font);
+  color: var(--ps-accent);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+.eddie-theme-6 .eddie-settings-value {
+  font-family: var(--mac-font);
+  color: var(--ps-ink);
+  background: var(--ps-light);
+  border: 1px solid var(--ps-ink);
+  border-radius: 2px;
+  box-shadow: inset 1px 1px 0 var(--ps-shadow);
+  text-shadow: none;
+}
+.eddie-theme-6 .eddie-settings-btn {
+  font-family: var(--mac-font);
+  color: var(--ps-ink);
+  background: linear-gradient(180deg, var(--ps-light), var(--ps-mint));
+  border: 1px solid var(--ps-ink);
+  border-radius: 6px;
+  box-shadow: inset 1px 1px 0 var(--ps-light), inset -1px -1px 0 var(--ps-shadow);
+  text-shadow: none;
+  transition: none;
+}
+.eddie-theme-6 .eddie-settings-btn:hover {
+  background: linear-gradient(180deg, var(--ps-light), var(--ps-peach));
+}
+.eddie-theme-6 .eddie-settings-btn:active {
+  color: var(--ps-light);
+  background: var(--ps-accent);
+  box-shadow: inset 1px 1px 0 #7a4a9a, inset -1px -1px 0 #cf9ae8;
+}
+.eddie-theme-6 .eddie-settings-timeline {
+  position: relative;
+  z-index: 1;
+  margin: 18px 18px 8px;
+  border: 1px solid var(--ps-ink);
+  border-radius: 3px;
+  background:
+    repeating-conic-gradient(var(--ps-lav) 0 25%, var(--ps-paper) 0 50%) 0 0 / 4px 4px;
+  box-shadow: inset 2px 2px 0 var(--ps-shadow), inset -1px -1px 0 var(--ps-light);
+}
+.eddie-theme-6 .eddie-settings-timeline .menupulse-label {
+  font-family: var(--mac-font);
+  color: var(--ps-accent);
+  text-shadow: none; letter-spacing: 1px; font-weight: 700;
+}
+/* BEAT: gentle dither shimmer + soft RGB ghost. */
+.eddie-theme-6.eddie-beat .levelselect-inner::before { opacity: 0.75; }
+.eddie-theme-6.eddie-beat-down .levelselect-inner {
+  filter: drop-shadow(-1px 0 0 rgba(255,140,220,0.6))
+    drop-shadow(1px 0 0 rgba(120,220,255,0.6)) brightness(1.05);
+  transform: translateY(-1px);
+}
+.eddie-theme-6.eddie-beat-down .levelselect-inner::before {
+  opacity: 0.9;
+  background:
+    repeating-conic-gradient(rgba(255,140,220,0.5) 0 25%, transparent 0 50%) 0 0 / 6px 6px,
+    repeating-conic-gradient(rgba(120,220,255,0.45) 0 25%, transparent 0 50%) 3px 3px / 6px 6px;
+}
+
+/* ======================================================================= */
+/* MARKUP REQUESTS                                                         */
+/* ======================================================================= */
+/* None required for the CSS — all six themes + beat reactions are pure CSS
+ * (gradients, box-shadows, ::before/::after) on the existing elements.
+ *
+ * Integration the lead owns (JS, out of scope for this file):
+ *  1) import "./settings-themes.css" once.
+ *  2) Add ONE theme class (.eddie-theme-1 … .eddie-theme-6) onto the existing
+ *     `.outrun-levelselect.eddie-settings` root element.
+ *  3) BEAT GLITCH hook: on each Conductor beat, add `.eddie-beat` to that same
+ *     root (and `.eddie-beat-down` on the downbeat), then remove after ~110ms.
+ *     The themes transition/snap off automatically. (The PLAY button reads these
+ *     classes from its parent too — see EddiePlayButton.ts.)
+ *
+ * Note: each theme keeps a dark or neutral timeline interior so the GUITAR
+ * canvas (drawGrid/drawPulse paint magenta+cyan in JS) still reads. Recoloring
+ * the canvas grid per-theme (e.g. amber for theme-4, green for theme-5) would be
+ * a JS change in EddieSettingsState.drawGrid — out of scope for this CSS file.
+ */
