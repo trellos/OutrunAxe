@@ -200,7 +200,11 @@ export class EddieSettingsState implements GameState {
     }
     const sorted = [...run].sort((a, b) => a - b);
     const med = sorted[Math.floor(sorted.length / 2)];
-    this.lockCalibration(Math.max(0, Math.min(0.4, med)));
+    // The offset can be NEGATIVE: players commonly anticipate, landing ahead of
+    // the click, so detected onsets sit BEFORE the beat. A negative offset shifts
+    // bars right (later) onto the beat. Do NOT floor at 0 — that was the bug that
+    // discarded every early-playing measurement and applied zero compensation.
+    this.lockCalibration(Math.max(-0.3, Math.min(0.4, med)));
   }
 
   /** Signed offset of an onset from its nearest beat (grid = measureStart ± k·beatDur). */
@@ -214,8 +218,8 @@ export class EddieSettingsState implements GameState {
     try {
       localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(cal * 1000)));
     } catch { /* no storage */ }
-    this.setSyncHint(`calibrated ${Math.round(cal * 1000)} ms — tap RESYNC to redo`);
-    this.setCalPrompt(`✓ Calibrated ${Math.round(cal * 1000)} ms`);
+    this.setSyncHint("calibrated — tap RESYNC to redo");
+    this.setCalPrompt("✓ Locked in");
     this.setCalFill(1);
     this.exitGate();
   }
@@ -235,7 +239,7 @@ export class EddieSettingsState implements GameState {
   /** RESYNC-row text: confirms the saved calibration. */
   private syncDefaultHint(): string {
     if (this.forcedCalSec !== null) return `forced ${Math.round(this.forcedCalSec * 1000)} ms (?cal)`;
-    if (this.calibratedSec !== null) return `calibrated ${Math.round(this.calibratedSec * 1000)} ms`;
+    if (this.calibratedSec !== null) return "calibrated ✓";
     return "not calibrated yet";
   }
 
