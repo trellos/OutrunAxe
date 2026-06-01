@@ -32,6 +32,7 @@ import type {
 import { createEddieArt, type EddieArtRig } from "../eddie/art/eddieArtFactory";
 import { BACKGROUNDS } from "../eddie/art/backgrounds/registry";
 import { audioBufferToWav } from "../audio/wavEncode";
+import { PerfHud } from "../hud/PerfHud";
 import type { OnsetEvent, PitchUpdate, NoteEnd } from "../audio/PitchEngine";
 import {
   createEddieAudio,
@@ -176,6 +177,9 @@ export class InfiniteEddieState implements GameState {
   /** Manual intensity override (>=0 active; -1 = off). Set by [ ] keys. */
   private manualIntensity = -1;
   private demoHud: HTMLDivElement | null = null;
+  /** Realtime diagnostics overlay (?perf=1) — fps/beats/onsets during play. */
+  private perfHud: PerfHud | null = null;
+  private offPerfOnset?: () => void;
 
   /** Record/debug mode: capture the full detection stream + input audio for
    *  offline diagnosis (set by the Eddie debug menu). */
@@ -263,6 +267,7 @@ export class InfiniteEddieState implements GameState {
     // Beat -> beat-pulse juice + active-measure tracking. Read directly off the
     // Conductor clock (never rAF).
     this.offBeat = this.conductor.onBeat((info) => {
+      this.perfHud?.noteBeat();
       if (info.phase === "countIn") {
         if (info.beatInPhase === 0 && this.introStart < 0) {
           this.introStart = info.time;
@@ -304,6 +309,7 @@ export class InfiniteEddieState implements GameState {
     });
 
     this.offPhase = this.conductor.onPhaseChange((p) => {
+      if (p === "done") this.perfHud?.setPlaying(false); // beats stop normally now
       if (p === "done" && this.finishedAt === 0) {
         this.finishedAt = this.conductor.audioTime + DONE_LINGER_SEC;
       }
@@ -408,6 +414,15 @@ export class InfiniteEddieState implements GameState {
     if (this.demo) this.buildDemoHud();
     if (this.capture) this.setupCapture();
 
+    // Realtime diagnostics overlay during play (?perf=1): fps, worst-frame split,
+    // onsets/s, beats/s (+ BEAT DROPPED), GPU string.
+    if (new URLSearchParams(location.search).has("perf")) {
+      this.perfHud = new PerfHud();
+      this.perfHud.mount(this.hudParent);
+      this.perfHud.setPlaying(true);
+      this.offPerfOnset = this.tracker.onOnset(() => this.perfHud?.noteOnset());
+    }
+
     void this.startEngine();
   }
 
@@ -510,6 +525,10 @@ export class InfiniteEddieState implements GameState {
 
     this.demoHud?.remove();
     this.demoHud = null;
+
+    this.offPerfOnset?.();
+    this.perfHud?.dispose();
+    this.perfHud = null;
 
     this.offCapOnset?.();
     this.offCapPitch?.();
