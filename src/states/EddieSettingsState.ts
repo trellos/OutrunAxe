@@ -107,14 +107,16 @@ export class EddieSettingsState implements GameState {
   // --- Latency calibration -------------------------------------------------
   // The browser UNDER-REPORTS real mic latency on Windows (reports ~60ms when
   // the true round-trip is ~190ms — shared-mode WASAPI input buffering it never
-  // exposes), so latency cannot be computed up front; it must be MEASURED. And
-  // it can't be inferred from arbitrary playing either — there's no guarantee
-  // the player is trying to be on the beat. So calibration is an EXPLICIT,
-  // guided routine: the player taps SYNC, is told to play a note on each beat
-  // for two bars, and we measure the median onset-vs-beat offset. The result is
-  // PERSISTED, so it's a one-time step — every later session (and the play
-  // screen) starts pre-calibrated. Optional ?cal=<ms> forces a value (debug).
+  // exposes), so latency can't be computed up front; it must be MEASURED. It
+  // also can't be inferred from arbitrary playing — no guarantee the player is
+  // on the beat. So when the screen opens uncalibrated it shows ONLY the
+  // metronome + timeline + "Play quarter notes when you're ready", watches for
+  // N consecutive notes spaced AND phased like deliberate quarter notes,
+  // measures the median onset-vs-beat offset, PERSISTS it, then reveals the full
+  // settings UI. One-time: later sessions (and the play screen) start
+  // pre-calibrated; RESYNC redoes it. ?cal=<ms> forces a value (debug).
   private static readonly LS_LATENCY = "eddie.latencyMs";
+  private static readonly CAL_NOTES = 8; // consecutive quarter notes required
   private calibratedSec: number | null = (() => {
     const m = EddieSettingsState.readSeedMs();
     return m !== null ? m / 1000 : null;
@@ -124,16 +126,13 @@ export class EddieSettingsState implements GameState {
     return url !== null && !Number.isNaN(parseFloat(url)) ? parseFloat(url) / 1000 : null;
   })();
 
-  // Guided-calibration runtime state.
-  private calPhase: "idle" | "arming" | "countin" | "capture" = "idle";
-  private calBeatsSeen = 0;
-  private calOnsets: number[] = [];
-  private calBeats: number[] = [];
+  // Calibration-gate runtime state.
+  private calGate = false;
+  private calStreak: number[] = []; // onset-vs-beat offsets of the current run
+  private calLastOnset = -1;
   private syncBtn: HTMLButtonElement | null = null;
   private syncHint: HTMLElement | null = null;
-  /** Beats of count-in, then beats of playing, in the guided SYNC routine. */
-  private static readonly CAL_COUNTIN = 4;
-  private static readonly CAL_CAPTURE = 8;
+  private banner: HTMLElement | null = null;
 
   private static readSeedMs(): number | null {
     try {
@@ -143,100 +142,92 @@ export class EddieSettingsState implements GameState {
     return null;
   }
 
+  /** Gate the screen on calibration when uncalibrated (and not forced via ?cal). */
+  private needsCalibration(): boolean {
+    return this.forcedCalSec === null && this.calibratedSec === null;
+  }
+
   /** Offset to subtract from detected times when drawing bars. */
   private latencyOffset(): number {
     if (this.forcedCalSec !== null) return this.forcedCalSec;
     if (this.calibratedSec !== null) return this.calibratedSec;
-    // Not yet calibrated: best-effort from the (under-reported) OS estimate so
-    // bars aren't wildly off before the one-time SYNC.
-    return this.tracker?.latencyComp ?? 0;
+    return this.tracker?.latencyComp ?? 0; // pre-calibration best-effort
   }
 
-  /** Begin the guided SYNC routine: count-in, then 2 bars of "play on each beat". */
-  private startCalibration() {
-    if (this.calPhase !== "idle") return;
-    this.calPhase = "arming"; // wait for the next downbeat to align the routine
-    this.calBeatsSeen = 0;
-    this.calOnsets = [];
-    this.calBeats = [];
-    if (this.syncBtn) this.syncBtn.disabled = true;
-    this.setSyncHint("Get ready…");
+  /** Enter the calibration gate: hide the settings UI, prompt for quarter notes. */
+  private enterGate() {
+    this.calGate = true;
+    this.calStreak = [];
+    this.calLastOnset = -1;
+    this.overlay?.classList.add("eddie-cal-gate");
+    if (this.banner) this.banner.textContent = "Play quarter notes when you're ready";
   }
 
-  /** Drive the SYNC routine off the conductor's beat callback. */
-  private calibrationOnBeat(info: { beat: number; time: number }) {
-    const onDownbeat = info.beat % BEATS === 0;
-    if (this.calPhase === "arming") {
-      if (!onDownbeat) return; // align start to a measure boundary
-      this.calPhase = "countin";
-      this.calBeatsSeen = 0;
+  /** Leave the gate and reveal the full settings UI. */
+  private exitGate() {
+    this.calGate = false;
+    this.overlay?.classList.remove("eddie-cal-gate");
+  }
+
+  /** A real onset during the gate — extend the quarter-note run; once N
+   *  consistent ones land, lock in the latency and reveal the settings. */
+  private onCalibrationOnset(t: number) {
+    if (this.measureStart < 0) return; // need the beat grid first
+    const beatDur = 60 / this.bpm;
+    if (this.calLastOnset >= 0) {
+      const ioi = t - this.calLastOnset;
+      // Break the run if the spacing isn't quarter-note-ish (rejects eighths,
+      // halves, fumbles). ±30% of the quarter interval.
+      if (ioi <= beatDur * 0.7 || ioi >= beatDur * 1.3) this.calStreak = [];
     }
-    if (this.calPhase === "countin") {
-      this.calBeatsSeen++;
-      const left = EddieSettingsState.CAL_COUNTIN - this.calBeatsSeen + 1;
-      this.setSyncHint(`Get ready — play ONE note on each beat… ${Math.max(1, left)}`);
-      if (this.calBeatsSeen >= EddieSettingsState.CAL_COUNTIN) {
-        this.calPhase = "capture";
-        this.calBeatsSeen = 0;
-        this.calOnsets = [];
-        this.calBeats = [];
-      }
+    this.calLastOnset = t;
+    this.calStreak.push(this.beatOffset(t, beatDur));
+
+    const need = EddieSettingsState.CAL_NOTES;
+    if (this.calStreak.length < need) {
+      if (this.banner) this.banner.textContent = `Keep a steady beat… ${this.calStreak.length}/${need}`;
       return;
     }
-    if (this.calPhase === "capture") {
-      this.calBeats.push(info.time);
-      this.calBeatsSeen++;
-      this.setSyncHint(`Play! ♪ on each beat — ${this.calBeatsSeen}/${EddieSettingsState.CAL_CAPTURE}`);
-      // Finish one beat AFTER the last capture beat, so the final note's onset
-      // (which lands ~latency after the beat) has time to arrive.
-      if (this.calBeatsSeen > EddieSettingsState.CAL_CAPTURE) this.finishCalibration();
+    // N quarter-spaced notes in a row. Require their offsets be tight (a real
+    // lock to the beat, not drifting) before trusting the measurement.
+    const run = this.calStreak.slice(-need);
+    const mean = run.reduce((a, b) => a + b, 0) / run.length;
+    const sd = Math.sqrt(run.reduce((a, b) => a + (b - mean) ** 2, 0) / run.length);
+    if (sd > 0.05) {
+      if (this.banner) this.banner.textContent = "A little uneven — keep playing steady quarter notes";
+      this.calStreak.shift(); // slide the window and keep listening
+      return;
     }
+    const sorted = [...run].sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)];
+    this.lockCalibration(Math.max(0, Math.min(0.4, med)));
   }
 
-  private finishCalibration() {
-    const beatDur = 60 / this.bpm;
-    // Each onset → offset from its nearest captured beat. Drop wild outliers
-    // (missed/extra notes) beyond half a beat; latency is always < that.
-    const offs = this.calOnsets
-      .map((t) => {
-        let best = 0;
-        let bd = Infinity;
-        for (const b of this.calBeats) {
-          const d = Math.abs(t - b);
-          if (d < bd) { bd = d; best = b; }
-        }
-        return t - best;
-      })
-      .filter((d) => Math.abs(d) < beatDur * 0.5)
-      .sort((a, b) => a - b);
+  /** Signed offset of an onset from its nearest beat (grid = measureStart ± k·beatDur). */
+  private beatOffset(t: number, beatDur: number): number {
+    const k = Math.round((t - this.measureStart) / beatDur);
+    return t - (this.measureStart + k * beatDur);
+  }
 
-    this.calPhase = "idle";
-    if (this.syncBtn) this.syncBtn.disabled = false;
-
-    if (offs.length >= 4) {
-      const med = offs[Math.floor(offs.length / 2)];
-      const cal = Math.max(0, Math.min(0.4, med)); // sane clamp
-      this.calibratedSec = cal;
-      try {
-        localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(cal * 1000)));
-      } catch { /* no storage */ }
-      this.setSyncHint(`✓ Calibrated: ${Math.round(cal * 1000)} ms — saved`);
-    } else {
-      this.setSyncHint("Didn't catch enough notes — tap SYNC and play one note per beat");
-    }
+  private lockCalibration(cal: number) {
+    this.calibratedSec = cal;
+    try {
+      localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(cal * 1000)));
+    } catch { /* no storage */ }
+    this.setSyncHint(`calibrated ${Math.round(cal * 1000)} ms — tap RESYNC to redo`);
+    if (this.banner) this.banner.textContent = `✓ Calibrated ${Math.round(cal * 1000)} ms`;
+    this.exitGate();
   }
 
   private setSyncHint(text: string) {
     if (this.syncHint) this.syncHint.textContent = text;
   }
 
-  /** Initial SYNC-row text: confirms an existing calibration or prompts for one. */
+  /** RESYNC-row text: confirms the saved calibration. */
   private syncDefaultHint(): string {
     if (this.forcedCalSec !== null) return `forced ${Math.round(this.forcedCalSec * 1000)} ms (?cal)`;
-    if (this.calibratedSec !== null) {
-      return `calibrated ${Math.round(this.calibratedSec * 1000)} ms — tap to redo`;
-    }
-    return "tap, then play one note on each beat for 2 bars";
+    if (this.calibratedSec !== null) return `calibrated ${Math.round(this.calibratedSec * 1000)} ms`;
+    return "not calibrated yet";
   }
 
 
@@ -393,33 +384,34 @@ export class EddieSettingsState implements GameState {
 
     overlay.innerHTML = `
       <div class="levelselect-inner">
-        <div class="levelselect-title">INFINITE EDDIE</div>
-        <div class="eddie-settings-row">
+        <div class="levelselect-title"><span>INFINITE EDDIE</span></div>
+        <div class="eddie-cal-banner" data-field="banner">Play quarter notes when you're ready</div>
+        <div class="eddie-settings-row eddie-hide-on-gate">
           <span class="eddie-settings-label">TEMPO</span>
           <button class="eddie-settings-btn" data-act="bpm-down">&minus;</button>
           <span class="eddie-settings-value" data-field="bpm">${this.bpm} BPM</span>
           <button class="eddie-settings-btn" data-act="bpm-up">+</button>
         </div>
-        <div class="eddie-settings-row">
+        <div class="eddie-settings-row eddie-hide-on-gate">
           <span class="eddie-settings-label">KEY</span>
           <select class="eddie-settings-select" data-field="key-root">${this.keyOptions()}</select>
           <label class="eddie-settings-radio"><input type="radio" name="eddie-mode" value="major"${this.keyMode === "major" ? " checked" : ""}><span>Major</span></label>
           <label class="eddie-settings-radio"><input type="radio" name="eddie-mode" value="minor"${this.keyMode === "minor" ? " checked" : ""}><span>Minor</span></label>
         </div>
-        <div class="eddie-settings-row">
+        <div class="eddie-settings-row eddie-hide-on-gate">
           <span class="eddie-settings-label">BASS</span>
           <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
         </div>
-        <div class="eddie-settings-timeline"></div>
-        <div class="eddie-settings-row eddie-sync-row">
-          <button class="eddie-sync-btn" type="button">SYNC</button>
+        <div class="eddie-settings-row eddie-sync-row eddie-hide-on-gate">
+          <button class="eddie-sync-btn" type="button">RESYNC</button>
           <span class="eddie-sync-hint">${this.syncDefaultHint()}</span>
         </div>
-        <div class="eddie-settings-row eddie-rec-row">
+        <div class="eddie-settings-timeline"></div>
+        <div class="eddie-settings-row eddie-rec-row eddie-hide-on-gate">
           <button class="eddie-rec-btn" type="button">&#9679; RECORD</button>
           <span class="eddie-rec-hint">play a few bars, then it downloads your audio + detected notes</span>
         </div>
-        <div class="eddie-settings-play"></div>
+        <div class="eddie-settings-play eddie-hide-on-gate"></div>
       </div>
     `;
     this.hudParent.appendChild(overlay);
@@ -454,10 +446,18 @@ export class EddieSettingsState implements GameState {
     this.recHint = overlay.querySelector<HTMLElement>(".eddie-rec-hint");
     this.recBtn?.addEventListener("click", () => this.toggleRec());
 
-    // SYNC button: one-time guided latency calibration.
+    // RESYNC button + calibration banner. RESYNC re-runs the one-time gate.
     this.syncBtn = overlay.querySelector<HTMLButtonElement>(".eddie-sync-btn");
     this.syncHint = overlay.querySelector<HTMLElement>(".eddie-sync-hint");
-    this.syncBtn?.addEventListener("click", () => this.startCalibration());
+    this.banner = overlay.querySelector<HTMLElement>('[data-field="banner"]');
+    this.syncBtn?.addEventListener("click", () => this.enterGate());
+
+    // First-ever entry with no saved calibration: gate on it immediately —
+    // show only the metronome + timeline + prompt until the player locks it in.
+    // ?resync forces the gate even when a value is saved (QA/debug).
+    if (this.needsCalibration() || new URLSearchParams(location.search).has("resync")) {
+      this.enterGate();
+    }
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -585,7 +585,6 @@ export class EddieSettingsState implements GameState {
     this.offBeat = this.conductor.onBeat((info) => {
       this.perf?.noteBeat();
       if (this.recording) this.capBeats.push(info.time);
-      if (this.calPhase !== "idle") this.calibrationOnBeat(info);
       // Beat-synced glitch hook: theme CSS reacts to .eddie-beat (every beat) and
       // .eddie-beat-down (downbeat) to flicker/RGB-split the settings UI in time.
       const root = this.overlay;
@@ -632,9 +631,9 @@ export class EddieSettingsState implements GameState {
         this.timelineNotes.set(e.id, { start: e.time, end: e.time, ended: false, midi: -1 });
       }
       this.pruneTimelineNotes(e.time);
-      // Collect onsets only during the guided SYNC capture window — never from
-      // arbitrary playing (no guarantee the player is on the beat then).
-      if (this.calPhase === "capture" && !e.synthetic) this.calOnsets.push(e.time);
+      // During the calibration gate, feed real onsets to the quarter-note
+      // detector (never synthetic bass/metronome events).
+      if (this.calGate && !e.synthetic) this.onCalibrationOnset(e.time);
       if (this.recording) {
         this.capOnsets.push({ time: e.time, energy: e.energy, synthetic: e.synthetic });
         this.updateRecHint();
@@ -681,12 +680,6 @@ export class EddieSettingsState implements GameState {
       ctx.lineTo(x, canvas.height);
       ctx.stroke();
     }
-    // Beat numbers (1..4) so the downbeat is unmistakable.
-    ctx.fillStyle = "rgba(180,230,255,0.55)";
-    ctx.font = "9px monospace";
-    for (let b = 0; b < BEATS; b++) {
-      ctx.fillText(String(b + 1), (b === 0 ? 3 : b * PX_PER_BEAT + 3), 10);
-    }
   }
 
   /** Drop notes older than ~one measure so the map stays small. */
@@ -708,7 +701,7 @@ export class EddieSettingsState implements GameState {
     if (!ctx || !canvas || !this.conductor || this.measureStart < 0) return;
     const beatDur = 60 / this.conductor.currentBpm;
     const span = BEATS * beatDur;
-    this.drawGrid(); // clears + background + subdivision gridlines + numbers
+    this.drawGrid(); // clears + background + subdivision gridlines
 
     const now = this.conductor.audioTime;
     const outLat = getAudioContext().outputLatency || 0;

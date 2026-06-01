@@ -456,32 +456,23 @@
   opacity: 0.85;
 }
 
-/* SYNC — one-time guided latency calibration. */
+/* RESYNC — re-run the one-time latency calibration. */
 .eddie-sync-row {
   flex-wrap: wrap;
 }
 .eddie-sync-btn {
   font-family: monospace;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
   letter-spacing: 2px;
   color: var(--eddie-purple, #1a0f2e);
   background: linear-gradient(180deg, #00f0ff, #00bcd4);
   border: 2px solid #fff;
   border-radius: 4px;
-  padding: 6px 16px;
+  padding: 4px 12px;
   cursor: pointer;
   pointer-events: auto;
-  box-shadow: 0 0 14px rgba(0, 240, 255, 0.6);
-}
-.eddie-sync-btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-  animation: eddie-sync-pulse 0.6s ease-in-out infinite;
-}
-@keyframes eddie-sync-pulse {
-  0%, 100% { box-shadow: 0 0 10px rgba(0, 240, 255, 0.5); }
-  50% { box-shadow: 0 0 22px rgba(0, 240, 255, 1); }
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.5);
 }
 .eddie-sync-hint {
   font-family: monospace;
@@ -489,6 +480,26 @@
   letter-spacing: 1px;
   color: #9fd9ff;
   opacity: 0.85;
+}
+
+/* Calibration gate: hide the settings UI, show a single big prompt over the
+   timeline until the player plays enough on-the-beat quarter notes. */
+.eddie-cal-banner {
+  display: none;
+}
+.eddie-cal-gate .eddie-cal-banner {
+  display: block;
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #00f0ff;
+  text-align: center;
+  margin: 6px 0 14px;
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.7);
+}
+.eddie-cal-gate .eddie-hide-on-gate {
+  display: none !important;
 }
 
 /* Bass window — one chip per measure root; the active one lights up in time. */
