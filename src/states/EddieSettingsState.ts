@@ -105,21 +105,37 @@ export class EddieSettingsState implements GameState {
     { start: number; end: number; ended: boolean; midi: number }
   >();
   // --- Auto latency calibration -------------------------------------------
-  // The player plays to the metronome, so their onsets land at a CONSTANT
-  // offset from the beat grid — that offset is the round-trip latency. We
-  // estimate it from the playing itself (circular mean of onsets vs the
-  // sixteenth grid, disambiguated by the known output latency) and subtract it
-  // when drawing, so bars land on the beat with zero user setup. Optional
-  // ?cal=<ms> forces a fixed offset for debugging.
-  private autoOffsetSec = 0;
-  private autoOffsetInit = false;
+  // The browser UNDER-REPORTS real mic latency on Windows (reports ~60ms when
+  // the true round-trip is ~190ms — shared-mode WASAPI input buffering it never
+  // exposes). So latency cannot be computed up front; it must be MEASURED. The
+  // player plays to the metronome, so their onsets land at a CONSTANT offset
+  // from the beat grid — that offset is the round-trip latency. We recover it
+  // (circular mean of onsets vs the sixteenth grid, disambiguated by the prior)
+  // and PERSIST it, so the first session calibrates during the count-in and
+  // every session after starts pre-calibrated from note one. Zero user setup.
+  // Optional ?cal=<ms> forces a fixed offset for debugging.
+  private static readonly LS_LATENCY = "eddie.latencyMs";
+  private readonly seedMs: number | null = EddieSettingsState.readSeedMs();
+  private autoOffsetSec = this.seedMs !== null ? this.seedMs / 1000 : 0;
+  // A persisted value is trusted from note one; a fresh machine starts false
+  // and converges over the first few onsets (during the count-in).
+  private autoOffsetInit = this.seedMs !== null;
   private onsetTimesBuf: number[] = [];
+  private latencySamples = 0;
   private readonly forcedCalSec: number | null = (() => {
     const url = new URLSearchParams(location.search).get("cal");
     return url !== null && !Number.isNaN(parseFloat(url)) ? parseFloat(url) / 1000 : null;
   })();
 
-  /** Refine the latency estimate from a new real onset. */
+  private static readSeedMs(): number | null {
+    try {
+      const v = localStorage.getItem(EddieSettingsState.LS_LATENCY);
+      if (v !== null && !Number.isNaN(parseFloat(v))) return parseFloat(v);
+    } catch { /* no storage */ }
+    return null;
+  }
+
+  /** Refine the latency estimate from a new real onset, and persist it. */
   private refineLatency(onsetTime: number) {
     if (this.measureStart < 0) return;
     this.onsetTimesBuf.push(onsetTime);
@@ -139,14 +155,22 @@ export class EddieSettingsState implements GameState {
     let mean = Math.atan2(sy, sx);
     if (mean < 0) mean += 2 * Math.PI;
     const dSub = (mean / (2 * Math.PI)) * sixDur; // [0, sixDur)
-    // Pick the whole-sixteenth multiple nearest the known output latency so the
-    // absolute offset (not just sub-grid phase) is right.
-    const prior = (getAudioContext().outputLatency || 0) + 0.06;
+    // Disambiguate the whole-sixteenth count: the persisted value is the best
+    // prior (within a grid-step of truth); else fall back to the OS estimate.
+    // This must be within ±half a sixteenth of the real offset to pick right.
+    const prior =
+      this.seedMs !== null ? this.seedMs / 1000 : (getAudioContext().outputLatency || 0) + 0.06;
     const k = Math.max(0, Math.round((prior - dSub) / sixDur));
     const est = dSub + k * sixDur;
-    // Seed from the OS latency estimate, then ease toward the measured offset.
+    // Ease toward the measured offset (or take it directly on a fresh machine).
     this.autoOffsetSec = this.autoOffsetInit ? this.autoOffsetSec * 0.6 + est * 0.4 : est;
     this.autoOffsetInit = true;
+    // Persist once the estimate has stabilised so future sessions start calibrated.
+    if (++this.latencySamples >= 6) {
+      try {
+        localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(this.autoOffsetSec * 1000)));
+      } catch { /* no storage */ }
+    }
   }
 
   /** Offset to subtract from detected times when drawing bars. */
@@ -766,6 +790,28 @@ export class EddieSettingsState implements GameState {
     }
   }
 
+  /** Per-onset record of what the timeline DREW, vs the beat grid — so a
+   *  recording can be verified against the on-screen result without guessing. */
+  private buildDisplayLog() {
+    const cal = this.latencyOffset();
+    const beatDur = 60 / this.bpm;
+    const sixDur = beatDur / 4;
+    const b0 = this.capBeats.length > 0 ? this.capBeats[0] : 0;
+    return this.capOnsets
+      .filter((o) => !o.synthetic)
+      .map((o) => {
+        const displayedTime = o.time - cal;
+        let g = ((displayedTime - b0) % sixDur + sixDur) % sixDur;
+        if (g > sixDur / 2) g -= sixDur;
+        return {
+          detectedTime: o.time,
+          displayedTime,
+          appliedOffsetMs: Math.round(cal * 1000),
+          gridOffsetMs: Math.round(g * 1000),
+        };
+      });
+  }
+
   private stopRecAndDownload() {
     this.recording = false;
     if (this.recBtn) {
@@ -792,6 +838,11 @@ export class EddieSettingsState implements GameState {
       pitches: this.capPitches,
       noteEnds: this.capNoteEnds,
       beats: this.capBeats,
+      // What the timeline actually DREW: each real onset's displayed time (after
+      // subtracting the applied latency offset) and how far that lands from the
+      // nearest 1/16 grid line. This makes the file an exact record of the
+      // on-screen result — gridOffsetMs ≈ 0 means the bar sat on the beat.
+      display: this.buildDisplayLog(),
     };
     this.downloadBlob(
       new Blob([JSON.stringify(log, null, 2)], { type: "application/json" }),
