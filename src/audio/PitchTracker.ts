@@ -278,11 +278,17 @@ export class PitchTracker {
 
   private totalBias() {
     // Round-trip latency to compensate so a note played on the beat renders on
-    // the beat: output (you hear the click late) + input (your sound reaches the
-    // worklet late) + a manual calibration trim. Uses the device's measured
-    // input latency when available, else the hint.
-    const out = this.ctx.outputLatency ?? 0;
-    const input = this.measuredInputLatency ?? INPUT_LATENCY_HINT;
-    return out + input;
+    // the beat. ALL of this is known the moment the mic opens — before the
+    // player plays a note:
+    //   output path  = baseLatency (graph buffering) + outputLatency (OS→speaker)
+    //                  — how late you HEAR the click.
+    //   input path   = mic capture → worklet. Reported by the device when
+    //                  available; otherwise it shares the same audio subsystem
+    //                  as output, so outputLatency is a far better prior than a
+    //                  flat guess.
+    const out = this.ctx.outputLatency || 0;
+    const base = this.ctx.baseLatency || 0;
+    const input = this.measuredInputLatency ?? (out || INPUT_LATENCY_HINT);
+    return base + out + input;
   }
 }
