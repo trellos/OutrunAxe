@@ -482,24 +482,51 @@
   opacity: 0.85;
 }
 
-/* Calibration gate: hide the settings UI, show a single big prompt over the
-   timeline until the player plays enough on-the-beat quarter notes. */
+/* Calibration gate: during the gate, show a prompt + a fill bar that grows as
+   on-the-beat quarter notes accumulate. The banner reserves its space at all
+   times and the settings controls are hidden with visibility (not display), so
+   the window stays exactly the same size whether gating or not. */
 .eddie-cal-banner {
-  display: none;
+  visibility: hidden;
+  text-align: center;
+  margin: 4px auto 14px;
 }
 .eddie-cal-gate .eddie-cal-banner {
-  display: block;
+  visibility: visible;
+}
+.eddie-cal-prompt {
+  display: inline-block;
   font-family: monospace;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 900;
   letter-spacing: 1px;
-  color: #00f0ff;
-  text-align: center;
-  margin: 6px 0 14px;
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.7);
+  color: #eafdff;
+  background: rgba(16, 9, 28, 0.92);
+  border: 2px solid #00f0ff;
+  border-radius: 6px;
+  padding: 6px 16px;
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.55);
+}
+.eddie-cal-track {
+  width: 70%;
+  max-width: 360px;
+  height: 14px;
+  margin: 12px auto 0;
+  background: rgba(16, 9, 28, 0.92);
+  border: 2px solid #00f0ff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.eddie-cal-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #00f0ff, #cffcff);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
+  transition: width 0.12s ease-out;
 }
 .eddie-cal-gate .eddie-hide-on-gate {
-  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none;
 }
 
 /* Bass window — one chip per measure root; the active one lights up in time. */

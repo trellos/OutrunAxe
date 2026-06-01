@@ -132,7 +132,8 @@ export class EddieSettingsState implements GameState {
   private calLastOnset = -1;
   private syncBtn: HTMLButtonElement | null = null;
   private syncHint: HTMLElement | null = null;
-  private banner: HTMLElement | null = null;
+  private calPrompt: HTMLElement | null = null;
+  private calFill: HTMLElement | null = null;
 
   private static readSeedMs(): number | null {
     try {
@@ -140,11 +141,6 @@ export class EddieSettingsState implements GameState {
       if (v !== null && !Number.isNaN(parseFloat(v))) return parseFloat(v);
     } catch { /* no storage */ }
     return null;
-  }
-
-  /** Gate the screen on calibration when uncalibrated (and not forced via ?cal). */
-  private needsCalibration(): boolean {
-    return this.forcedCalSec === null && this.calibratedSec === null;
   }
 
   /** Offset to subtract from detected times when drawing bars. */
@@ -160,7 +156,8 @@ export class EddieSettingsState implements GameState {
     this.calStreak = [];
     this.calLastOnset = -1;
     this.overlay?.classList.add("eddie-cal-gate");
-    if (this.banner) this.banner.textContent = "Play quarter notes when you're ready";
+    this.setCalPrompt("Play quarter notes when you're ready");
+    this.setCalFill(0);
   }
 
   /** Leave the gate and reveal the full settings UI. */
@@ -177,25 +174,28 @@ export class EddieSettingsState implements GameState {
     if (this.calLastOnset >= 0) {
       const ioi = t - this.calLastOnset;
       // Break the run if the spacing isn't quarter-note-ish (rejects eighths,
-      // halves, fumbles). ±30% of the quarter interval.
-      if (ioi <= beatDur * 0.7 || ioi >= beatDur * 1.3) this.calStreak = [];
+      // halves, fumbles). ±30% of the quarter interval. A miss empties the bar.
+      if (ioi <= beatDur * 0.7 || ioi >= beatDur * 1.3) {
+        this.calStreak = [];
+        this.setCalFill(0);
+      }
     }
     this.calLastOnset = t;
     this.calStreak.push(this.beatOffset(t, beatDur));
 
     const need = EddieSettingsState.CAL_NOTES;
-    if (this.calStreak.length < need) {
-      if (this.banner) this.banner.textContent = `Keep a steady beat… ${this.calStreak.length}/${need}`;
-      return;
-    }
+    this.setCalFill(Math.min(1, this.calStreak.length / need));
+    if (this.calStreak.length < need) return;
+
     // N quarter-spaced notes in a row. Require their offsets be tight (a real
     // lock to the beat, not drifting) before trusting the measurement.
     const run = this.calStreak.slice(-need);
     const mean = run.reduce((a, b) => a + b, 0) / run.length;
     const sd = Math.sqrt(run.reduce((a, b) => a + (b - mean) ** 2, 0) / run.length);
     if (sd > 0.05) {
-      if (this.banner) this.banner.textContent = "A little uneven — keep playing steady quarter notes";
+      this.setCalPrompt("Keep it steady — even quarter notes");
       this.calStreak.shift(); // slide the window and keep listening
+      this.setCalFill(this.calStreak.length / need);
       return;
     }
     const sorted = [...run].sort((a, b) => a - b);
@@ -215,12 +215,21 @@ export class EddieSettingsState implements GameState {
       localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(cal * 1000)));
     } catch { /* no storage */ }
     this.setSyncHint(`calibrated ${Math.round(cal * 1000)} ms — tap RESYNC to redo`);
-    if (this.banner) this.banner.textContent = `✓ Calibrated ${Math.round(cal * 1000)} ms`;
+    this.setCalPrompt(`✓ Calibrated ${Math.round(cal * 1000)} ms`);
+    this.setCalFill(1);
     this.exitGate();
   }
 
   private setSyncHint(text: string) {
     if (this.syncHint) this.syncHint.textContent = text;
+  }
+
+  private setCalPrompt(text: string) {
+    if (this.calPrompt) this.calPrompt.textContent = text;
+  }
+
+  private setCalFill(frac: number) {
+    if (this.calFill) this.calFill.style.width = `${Math.round(frac * 100)}%`;
   }
 
   /** RESYNC-row text: confirms the saved calibration. */
@@ -385,7 +394,10 @@ export class EddieSettingsState implements GameState {
     overlay.innerHTML = `
       <div class="levelselect-inner">
         <div class="levelselect-title"><span>INFINITE EDDIE</span></div>
-        <div class="eddie-cal-banner" data-field="banner">Play quarter notes when you're ready</div>
+        <div class="eddie-cal-banner">
+          <div class="eddie-cal-prompt" data-field="cal-prompt">Play quarter notes when you're ready</div>
+          <div class="eddie-cal-track"><div class="eddie-cal-fill" data-field="cal-fill"></div></div>
+        </div>
         <div class="eddie-settings-row eddie-hide-on-gate">
           <span class="eddie-settings-label">TEMPO</span>
           <button class="eddie-settings-btn" data-act="bpm-down">&minus;</button>
@@ -446,18 +458,18 @@ export class EddieSettingsState implements GameState {
     this.recHint = overlay.querySelector<HTMLElement>(".eddie-rec-hint");
     this.recBtn?.addEventListener("click", () => this.toggleRec());
 
-    // RESYNC button + calibration banner. RESYNC re-runs the one-time gate.
+    // RESYNC button + calibration banner. RESYNC re-runs the gate on demand.
     this.syncBtn = overlay.querySelector<HTMLButtonElement>(".eddie-sync-btn");
     this.syncHint = overlay.querySelector<HTMLElement>(".eddie-sync-hint");
-    this.banner = overlay.querySelector<HTMLElement>('[data-field="banner"]');
+    this.calPrompt = overlay.querySelector<HTMLElement>('[data-field="cal-prompt"]');
+    this.calFill = overlay.querySelector<HTMLElement>('[data-field="cal-fill"]');
     this.syncBtn?.addEventListener("click", () => this.enterGate());
 
-    // First-ever entry with no saved calibration: gate on it immediately —
-    // show only the metronome + timeline + prompt until the player locks it in.
-    // ?resync forces the gate even when a value is saved (QA/debug).
-    if (this.needsCalibration() || new URLSearchParams(location.search).has("resync")) {
-      this.enterGate();
-    }
+    // The latency determiner always runs on entry (unless ?cal forces a value):
+    // the screen opens to the gate — metronome + timeline + prompt — and reveals
+    // the settings only once the player locks it in. A saved value still seeds
+    // the play screen; here we always confirm against the real instrument.
+    if (this.forcedCalSec === null) this.enterGate();
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -708,7 +720,9 @@ export class EddieSettingsState implements GameState {
     const cal = this.latencyOffset(); // auto-measured round-trip latency
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
-    ctx.fillStyle = "#00f0ff";
+    // Gap between a bar's end and the next bar's start so back-to-back notes
+    // (e.g. consecutive eighths) read as separate attacks, not one solid block.
+    const NOTE_GAP_PX = 3;
     for (const [, n] of this.timelineNotes) {
       if (n.midi < 0) continue;
       // Subtract the auto-measured latency so a note played on the beat draws on
@@ -718,14 +732,19 @@ export class EddieSettingsState implements GameState {
       const e = endT - this.measureStart;
       if (e < 0 || s > span) continue; // not in the current measure window
       const x0 = (Math.max(0, s) / beatDur) * PX_PER_BEAT;
-      const x1 = (Math.min(span, e) / beatDur) * PX_PER_BEAT;
+      const x1raw = (Math.min(span, e) / beatDur) * PX_PER_BEAT;
+      const x1 = Math.max(x0 + 3, x1raw - NOTE_GAP_PX); // trim tail for the gap
       const y = laneY(n.midi);
-      ctx.fillRect(
-        Math.round(x0),
-        Math.round(y - (BAND_HEIGHT + 2) / 2),
-        Math.max(3, Math.round(x1 - x0)),
-        BAND_HEIGHT + 2,
-      );
+      const top = Math.round(y - (BAND_HEIGHT + 2) / 2);
+      const w = Math.max(3, Math.round(x1 - x0));
+      // Bright at the attack (left), fading toward the release (right) so the
+      // note's START is the most prominent edge.
+      const grad = ctx.createLinearGradient(x0, 0, x0 + w, 0);
+      grad.addColorStop(0, "#cffcff");
+      grad.addColorStop(0.18, "#00f0ff");
+      grad.addColorStop(1, "rgba(0,240,255,0.3)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(Math.round(x0), top, w, BAND_HEIGHT + 2);
     }
     ctx.shadowBlur = 0;
 
