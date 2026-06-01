@@ -3,6 +3,7 @@ import type { Game, GameState } from "../engine/Game";
 import { LevelState } from "./LevelState";
 import { LoadoutState } from "./LoadoutState";
 import { LevelSelectState } from "./LevelSelectState";
+import { EddieSettingsState } from "./EddieSettingsState";
 import { level1 } from "../levels/level1";
 import { level2 } from "../levels/level2";
 import { level3 } from "../levels/level3";
@@ -81,13 +82,20 @@ export class BootState implements GameState {
           <div class="boot-best-title">BEST SCORES</div>
           ${bestRows}
         </div>
-        <button class="boot-play">PLAY</button>
+        <div class="boot-modes">
+          <button class="boot-play boot-play-eddie" data-mode="eddie">INFINITE EDDIE</button>
+          <button class="boot-play boot-play-outrun" data-mode="outrun">OUTRUN</button>
+        </div>
       </div>
     `;
     this.hudParent.appendChild(this.overlay);
 
-    const btn = this.overlay.querySelector(".boot-play") as HTMLButtonElement;
-    btn.addEventListener("click", () => this.startLevel());
+    this.overlay
+      .querySelector(".boot-play-eddie")
+      ?.addEventListener("click", () => this.startEddie());
+    this.overlay
+      .querySelector(".boot-play-outrun")
+      ?.addEventListener("click", () => this.startLevel());
 
     this.pulse = new MenuPulse(this.hudParent);
     void this.pulse.start();
@@ -118,6 +126,10 @@ export class BootState implements GameState {
         ),
       ),
     );
+  }
+
+  private startEddie() {
+    this.game.setState(new EddieSettingsState(this.hudParent));
   }
 }
 

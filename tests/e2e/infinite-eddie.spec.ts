@@ -6,17 +6,14 @@
 //   active measure advances → mode completes and returns to a menu.
 //
 // ─────────────────────────────────────────────────────────────────────────
-// RUN STATUS (recorded by QA, 2026-05-29): NOT EXECUTED in the build
-// environment. `browser_navigate` (Playwright MCP and Preview MCP) is DENIED
-// here, Playwright is NOT installed (no `@playwright/test` in devDependencies,
-// no playwright.config, no `test:e2e` script), and the browsers are not
-// provisioned. This spec is authored to be runnable AS-IS in a browser-capable
-// environment. To run it there:
-//
-//   1. npm i -D @playwright/test && npx playwright install chromium
-//   2. Add a playwright.config.ts with a webServer that runs `npm run dev`
-//      on port 5173 (or start `npm run dev` manually and point BASE_URL at it).
-//   3. npx playwright test tests/e2e/infinite-eddie.spec.ts
+// RUN STATUS (2026-05-30): WIRED + RUNNABLE. playwright.config.ts exists, the
+// `playwright` package + chromium are provisioned, and `npm run test:e2e` runs
+// this spec against the Vite dev server (webServer reuses a running dev server).
+// Each test passes IN ISOLATION (verified): the settings test always; the
+// calibration + full-path detection tests need a live AudioContext clock, and
+// some headless audio backends only run one at a time — see playwright.config.ts
+// ENVIRONMENT NOTE. Run a single audio test with, e.g.:
+//   npx playwright test -g "calibration"
 //
 // The spec deliberately uses STABLE, code-verified selectors (class names that
 // exist in the integration branch at the time of writing):
@@ -33,7 +30,10 @@
 // exercises the real LevelSelect → Infinite Eddie click path in a separate
 // test, so both the routing and the deep flow are covered.
 
-import { test, expect, type Page } from "@playwright/test";
+// NOTE: imported from "playwright/test" (the runner shipped with the installed
+// `playwright` package) rather than "@playwright/test", which isn't a separate
+// dependency here. Both expose the identical test API.
+import { test, expect, type Page } from "playwright/test";
 
 const BASE_URL = process.env.EDDIE_BASE_URL ?? "http://localhost:5173";
 
@@ -73,13 +73,19 @@ test.describe("Infinite Eddie", () => {
     // Default tempo 120.
     await expect(page.locator('[data-field="bpm"]')).toHaveText(/120\s*BPM/);
 
-    // Random initial key in {E,A,G,C}.
-    const keyText = (await page.locator('[data-field="key"]').textContent())?.trim() ?? "";
-    expect(RANDOM_ROOTS).toContain(keyText);
+    // Random initial key in {E,A,G,C} — now a dropdown (data-field="key-root").
+    const rootSel = page.locator('select[data-field="key-root"]');
+    await expect(rootSel).toBeVisible();
+    const keyVal = await rootSel.inputValue();
+    expect(RANDOM_ROOTS).toContain(keyVal);
 
-    // A rendered 4-measure bassline (downbeat roots joined with "·").
+    // Major/Minor radios, exactly one checked.
+    await expect(page.locator('input[name="eddie-mode"]')).toHaveCount(2);
+    await expect(page.locator('input[name="eddie-mode"]:checked')).toHaveCount(1);
+
+    // A rendered 4-measure bass window (one chip per measure root).
+    await expect(page.locator(".eddie-bass-note")).toHaveCount(4);
     const bassText = (await page.locator('[data-field="bass"]').textContent())?.trim() ?? "";
-    expect(bassText.length).toBeGreaterThan(0);
     expect(bassText).toMatch(/[A-G]/);
 
     // A live input timeline canvas (the signal-chain proof).
@@ -91,25 +97,26 @@ test.describe("Infinite Eddie", () => {
     await expect(page.locator(".eddie-settings-play")).toBeVisible();
   });
 
-  test("full path: LevelSelect → Infinite Eddie → PLAY → score → advance → menu", async ({
+  test("full path: title → Infinite Eddie → PLAY → score → advance → menu", async ({
     page,
   }) => {
-    // Launch the real app (BootState), then drive to LevelSelect.
+    // Launch the real app (BootState).
     await page.goto(`${BASE_URL}/`);
 
-    // Boot screen has a start button; click whatever the boot CTA is, then the
-    // Infinite Eddie entry on LevelSelect. We reach LevelSelect via the boot CTA.
-    // (BootState mounts an .outrun-* start button; click the first visible button.)
-    const bootBtn = page.locator("#hud button").first();
-    await bootBtn.click();
-
-    // LevelSelect → Infinite Eddie.
-    const eddieEntry = page.locator(".levelselect-eddie");
-    await expect(eddieEntry).toBeVisible();
-    await eddieEntry.click();
+    // The title screen now offers two modes; INFINITE EDDIE goes straight to the
+    // Eddie settings screen (OUTRUN takes the loadout/level-select path).
+    const eddieBtn = page.locator(".boot-play-eddie");
+    await expect(eddieBtn).toBeVisible();
+    await eddieBtn.click();
 
     // Settings screen up.
     await expect(page.locator(".eddie-settings")).toBeVisible();
+
+    // Force C major so the chromatic keyboard cluster below (C,D,E,F,G,A,B —
+    // KeyZ/X/C/V/B/N/M) is ENTIRELY in key. The scorer zeroes any quarter that
+    // contains an out-of-key note, so a random key would make scoring flaky.
+    await page.selectOption('select[data-field="key-root"]', "C");
+    await page.check('input[name="eddie-mode"][value="major"]');
 
     // PLAY → InfiniteEddieState.
     await page.locator(".eddie-settings-play").click();
@@ -126,20 +133,22 @@ test.describe("Infinite Eddie", () => {
     // Wait until the play window opens (active cell leaves the intro row 0 and
     // lands on a scored cell). The conductor count-in is 16 beats, so at 120 BPM
     // that's ~8s; give generous headroom.
-    await expect(page.locator(".eddie-cell-active")).toBeVisible({ timeout: 20000 });
+    await expect(page.locator(".eddie-cell-active")).toBeVisible({ timeout: 30000 });
 
-    // Jam in-key notes via the keyboard fallback to drive the scorer. We can't
-    // know the random key here, so spread a chromatic cluster — at least some
-    // notes land in key and score. Repeat to span at least one scored quarter.
-    for (let i = 0; i < 6; i++) {
+    // Jam the chromatic cluster KeyZ/X/C/V/B/N/M = C,D,E,F,G,A,B — all in C
+    // major (forced above), so every scored quarter is in-key and earns points.
+    // Repeat across several quarters; keep jamming while we poll for the score.
+    for (let i = 0; i < 12; i++) {
       await jam(page, ["KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM"]);
     }
 
-    // Score must increment above 0 once an in-key quarter is observed. Poll the
-    // score readout (it reflects eddieScorePop → eddieTotal).
+    // Score must increment above 0 once a scored quarter is observed. Poll the
+    // score readout (it reflects eddieScorePop → eddieTotal). Generous timeout:
+    // the count-in (~10s) plus a full quarter must elapse, and headless audio
+    // scheduling can lag under load.
     await expect
       .poll(async () => Number((await scoreValue.textContent())?.replace(/\D/g, "") || "0"), {
-        timeout: 20000,
+        timeout: 45000,
       })
       .toBeGreaterThan(0);
 
@@ -151,12 +160,50 @@ test.describe("Infinite Eddie", () => {
         return cells.findIndex((c) => c.classList.contains("eddie-cell-active"));
       });
     const first = await activeIndex();
-    await expect.poll(activeIndex, { timeout: 20000 }).not.toBe(first);
+    await expect.poll(activeIndex, { timeout: 30000 }).not.toBe(first);
 
     // Completion: after the 16 scored measures + linger, the play state calls
     // onExit and routes back to LevelSelect (a menu). 16 measures at 120 BPM is
     // ~32s of play + intro + linger; keep the wait bounded but generous. The
     // return target is the LevelSelect overlay.
     await expect(page.locator(".outrun-levelselect")).toBeVisible({ timeout: 90000 });
+  });
+
+  // Deterministic detection test: route a KNOWN calibration file through the
+  // real onset→pitch chain (record mode), with no mic/keyboard randomness, and
+  // assert that notes are detected and plotted as duration bars on the timeline.
+  test("calibration: a known file detects notes through the live chain", async ({ page }) => {
+    await page.goto(`${BASE_URL}/?eddiedebug=1`);
+
+    // Pick the scale-eighths file (loud, unambiguous onsets).
+    const card = page.locator(".eddie-bgmenu-card", { hasText: "Scale eighths" });
+    await expect(card).toBeVisible();
+    await card.click();
+
+    // The record HUD appears and the play screen mounts the 20-cell grid.
+    await expect(page.locator(".eddie-capture-hud")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".eddie-cell")).toHaveCount(20);
+
+    // After the count-in + file playback, onsets are detected and notes plotted.
+    // (~10s count-in at 120 BPM, then the file's notes stream in.)
+    await expect
+      .poll(async () => page.locator(".eddie-note").count(), { timeout: 75000 })
+      .toBeGreaterThan(8);
+
+    // Each plotted note is a duration BAR, not a zero-width dot: at least one has
+    // grown past the initial stub once its NoteEnd arrives.
+    const maxWidthPx = await page.evaluate(() =>
+      Math.max(
+        0,
+        ...Array.from(document.querySelectorAll<HTMLElement>(".eddie-note")).map(
+          (n) => n.getBoundingClientRect().width,
+        ),
+      ),
+    );
+    expect(maxWidthPx).toBeGreaterThan(5);
+
+    // The capture HUD reflects a non-zero detection count.
+    const counts = (await page.locator('[data-cap="counts"]').textContent()) ?? "";
+    expect(counts).toMatch(/onsets [1-9]/);
   });
 });

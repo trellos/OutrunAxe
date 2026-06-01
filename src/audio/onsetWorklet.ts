@@ -56,11 +56,6 @@ class OnsetProcessor extends AudioWorkletProcessor {
    * accumulated in `chunk`. Used to compute the chunk's audio-clock time.
    */
   private chunkStartFrame = 0;
-  /** Pre-allocated mono mixdown buffer — reused each quantum to avoid
-   *  GC pressure on the audio render thread. Sized to the Web Audio
-   *  quantum (128 samples); if an unusually large input quantum ever
-   *  arrives, we allocate once and keep the larger buffer. */
-  private mixBuf = new Float32Array(128);
 
   constructor() {
     super();
@@ -80,23 +75,26 @@ class OnsetProcessor extends AudioWorkletProcessor {
     const ch0 = input[0];
     if (!ch0 || ch0.length === 0) return true;
 
-    // Mono mixdown — sum channels into ch0 work region. The actual mic
-    // path delivers a single channel from getUserMedia, but defensively
-    // mix down if more arrive.
+    // Loudest-channel selection — pick the channel with the highest energy
+    // this quantum rather than averaging, so a silent channel can't dilute a
+    // loud one. The actual mic path delivers a single channel from
+    // getUserMedia; this branch is defensive for multi-channel inputs.
     let mono: Float32Array;
     if (input.length === 1) {
       mono = ch0;
     } else {
-      if (ch0.length > this.mixBuf.length) this.mixBuf = new Float32Array(ch0.length);
-      const buf = this.mixBuf;
-      buf.fill(0, 0, ch0.length);
+      let loudest = 0;
+      let bestSumSq = -1;
       for (let c = 0; c < input.length; c++) {
         const data = input[c];
-        for (let i = 0; i < ch0.length; i++) buf[i] += data[i];
+        let sumSq = 0;
+        for (let i = 0; i < ch0.length; i++) sumSq += data[i] * data[i];
+        if (sumSq > bestSumSq) {
+          bestSumSq = sumSq;
+          loudest = c;
+        }
       }
-      const inv = 1 / input.length;
-      for (let i = 0; i < ch0.length; i++) buf[i] *= inv;
-      mono = buf.subarray(0, ch0.length);
+      mono = input[loudest];
     }
 
     let read = 0;

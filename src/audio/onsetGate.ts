@@ -16,6 +16,14 @@ export const ONSET_CHUNK = 512;
 export const ONSET_MIN_RMS = 0.008;
 /** Chunk RMS must be at least this × the previous chunk's RMS to count as a sharp rise. */
 export const ONSET_RATIO = 1.6;
+/**
+ * A rise this much × the previous chunk is an UNMISTAKABLE attack transient — a
+ * hard re-pluck. It bypasses the decay/energy gates so repeated notes (e.g.
+ * eighth-notes on a sustained string that never decays to half between plucks)
+ * still register. Gradual body fluctuations never rise this sharply, so they
+ * stay rejected.
+ */
+export const STRONG_ONSET_RATIO = 2.2;
 /** Chunk RMS must be at least this × the running min-since-last-onset. */
 export const LOCAL_MIN_RATIO = 1.8;
 
@@ -127,7 +135,11 @@ export function onsetGate(
     state.lastOnsetChunkRms === 0 ||
     state.silenceSinceLastOnset ||
     chunkRms >= state.lastOnsetChunkRms * ONSET_ENERGY_FLOOR_RATIO;
-  if (!decayedEnough || !energyEnough) return false;
+  // An unmistakable attack transient (a hard re-pluck) bypasses decay/energy —
+  // those gates exist to reject GRADUAL body fluctuations, which never spike
+  // this sharply. This is what lets repeated/sustained eighth-notes register.
+  const strongAttack = chunkRms > prevRms * STRONG_ONSET_RATIO;
+  if (!strongAttack && (!decayedEnough || !energyEnough)) return false;
 
   // Accept — update state for the next chunk's gating.
   state.lastOnsetTime = chunkStartTime;

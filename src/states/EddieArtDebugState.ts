@@ -47,6 +47,7 @@ export class EddieArtDebugState implements GameState {
   private settingsRoot: HTMLDivElement | null = null;
 
   private t = 0;
+  private noteSeq = 0;
   private beatTimer = 0;
   private eventTimer = 0;
   private beatInMeasure = 0;
@@ -237,12 +238,21 @@ export class EddieArtDebugState implements GameState {
     const off = Math.random() < 0.18;
     const pool = off ? EddieArtDebugState.OFF_KEY : EddieArtDebugState.IN_KEY;
     const [pitchClass, midi] = pool[Math.floor(Math.random() * pool.length)];
+    const onsetId = ++this.noteSeq;
     this.juice.emit("eddieNote", {
       measure,
       beatFraction,
       pitchClass,
       midi,
       inKey: !off,
+      audioTime: this.t,
+      onsetId,
+    });
+    // Grow each gallery note into a short bar so the duration rendering shows.
+    this.juice.emit("eddieNoteEnd", {
+      onsetId,
+      measure,
+      endBeatFraction: Math.min(1, beatFraction + 0.12 + Math.random() * 0.14),
       audioTime: this.t,
     });
   }

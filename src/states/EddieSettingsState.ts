@@ -12,7 +12,6 @@
 // metronome) AND the input timeline. Timing reads the Conductor clock; only the
 // canvas pulse interpolates against rAF (GDD §2). exit() tears everything down.
 
-import * as THREE from "three";
 import type { Game, GameState } from "../engine/Game";
 import { Conductor } from "../audio/Conductor";
 import { PitchTracker } from "../audio/PitchTracker";
@@ -31,6 +30,7 @@ import {
 } from "../eddie/art/EddiePlayButton";
 import { InfiniteEddieState } from "./InfiniteEddieState";
 import { LevelState } from "./LevelState";
+import { PerfHud } from "../hud/PerfHud";
 import "../eddie/art/settings-themes.css";
 
 const PLAY_BUTTON_VARIANT = "option-1" as const;
@@ -53,7 +53,6 @@ const LANE_PITCH = 7;
 const BAND_HEIGHT = 5;
 const LANE_PAD = 4;
 const ROW_HEIGHT = LANES * LANE_PITCH + 2 * LANE_PAD;
-const PULSE_FADE_MS = 150;
 
 const KEY_TO_MIDI: Record<string, number> = {
   KeyZ: 48, KeyS: 49, KeyX: 50, KeyD: 51, KeyC: 52, KeyV: 53,
@@ -79,8 +78,8 @@ export class EddieSettingsState implements GameState {
   // DOM
   private overlay: HTMLDivElement | null = null;
   private bpmValueEl: HTMLElement | null = null;
-  private keyValueEl: HTMLElement | null = null;
   private bassValueEl: HTMLElement | null = null;
+  private bassNoteEls: HTMLElement[] = [];
   private playMount: HTMLDivElement | null = null;
 
   // Audio + signal chain (one Conductor parked in preroll).
@@ -100,8 +99,24 @@ export class EddieSettingsState implements GameState {
   private measureStart = -1;
   private bars = new BarAccumulator(PX_PER_BEAT / 10);
 
-  private rotor: THREE.Object3D | null = null;
-  private lights: THREE.Light[] = [];
+
+  /** Realtime diagnostics overlay (?perf=1) — fps, frame gaps, beat-drop. */
+  private perf: PerfHud | null = null;
+
+  // --- Record/debug: capture the live mic input + detection stream on THIS
+  // screen (where players audition the timeline) so detection misses can be
+  // downloaded and diagnosed. ---
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+  private recording = false;
+  private recStartAudioTime = 0;
+  private capOnsets: { time: number; energy: number; synthetic: boolean }[] = [];
+  private capPitches: {
+    onsetId: number; time: number; freq: number; midi: number; confidence: number; status: string;
+  }[] = [];
+  private capNoteEnds: { onsetId: number; time: number; reason: string }[] = [];
+  private recBtn: HTMLButtonElement | null = null;
+  private recHint: HTMLElement | null = null;
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -113,32 +128,23 @@ export class EddieSettingsState implements GameState {
 
   enter(game: Game) {
     this.game = game;
-    const { worldScene, worldCamera } = game.renderer;
-    worldScene.background = new THREE.Color(0x0a0612);
-    worldCamera.position.set(0, 0, 8);
-    worldCamera.lookAt(0, 0, 0);
 
-    // A small spinning motif as incidental background (AGENTS.md #5 allows
-    // wireframe icosahedra as incidental motifs, not the headline visual).
-    this.rotor = new THREE.Group();
-    const geom = new THREE.IcosahedronGeometry(1.6, 0);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xff2bd6,
-      emissive: 0xff2bd6,
-      emissiveIntensity: 0.8,
-      roughness: 0.3,
-      metalness: 0.6,
-      wireframe: true,
-    });
-    this.rotor.add(new THREE.Mesh(geom, mat));
-    worldScene.add(this.rotor);
-    const dir = new THREE.DirectionalLight(0x00f0ff, 0.8);
-    dir.position.set(5, 10, 5);
-    const amb = new THREE.AmbientLight(0x6622aa, 0.6);
-    worldScene.add(dir, amb);
-    this.lights.push(dir, amb);
+    // No 3D background on this screen. The decorative WebGL canvas was being
+    // RE-COMPOSITED every frame, which is the framerate bottleneck on
+    // integrated GPUs — so hide the canvas entirely (it isn't even a composited
+    // layer then). The settings UI is pure DOM and needs no 3D. Graphics pass
+    // comes later; restored on exit.
+    game.renderer.canvas.style.display = "none";
 
     this.buildDom();
+
+    // Realtime diagnostics overlay (?perf=1) — measures true fps/frame gaps and
+    // flags dropped beats on the player's real machine.
+    if (new URLSearchParams(location.search).has("perf")) {
+      this.perf = new PerfHud();
+      this.perf.mount(this.hudParent);
+      this.perf.setPlaying(true); // settings audition loops the beat continuously
+    }
 
     // One Eddie-sized Conductor for the audition + signal chain. Parked in
     // preroll (no triggerPlay) it emits beats forever, so the EddieAudioRig
@@ -165,6 +171,12 @@ export class EddieSettingsState implements GameState {
   exit() {
     if (this.keyHandler) window.removeEventListener("keydown", this.keyHandler);
     this.keyHandler = undefined;
+    if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+      try { this.mediaRecorder.stop(); } catch { /* already stopped */ }
+    }
+    this.mediaRecorder = null;
+    this.perf?.dispose();
+    this.perf = null;
     this.offBeat?.();
     this.playButton?.dispose();
     this.playButton = null;
@@ -174,18 +186,8 @@ export class EddieSettingsState implements GameState {
     this.conductor?.stop();
     this.conductor = null;
 
-    const { worldScene } = this.game.renderer;
-    if (this.rotor) {
-      worldScene.remove(this.rotor);
-      this.rotor.traverse((o) => {
-        const m = o as THREE.Mesh;
-        m.geometry?.dispose?.();
-        if (m.material) (m.material as THREE.Material).dispose();
-      });
-      this.rotor = null;
-    }
-    for (const l of this.lights) worldScene.remove(l);
-    this.lights = [];
+    // Restore the WebGL canvas we hid on entry for the next state to use.
+    this.game.renderer.canvas.style.display = "block";
 
     this.overlayCanvas?.remove();
     this.overlayCanvas = null;
@@ -194,7 +196,6 @@ export class EddieSettingsState implements GameState {
   }
 
   update(dt: number) {
-    if (this.rotor) this.rotor.rotation.y += dt * 0.5;
     this.playButton?.update(dt);
     this.drawPulse();
   }
@@ -224,16 +225,6 @@ export class EddieSettingsState implements GameState {
     };
   }
 
-  private basslineText(): string {
-    // e.g. "E · A · B · A" — the downbeat root of each of the 4 measures.
-    const roots: string[] = [];
-    for (let m = 0; m < 4; m++) {
-      const dn = this.bassline.find((n) => n.measure === m && n.beat === 0);
-      roots.push(dn ? dn.pitchClass : "—");
-    }
-    return roots.join("  ·  ");
-  }
-
   // ------------------------------------------------------------------------
   // DOM
   // ------------------------------------------------------------------------
@@ -260,16 +251,19 @@ export class EddieSettingsState implements GameState {
         </div>
         <div class="eddie-settings-row">
           <span class="eddie-settings-label">KEY</span>
-          <button class="eddie-settings-btn" data-act="key-down">&#9664;</button>
-          <span class="eddie-settings-value" data-field="key">${this.keyLabel()}</span>
-          <button class="eddie-settings-btn" data-act="key-up">&#9654;</button>
-          <button class="eddie-settings-btn" data-act="mode">${this.keyMode.toUpperCase()}</button>
+          <select class="eddie-settings-select" data-field="key-root">${this.keyOptions()}</select>
+          <label class="eddie-settings-radio"><input type="radio" name="eddie-mode" value="major"${this.keyMode === "major" ? " checked" : ""}><span>Major</span></label>
+          <label class="eddie-settings-radio"><input type="radio" name="eddie-mode" value="minor"${this.keyMode === "minor" ? " checked" : ""}><span>Minor</span></label>
         </div>
         <div class="eddie-settings-row">
           <span class="eddie-settings-label">BASS</span>
-          <span class="eddie-settings-value" data-field="bass">${this.basslineText()}</span>
+          <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
         </div>
         <div class="eddie-settings-timeline"></div>
+        <div class="eddie-settings-row eddie-rec-row">
+          <button class="eddie-rec-btn" type="button">&#9679; RECORD</button>
+          <span class="eddie-rec-hint">play a few bars, then it downloads your audio + detected notes</span>
+        </div>
         <div class="eddie-settings-play"></div>
       </div>
     `;
@@ -277,12 +271,33 @@ export class EddieSettingsState implements GameState {
     this.overlay = overlay;
 
     this.bpmValueEl = overlay.querySelector('[data-field="bpm"]');
-    this.keyValueEl = overlay.querySelector('[data-field="key"]');
     this.bassValueEl = overlay.querySelector('[data-field="bass"]');
+    this.bassNoteEls = [...overlay.querySelectorAll<HTMLElement>(".eddie-bass-note")];
 
     overlay.querySelectorAll<HTMLButtonElement>(".eddie-settings-btn").forEach((btn) => {
       btn.addEventListener("click", () => this.onAction(btn.getAttribute("data-act")));
     });
+
+    // Key root dropdown + Major/Minor radios.
+    const rootSel = overlay.querySelector<HTMLSelectElement>('[data-field="key-root"]');
+    rootSel?.addEventListener("change", () => {
+      this.keyRoot = rootSel.value as PitchClass;
+      this.regenerateBassline();
+      this.refreshLabels();
+    });
+    overlay.querySelectorAll<HTMLInputElement>('input[name="eddie-mode"]').forEach((radio) => {
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        this.keyMode = radio.value as KeyMode;
+        this.regenerateBassline();
+        this.refreshLabels();
+      });
+    });
+
+    // Record button (debug): one-tap capture of mic input + detection stream.
+    this.recBtn = overlay.querySelector<HTMLButtonElement>(".eddie-rec-btn");
+    this.recHint = overlay.querySelector<HTMLElement>(".eddie-rec-hint");
+    this.recBtn?.addEventListener("click", () => this.toggleRec());
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -296,8 +311,30 @@ export class EddieSettingsState implements GameState {
     }
   }
 
-  private keyLabel(): string {
-    return this.keyRoot;
+  /** <option> list for the key-root dropdown, current root selected. */
+  private keyOptions(): string {
+    return NOTE_NAMES.map(
+      (n) => `<option value="${n}"${n === this.keyRoot ? " selected" : ""}>${n}</option>`,
+    ).join("");
+  }
+
+  /** Bass window: one chip per measure downbeat root, highlightable in time. */
+  private bassWindowHtml(): string {
+    const roots: string[] = [];
+    for (let m = 0; m < 4; m++) {
+      const dn = this.bassline.find((n) => n.measure === m && n.beat === 0);
+      roots.push(dn ? dn.pitchClass : "—");
+    }
+    return roots
+      .map((r, i) => `<span class="eddie-bass-note" data-bass="${i}">${r}</span>`)
+      .join('<span class="eddie-bass-sep">·</span>');
+  }
+
+  /** Light up the bass chip for the measure whose downbeat is now sounding. */
+  private highlightBass(measure: number) {
+    this.bassNoteEls.forEach((el, i) => {
+      el.classList.toggle("eddie-bass-note-on", i === measure);
+    });
   }
 
   private onAction(act: string | null) {
@@ -308,27 +345,11 @@ export class EddieSettingsState implements GameState {
       case "bpm-up":
         this.bpm = Math.min(MAX_BPM, this.bpm + BPM_STEP);
         break;
-      case "key-down":
-        this.cycleRoot(-1);
-        break;
-      case "key-up":
-        this.cycleRoot(1);
-        break;
-      case "mode":
-        this.keyMode = this.keyMode === "major" ? "minor" : "major";
-        this.regenerateBassline();
-        break;
       default:
         return;
     }
     this.applyBpm();
     this.refreshLabels();
-  }
-
-  private cycleRoot(dir: number) {
-    const idx = NOTE_NAMES.indexOf(this.keyRoot);
-    this.keyRoot = NOTE_NAMES[((idx + dir) % 12 + 12) % 12];
-    this.regenerateBassline();
   }
 
   /** Push tempo changes to the live audition Conductor (only legal in preroll,
@@ -339,10 +360,17 @@ export class EddieSettingsState implements GameState {
 
   private refreshLabels() {
     if (this.bpmValueEl) this.bpmValueEl.textContent = `${this.bpm} BPM`;
-    if (this.keyValueEl) this.keyValueEl.textContent = this.keyLabel();
-    if (this.bassValueEl) this.bassValueEl.textContent = this.basslineText();
-    const modeBtn = this.overlay?.querySelector<HTMLButtonElement>('[data-act="mode"]');
-    if (modeBtn) modeBtn.textContent = this.keyMode.toUpperCase();
+    // Sync the key-root dropdown + mode radios (e.g. after programmatic change).
+    const rootSel = this.overlay?.querySelector<HTMLSelectElement>('[data-field="key-root"]');
+    if (rootSel && rootSel.value !== this.keyRoot) rootSel.value = this.keyRoot;
+    this.overlay?.querySelectorAll<HTMLInputElement>('input[name="eddie-mode"]').forEach((r) => {
+      r.checked = r.value === this.keyMode;
+    });
+    // Rebuild the bass window (the bassline regenerated on any key change).
+    if (this.bassValueEl) {
+      this.bassValueEl.innerHTML = this.bassWindowHtml();
+      this.bassNoteEls = [...this.bassValueEl.querySelectorAll<HTMLElement>(".eddie-bass-note")];
+    }
   }
 
   // ------------------------------------------------------------------------
@@ -395,6 +423,7 @@ export class EddieSettingsState implements GameState {
     // Register the beat listener BEFORE startPreroll so beat 0 (which fires
     // synchronously inside startPreroll) is caught and opens the first window.
     this.offBeat = this.conductor.onBeat((info) => {
+      this.perf?.noteBeat();
       // Beat-synced glitch hook: theme CSS reacts to .eddie-beat (every beat) and
       // .eddie-beat-down (downbeat) to flicker/RGB-split the settings UI in time.
       const root = this.overlay;
@@ -408,9 +437,35 @@ export class EddieSettingsState implements GameState {
         this.measureStart = info.time;
         this.bars.reset();
         this.drawGrid();
+        // Highlight the bass chip whose downbeat root is now sounding. EddieBass
+        // loops the 4-measure pattern off floor(beat/4)%4 in preroll; mirror it,
+        // and fire the visual when the note is AUDIBLE (scheduled time + output
+        // latency), not when it was scheduled — so it matches what you hear.
+        const loopMeasure = Math.floor(info.beat / 4) % 4;
+        const outLatency = getAudioContext().outputLatency || 0;
+        const delayMs = Math.max(0, (info.time + outLatency - this.conductor!.audioTime) * 1000);
+        window.setTimeout(() => this.highlightBass(loopMeasure), delayMs);
       }
     });
-    this.tracker.onPitchUpdate((u) => this.plotPitch(u.time, u.midi, u.onsetId));
+    this.tracker.onPitchUpdate((u) => {
+      this.plotPitch(u.time, u.midi, u.onsetId);
+      if (this.recording) {
+        this.capPitches.push({
+          onsetId: u.onsetId, time: u.time, freq: u.freq, midi: u.midi,
+          confidence: u.confidence, status: u.status,
+        });
+      }
+    });
+    this.tracker.onOnset((e) => {
+      this.perf?.noteOnset();
+      if (this.recording) {
+        this.capOnsets.push({ time: e.time, energy: e.energy, synthetic: e.synthetic });
+        this.updateRecHint();
+      }
+    });
+    this.tracker.onNoteEnd((e) => {
+      if (this.recording) this.capNoteEnds.push({ onsetId: e.onsetId, time: e.time, reason: e.reason });
+    });
 
     this.conductor.startPreroll();
 
@@ -429,14 +484,22 @@ export class EddieSettingsState implements GameState {
     ctx.fillStyle = "rgba(26, 15, 46, 0.55)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     for (let b = 0; b <= BEATS; b++) {
-      const x = Math.round(b * PX_PER_BEAT) + 0.5;
       const isMeasure = b % BEATS === 0;
-      ctx.strokeStyle = isMeasure ? "rgba(255,43,214,0.7)" : "rgba(74,42,122,0.5)";
+      // Nudge the leftmost line in by 1px so the downbeat (beat 1) isn't clipped
+      // against the canvas edge — it was effectively invisible before.
+      const x = (b === 0 ? 1 : Math.round(b * PX_PER_BEAT)) + 0.5;
+      ctx.strokeStyle = isMeasure ? "rgba(255,43,214,0.95)" : "rgba(0,240,255,0.4)";
       ctx.lineWidth = isMeasure ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, canvas.height);
       ctx.stroke();
+    }
+    // Beat numbers (1..4) so the downbeat is unmistakable.
+    ctx.fillStyle = "rgba(180,230,255,0.55)";
+    ctx.font = "9px monospace";
+    for (let b = 0; b < BEATS; b++) {
+      ctx.fillText(String(b + 1), (b === 0 ? 3 : b * PX_PER_BEAT + 3), 10);
     }
   }
 
@@ -449,21 +512,27 @@ export class EddieSettingsState implements GameState {
     }
     ctx.clearRect(0, 0, ov.width, ov.height);
     const beatDur = 60 / this.conductor.currentBpm;
-    const into = this.conductor.audioTime - this.measureStart;
+    // Beats are scheduled on the audio clock, but the user HEARS them ~output
+    // latency later. Reference the playhead to audible-time so the pulse lands
+    // on the beat the player actually hears (and plays to), not when it was
+    // scheduled — otherwise the indicator leads the music.
+    const outLatency = getAudioContext().outputLatency || 0;
+    const into = this.conductor.audioTime - outLatency - this.measureStart;
     if (into < 0 || into > BEATS * beatDur) return;
-    const beatIdx = Math.floor(into / beatDur);
-    if (beatIdx < 0 || beatIdx >= BEATS) return;
-    const sinceBeatMs = (into - beatIdx * beatDur) * 1000;
-    const alpha = Math.max(0, 1 - sinceBeatMs / PULSE_FADE_MS);
-    if (alpha <= 0) return;
-    const x = Math.round(beatIdx * PX_PER_BEAT) + 0.5;
-    ctx.strokeStyle = `rgba(0, 240, 255, ${alpha})`;
-    ctx.lineWidth = 3;
+    // CONTINUOUS playhead: position is read straight from the audio clock every
+    // frame, so it sweeps smoothly at the display's full rate and its position
+    // is exact to the sample (no per-beat snapping / no drift). The beats are
+    // where it crosses the gridlines; it flares brighter right on each beat.
+    const x = (into / beatDur) * PX_PER_BEAT;
+    const beatPhaseMs = (into % beatDur) * 1000;
+    const onBeat = Math.max(0, 1 - beatPhaseMs / 90); // 1 on the beat → 0 by 90ms
+    ctx.strokeStyle = `rgba(0, 240, 255, ${0.85 + 0.15 * onBeat})`;
+    ctx.lineWidth = 2 + 2 * onBeat;
     ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
-    ctx.shadowBlur = 8 * alpha;
+    ctx.shadowBlur = 6 + 10 * onBeat;
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, ov.height);
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, ov.height);
     ctx.stroke();
     ctx.shadowBlur = 0;
   }
@@ -478,15 +547,18 @@ export class EddieSettingsState implements GameState {
     const clamped = Math.max(0, Math.min(span, into));
     const x = (clamped / beatDur) * PX_PER_BEAT;
     const y = laneY(midi);
-    ctx.fillStyle = "#00f0ff";
     const bar = this.bars.feed(onsetId, x, y);
     if (!bar) return;
-    ctx.fillRect(
-      Math.round(bar.x0),
-      Math.round(bar.y - BAND_HEIGHT / 2),
-      Math.max(1, Math.round(bar.x1 - bar.x0)),
-      BAND_HEIGHT,
-    );
+    // Pitched note bar. Enforce a minimum visible length (~a sixteenth) so a
+    // short note reads as a clear time-block, not a 1px glitch, and give it a
+    // bright core + glow so it pops at a glance.
+    const minW = PX_PER_BEAT * 0.18;
+    const w = Math.max(minW, bar.x1 - bar.x0);
+    ctx.shadowColor = "rgba(0,240,255,0.8)";
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = "#00f0ff";
+    ctx.fillRect(Math.round(bar.x0), Math.round(bar.y - (BAND_HEIGHT + 2) / 2), Math.round(w), BAND_HEIGHT + 2);
+    ctx.shadowBlur = 0;
   }
 
   private playTone(midi: number, audioTime: number) {
@@ -505,6 +577,108 @@ export class EddieSettingsState implements GameState {
     osc.connect(hp).connect(gain).connect(ctx.destination);
     osc.start(audioTime);
     osc.stop(audioTime + 0.4);
+  }
+
+  // ------------------------------------------------------------------------
+  // Record/debug — capture mic + detection, download for diagnosis
+  // ------------------------------------------------------------------------
+
+  private toggleRec() {
+    if (!this.recording) this.startRec();
+    else this.stopRecAndDownload();
+  }
+
+  private startRec() {
+    this.capOnsets = [];
+    this.capPitches = [];
+    this.capNoteEnds = [];
+    this.recordedChunks = [];
+    this.recStartAudioTime = this.conductor?.audioTime ?? 0;
+
+    const stream = this.tracker?.mediaStream;
+    if (stream && typeof MediaRecorder !== "undefined") {
+      try {
+        this.mediaRecorder = new MediaRecorder(stream);
+        this.mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) this.recordedChunks.push(e.data);
+        };
+        this.mediaRecorder.start();
+      } catch (err) {
+        console.warn("[eddie-settings] mic recording unavailable", err);
+      }
+    }
+
+    this.recording = true;
+    if (this.recBtn) {
+      this.recBtn.innerHTML = "&#9632; STOP &amp; DOWNLOAD";
+      this.recBtn.classList.add("eddie-rec-on");
+    }
+    this.updateRecHint();
+  }
+
+  private updateRecHint() {
+    if (!this.recHint) return;
+    if (this.recording) {
+      this.recHint.textContent =
+        `recording… ${this.capOnsets.length} onsets, ${this.capPitches.length} notes detected — stop to download`;
+    } else {
+      this.recHint.textContent = "play a few bars, then it downloads your audio + detected notes";
+    }
+  }
+
+  private stopRecAndDownload() {
+    this.recording = false;
+    if (this.recBtn) {
+      this.recBtn.innerHTML = "&#9679; RECORD";
+      this.recBtn.classList.remove("eddie-rec-on");
+    }
+    this.updateRecHint();
+
+    const log = {
+      meta: {
+        screen: "settings",
+        bpm: this.bpm,
+        keyRoot: this.keyRoot,
+        keyMode: this.keyMode,
+        sampleRate: getAudioContext().sampleRate,
+        recStartAudioTime: this.recStartAudioTime,
+        startedAt: new Date().toISOString(),
+      },
+      onsets: this.capOnsets,
+      pitches: this.capPitches,
+      noteEnds: this.capNoteEnds,
+    };
+    this.downloadBlob(
+      new Blob([JSON.stringify(log, null, 2)], { type: "application/json" }),
+      "eddie-settings-notes.json",
+    );
+
+    const rec = this.mediaRecorder;
+    if (rec) {
+      const finish = () => {
+        const type = rec.mimeType || "audio/webm";
+        const ext = type.includes("ogg") ? "ogg" : "webm";
+        this.downloadBlob(new Blob(this.recordedChunks, { type }), `eddie-settings-input.${ext}`);
+      };
+      if (rec.state === "recording") {
+        rec.onstop = finish;
+        rec.stop();
+      } else {
+        finish();
+      }
+      this.mediaRecorder = null;
+    }
+  }
+
+  private downloadBlob(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   // ------------------------------------------------------------------------

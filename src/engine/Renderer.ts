@@ -8,14 +8,31 @@ export class Renderer {
   readonly canvas: HTMLCanvasElement;
   composer: Composer;
 
+  // Perf-isolation toggles (read once from the URL):
+  //   ?nofx  — bypass the bloom/grade post-processing (render the scene direct)
+  //   ?dpr1  — clamp pixel ratio to 1 (huge win on high-DPI panels)
+  //   ?noaa  — disable MSAA
+  // These let the player's real machine pinpoint the framerate bottleneck.
+  private readonly postFx: boolean;
+  private readonly noRender: boolean;
+
   constructor(parent: HTMLElement) {
+    const params = new URLSearchParams(location.search);
+    this.postFx = !params.has("nofx");
+    // ?norender — skip ALL drawing. If fps recovers, the cost is WebGL render +
+    // canvas compositing; if it stays low, it's DOM/CSS compositing or GC.
+    this.noRender = params.has("norender");
+    const dprCap = params.has("dpr1") ? 1 : 2;
+
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !params.has("noaa"),
       alpha: false,
-      preserveDrawingBuffer: true,
+      // preserveDrawingBuffer forces the GPU to keep the framebuffer every frame
+      // (a known perf cost); only enable it when a screenshot path needs it.
+      preserveDrawingBuffer: params.has("grab"),
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
     this.renderer.setClearColor(0x0a0612, 1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -54,6 +71,10 @@ export class Renderer {
   }
 
   render(dt: number) {
-    this.composer.render(dt);
+    if (this.noRender) return; // ?norender — isolate rendering cost entirely
+    // ?nofx renders the scene straight to the screen, skipping the multi-pass
+    // bloom/grade composer — the prime suspect for low framerate.
+    if (this.postFx) this.composer.render(dt);
+    else this.renderer.render(this.worldScene, this.worldCamera);
   }
 }

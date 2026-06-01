@@ -8,3 +8,7 @@ dist
 # everything else under .claude/.
 .claude/*
 !.claude/launch.json
+
+# Playwright e2e artifacts
+test-results/
+playwright-report/

@@ -29,6 +29,8 @@ import type {
 } from "../music/eddie/eddieTypes";
 import { createEddieArt, type EddieArtRig } from "../eddie/art/eddieArtFactory";
 import { BACKGROUNDS } from "../eddie/art/backgrounds/registry";
+import { audioBufferToWav } from "../audio/wavEncode";
+import type { OnsetEvent, PitchUpdate, NoteEnd } from "../audio/PitchEngine";
 import {
   createEddieAudio,
   type EddieAudioRig,
@@ -65,6 +67,52 @@ const KEY_TO_MIDI: Record<string, number> = {
   Comma: 60, KeyL: 61, Period: 62, Semicolon: 63, Slash: 64,
 };
 
+/** Everything the record/debug mode collects for offline diagnosis. Downloaded
+ *  as JSON alongside the input audio (.wav). */
+interface CaptureLog {
+  meta: {
+    fileName: string;
+    bpm: number;
+    keyRoot: string;
+    keyMode: string;
+    sampleRate: number;
+    startedAt: string;
+    source: "file" | "mic";
+  };
+  /** measureStartTime(0) — the audio time scored measure 0 opens, so every
+   *  other audioTime below can be related to the musical grid. */
+  playStartTime: number;
+  onsets: { time: number; energy: number; synthetic: boolean }[];
+  pitches: {
+    onsetId: number;
+    time: number;
+    freq: number;
+    midi: number;
+    confidence: number;
+    status: string;
+  }[];
+  noteEnds: { onsetId: number; time: number; reason: string }[];
+  /** Notes as PLOTTED on the grid (post key-resolution). */
+  notes: {
+    measure: number;
+    beatFraction: number;
+    pitchClass: string;
+    midi: number;
+    inKey: boolean;
+    audioTime: number;
+  }[];
+  scores: {
+    measure: number;
+    beat: number;
+    kinds: string[];
+    points: number;
+    multiplier: number;
+    audioTime: number;
+  }[];
+  /** Performance/intensity sampled at each playing quarter boundary. */
+  intensity: { measure: number; beat: number; perf: number; audioTime: number }[];
+}
+
 export class InfiniteEddieState implements GameState {
   readonly name = "infiniteEddie";
 
@@ -87,6 +135,9 @@ export class InfiniteEddieState implements GameState {
   private offScore?: () => void;
   private offTotal?: () => void;
   private offNote?: () => void;
+  private offNoteEnd?: () => void;
+  /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
+  private noteStarts = new Map<number, { measure: number; startTime: number }>();
   private keyHandler?: (e: KeyboardEvent) => void;
 
   /** Pitch classes of the selected key, for the in-key note coloring. */
@@ -121,11 +172,32 @@ export class InfiniteEddieState implements GameState {
   private manualIntensity = -1;
   private demoHud: HTMLDivElement | null = null;
 
+  /** Record/debug mode: capture the full detection stream + input audio for
+   *  offline diagnosis (set by the Eddie debug menu). */
+  private capture = false;
+  private fileName = "live-mic";
+  /** Decoded calibration file routed through the REAL onset+pitch chain instead
+   *  of the mic (via PitchTracker.prepareFakeMic). null = use the live mic. */
+  private fakeMicBuffer: AudioBuffer | null = null;
+  private captureLog: CaptureLog | null = null;
+  private captureHud: HTMLDivElement | null = null;
+  private offCapOnset?: () => void;
+  private offCapPitch?: () => void;
+  private offCapEnd?: () => void;
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+
   constructor(
     hudParent: HTMLElement,
     config: EddieConfig,
     onExit: () => void,
-    opts?: { bgIndex?: number; demo?: boolean },
+    opts?: {
+      bgIndex?: number;
+      demo?: boolean;
+      fakeMicBuffer?: AudioBuffer;
+      capture?: boolean;
+      fileName?: string;
+    },
   ) {
     this.hudParent = hudParent;
     this.config = config;
@@ -135,6 +207,9 @@ export class InfiniteEddieState implements GameState {
         ? opts.bgIndex
         : Math.floor(Math.random() * BACKGROUNDS.length);
     this.demo = opts?.demo ?? false;
+    this.fakeMicBuffer = opts?.fakeMicBuffer ?? null;
+    this.capture = opts?.capture ?? false;
+    if (opts?.fileName) this.fileName = opts.fileName;
   }
 
   enter(game: Game) {
@@ -214,6 +289,12 @@ export class InfiniteEddieState implements GameState {
         }
         this.quarterScored = false;
         this.sawPlayingQuarter = true;
+        this.captureLog?.intensity.push({
+          measure: info.measureInPlay,
+          beat: info.beatInPhase,
+          perf: this.perf,
+          audioTime: info.time,
+        });
       }
     });
 
@@ -241,18 +322,43 @@ export class InfiniteEddieState implements GameState {
       const dur = this.conductor.measureDuration();
       const start = this.conductor.measureStartTime(p.measureIdx);
       const frac = dur > 0 ? (p.audioTime - start) / dur : 0;
-      this.juice.emit("eddieNote", {
+      const note = {
         measure: p.measureIdx,
         beatFraction: Math.max(0, Math.min(1, frac)),
         pitchClass: p.pitchClass,
         midi: p.midi,
         inKey: this.keySet.has(p.pitchClass),
         audioTime: p.audioTime,
+        onsetId: p.onsetId,
+      };
+      this.juice.emit("eddieNote", note);
+      this.captureLog?.notes.push(note);
+      // Remember where this onset's note opened so its NoteEnd can grow a bar.
+      this.noteStarts.set(p.onsetId, { measure: p.measureIdx, startTime: start });
+    });
+
+    // A note ended — grow its grid bar from onset to here (clamped to its cell).
+    this.offNoteEnd = this.tracker.onNoteEnd((e) => {
+      const begun = this.noteStarts.get(e.onsetId);
+      if (!begun) return;
+      const dur = this.conductor.measureDuration();
+      const endFrac = dur > 0 ? (e.time - begun.startTime) / dur : 0;
+      this.juice.emit("eddieNoteEnd", {
+        onsetId: e.onsetId,
+        measure: begun.measure,
+        endBeatFraction: Math.max(0, Math.min(1, endFrac)),
+        audioTime: e.time,
       });
+      this.noteStarts.delete(e.onsetId);
     });
 
     this.keyHandler = (e: KeyboardEvent) => {
       if (e.repeat) return;
+      if (this.capture && (e.key === "Escape" || e.key === "Backspace")) {
+        e.preventDefault();
+        this.onExit();
+        return;
+      }
       if (this.demo && this.handleDemoKey(e)) return;
       const midi = KEY_TO_MIDI[e.code];
       if (midi === undefined) return;
@@ -265,8 +371,59 @@ export class InfiniteEddieState implements GameState {
     window.addEventListener("keydown", this.keyHandler);
 
     if (this.demo) this.buildDemoHud();
+    if (this.capture) this.setupCapture();
 
     void this.startEngine();
+  }
+
+  /** Record/debug mode: collect the raw detection stream + build the download
+   *  HUD. Notes/scores/intensity are pushed from the existing handlers. */
+  private setupCapture() {
+    const ctx = getAudioContext();
+    this.captureLog = {
+      meta: {
+        fileName: this.fileName,
+        bpm: this.config.bpm,
+        keyRoot: this.config.keyRoot,
+        keyMode: this.config.keyMode,
+        sampleRate: ctx.sampleRate,
+        startedAt: new Date().toISOString(),
+        source: this.fakeMicBuffer ? "file" : "mic",
+      },
+      playStartTime: 0,
+      onsets: [],
+      pitches: [],
+      noteEnds: [],
+      notes: [],
+      scores: [],
+      intensity: [],
+    };
+    this.offCapOnset = this.tracker.onOnset((e: OnsetEvent) => {
+      this.captureLog?.onsets.push({
+        time: e.time,
+        energy: e.energy,
+        synthetic: e.synthetic,
+      });
+      this.updateCaptureHud();
+    });
+    this.offCapPitch = this.tracker.onPitchUpdate((u: PitchUpdate) => {
+      this.captureLog?.pitches.push({
+        onsetId: u.onsetId,
+        time: u.time,
+        freq: u.freq,
+        midi: u.midi,
+        confidence: u.confidence,
+        status: u.status,
+      });
+    });
+    this.offCapEnd = this.tracker.onNoteEnd((e: NoteEnd) => {
+      this.captureLog?.noteEnds.push({
+        onsetId: e.onsetId,
+        time: e.time,
+        reason: e.reason,
+      });
+    });
+    this.buildCaptureHud();
   }
 
   private handleDemoKey(e: KeyboardEvent): boolean {
@@ -301,6 +458,8 @@ export class InfiniteEddieState implements GameState {
     this.offScore?.();
     this.offTotal?.();
     this.offNote?.();
+    this.offNoteEnd?.();
+    this.noteStarts.clear();
 
     this.scorer?.detach();
     this.resolver?.detach();
@@ -314,6 +473,16 @@ export class InfiniteEddieState implements GameState {
 
     this.demoHud?.remove();
     this.demoHud = null;
+
+    this.offCapOnset?.();
+    this.offCapPitch?.();
+    this.offCapEnd?.();
+    if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+      try { this.mediaRecorder.stop(); } catch { /* already stopped */ }
+    }
+    this.mediaRecorder = null;
+    this.captureHud?.remove();
+    this.captureHud = null;
 
     // Release every juice subscriber so the Art rig (already disposed) and any
     // late listeners can't fire after teardown.
@@ -335,12 +504,25 @@ export class InfiniteEddieState implements GameState {
     const intensity = this.manualIntensity >= 0 ? this.manualIntensity : this.perf;
     this.juice.emit("eddieIntensity", { value: intensity, audioTime });
     if (this.demoHud) this.updateDemoHud(intensity);
+    if (this.captureHud) this.updateCaptureHud();
 
     this.art?.update(dt, audioTime);
 
     if (this.finishedAt > 0 && audioTime >= this.finishedAt) {
       this.finishedAt = 0;
-      this.onExit();
+      // Record/debug mode holds on the final populated timeline (Esc to exit)
+      // so the run can be inspected/screenshotted; normal play returns to menu.
+      if (this.capture) this.markCaptureDone();
+      else this.onExit();
+    }
+  }
+
+  private markCaptureDone() {
+    const c = this.captureHud?.querySelector<HTMLDivElement>('[data-cap="counts"]');
+    if (c && this.captureLog) {
+      c.textContent =
+        `DONE · onsets ${this.captureLog.onsets.length} · ` +
+        `notes ${this.captureLog.notes.length} · scores ${this.captureLog.scores.length}`;
     }
   }
 
@@ -356,6 +538,92 @@ export class InfiniteEddieState implements GameState {
       `<b>[</b>/<b>]</b> intensity &middot; <b>\\</b> auto &middot; <b>Esc</b> back to menu`;
   }
 
+  // --- Record/debug mode HUD + downloads ----------------------------------
+
+  private buildCaptureHud() {
+    const el = document.createElement("div");
+    el.className = "eddie-capture-hud";
+    el.style.cssText =
+      "position:absolute;right:14px;top:14px;z-index:60;min-width:210px;" +
+      "font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#cfe;" +
+      "background:rgba(10,8,24,0.82);border:1px solid #ff2bd6;border-radius:8px;" +
+      "padding:10px 12px;box-shadow:0 0 18px rgba(255,43,214,0.4);";
+    const src = this.fakeMicBuffer ? `FILE: ${this.fileName}` : "LIVE MIC";
+    el.innerHTML =
+      `<div style="font-weight:700;color:#ff7be9;margin-bottom:6px">● REC &middot; ${src}</div>` +
+      `<div data-cap="counts">onsets 0 · notes 0 · score 0</div>` +
+      `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">` +
+      `<button data-cap="json" style="cursor:pointer">⤓ notes.json</button>` +
+      `<button data-cap="audio" style="cursor:pointer">⤓ audio</button>` +
+      `</div>` +
+      `<div style="margin-top:6px;opacity:0.7">Esc: back to menu</div>`;
+    el.querySelectorAll("button").forEach((b) => {
+      (b as HTMLButtonElement).style.cssText =
+        "background:#1a1430;color:#cfe;border:1px solid #5a4a8a;border-radius:5px;" +
+        "padding:4px 7px;font:inherit;cursor:pointer;";
+    });
+    el.querySelector<HTMLButtonElement>('[data-cap="json"]')!.onclick = () =>
+      this.downloadCaptureJson();
+    el.querySelector<HTMLButtonElement>('[data-cap="audio"]')!.onclick = () =>
+      this.downloadAudio();
+    this.hudParent.appendChild(el);
+    this.captureHud = el;
+  }
+
+  private updateCaptureHud() {
+    if (!this.captureHud || !this.captureLog) return;
+    const c = this.captureHud.querySelector<HTMLDivElement>('[data-cap="counts"]');
+    if (c) {
+      const pct = Math.round(this.perf * 100);
+      c.textContent =
+        `onsets ${this.captureLog.onsets.length} · ` +
+        `notes ${this.captureLog.notes.length} · ` +
+        `score ${this.captureLog.scores.length} · int ${pct}%`;
+    }
+  }
+
+  private triggerDownload(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  private downloadCaptureJson() {
+    if (!this.captureLog) return;
+    const base = this.fileName.replace(/\.[^.]+$/, "");
+    this.triggerDownload(
+      new Blob([JSON.stringify(this.captureLog, null, 2)], { type: "application/json" }),
+      `eddie-capture-${base}.json`,
+    );
+  }
+
+  private downloadAudio() {
+    const base = this.fileName.replace(/\.[^.]+$/, "");
+    if (this.fakeMicBuffer) {
+      this.triggerDownload(audioBufferToWav(this.fakeMicBuffer), `eddie-input-${base}.wav`);
+      return;
+    }
+    if (this.mediaRecorder) {
+      const rec = this.mediaRecorder;
+      const finish = () => {
+        const type = rec.mimeType || "audio/webm";
+        const ext = type.includes("ogg") ? "ogg" : "webm";
+        this.triggerDownload(new Blob(this.recordedChunks, { type }), `eddie-input-${base}.${ext}`);
+      };
+      if (rec.state === "recording") {
+        rec.onstop = finish;
+        rec.stop();
+      } else {
+        finish();
+      }
+    }
+  }
+
   /** Translate a scored quarter (or tagged-clear) into juice events. */
   private onScore(ev: EddieScoreEvent) {
     // Tagged-measure clears light a grid measure on fire (tier 1 = 8th clear,
@@ -365,6 +633,15 @@ export class InfiniteEddieState implements GameState {
     } else if (ev.kinds.includes("eighthTagClear")) {
       this.juice.emit("eddieFire", { measure: ev.measure, tier: 1, audioTime: ev.audioTime });
     }
+
+    this.captureLog?.scores.push({
+      measure: ev.measure,
+      beat: ev.beat,
+      kinds: ev.kinds,
+      points: ev.points,
+      multiplier: ev.multiplier,
+      audioTime: ev.audioTime,
+    });
 
     // Record that this quarter scored (per-quarter events carry the "quarter"
     // kind; measure-level tag-clears don't). onBeat applies the +/-0.0315
@@ -418,13 +695,43 @@ export class InfiniteEddieState implements GameState {
     const ctx = getAudioContext();
     if (ctx.state === "suspended") await ctx.resume();
     this.conductor.startPreroll();
+    // Route a calibration file through the real chain instead of the mic.
+    if (this.fakeMicBuffer) this.tracker.prepareFakeMic(this.fakeMicBuffer);
     try {
       await this.tracker.start();
     } catch (err) {
       console.warn("[eddie] mic denied or unavailable — keyboard fallback only", err);
     }
+    // Capture the live mic input so the exact audio that drove detection can be
+    // downloaded for diagnosis (file source is downloaded from the buffer).
+    if (this.capture && !this.fakeMicBuffer) this.startMicRecording();
     // Begin the count-in shortly after preroll so the player hears a couple of
     // metronome/drum beats first (mirrors LevelState's 600ms lead-in).
-    setTimeout(() => this.conductor.triggerPlay(), 600);
+    setTimeout(() => {
+      this.conductor.triggerPlay();
+      // Align the calibration file so its first note lands at scored measure 0.
+      if (this.fakeMicBuffer) {
+        const startAt = this.conductor.measureStartTime(0);
+        if (this.captureLog) this.captureLog.playStartTime = startAt;
+        this.tracker.startFakeMicPlayback(startAt);
+      } else if (this.captureLog) {
+        this.captureLog.playStartTime = this.conductor.measureStartTime(0);
+      }
+    }, 600);
+  }
+
+  private startMicRecording() {
+    const stream = this.tracker.mediaStream;
+    if (!stream || typeof MediaRecorder === "undefined") return;
+    try {
+      this.mediaRecorder = new MediaRecorder(stream);
+      this.recordedChunks = [];
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.recordedChunks.push(e.data);
+      };
+      this.mediaRecorder.start();
+    } catch (err) {
+      console.warn("[eddie] mic recording unavailable", err);
+    }
   }
 }

@@ -10,6 +10,9 @@ export interface PitchFiredEvent {
   confidence: number;
   audioTime: number;
   measureIdx: number;
+  /** Engine onset id this note belongs to — lets consumers correlate the note
+   *  with its later NoteEnd (e.g. to draw a duration bar on the grid). */
+  onsetId: number;
 }
 
 export interface KeysNarrowedEvent {
@@ -68,6 +71,7 @@ export class KeyResolver {
         confidence,
         audioTime: u.time,
         measureIdx: this.currentMeasure,
+        onsetId: u.onsetId,
       });
       this.bus.emit("keysNarrowed", {
         remaining: Array.from(this.candidates),

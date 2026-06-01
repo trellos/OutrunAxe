@@ -72,8 +72,11 @@ export class Composer {
     // High threshold so only genuinely emissive neon/signage blooms — lit
     // white geometry (subway tiles, the avatar's legs, road dashes) stays
     // crisp instead of blowing out in brighter levels.
+    // Bloom is low-frequency (a blur), so render it at HALF resolution: the
+    // iterative blur passes are the dominant per-frame GPU cost and this roughly
+    // quarters that work with no visible difference — big FPS win on weaker GPUs.
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(w, h),
+      new THREE.Vector2(Math.max(1, w >> 1), Math.max(1, h >> 1)),
       0.55,
       0.45,
       0.9,
@@ -94,7 +97,7 @@ export class Composer {
     const cw = Math.max(1, w);
     const ch = Math.max(1, h);
     this.composer.setSize(cw, ch);
-    this.bloomPass.resolution.set(cw, ch);
+    this.bloomPass.resolution.set(Math.max(1, cw >> 1), Math.max(1, ch >> 1));
   }
 
   setBloomStrength(s: number) {

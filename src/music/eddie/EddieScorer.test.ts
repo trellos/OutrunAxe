@@ -44,6 +44,7 @@ class FakeResolver {
       confidence: 1,
       audioTime,
       measureIdx,
+      onsetId: 0,
     });
   }
 }

@@ -362,6 +362,128 @@
   transform: scale(0.96);
 }
 
+/* Key-root dropdown — high-contrast and obviously tappable (dark text on bright
+   cyan, a visible caret, and a min width so the selected note always shows). */
+.eddie-settings-select {
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #10081c;
+  background-color: #00f0ff;
+  /* Custom caret (appearance:none drops the native one) so it reads as a menu. */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%2310081c' stroke-width='2'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  padding: 6px 30px 6px 14px;
+  min-width: 84px;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.7);
+}
+.eddie-settings-select:hover {
+  background-color: #5cf7ff;
+  box-shadow: 0 0 22px rgba(0, 240, 255, 1);
+}
+.eddie-settings-select option {
+  background: #14091e;
+  color: #fff;
+}
+
+/* Major / Minor radio pills. */
+.eddie-settings-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 4px 8px;
+  border: 1px solid rgba(74, 42, 122, 0.8);
+  border-radius: 4px;
+  background: rgba(10, 6, 18, 0.6);
+}
+.eddie-settings-radio input {
+  accent-color: var(--eddie-magenta);
+  cursor: pointer;
+}
+.eddie-settings-radio:has(input:checked) {
+  border-color: var(--eddie-magenta);
+  box-shadow: 0 0 12px rgba(255, 43, 214, 0.6);
+}
+
+/* Record/debug control on the settings screen. */
+.eddie-rec-row {
+  flex-wrap: wrap;
+}
+.eddie-rec-btn {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #fff;
+  background: linear-gradient(180deg, #ff2bd6, #c4189f);
+  border: 2px solid #fff;
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 14px rgba(255, 43, 214, 0.6);
+}
+.eddie-rec-btn.eddie-rec-on {
+  background: linear-gradient(180deg, #ff5252, #b71c1c);
+  animation: eddie-rec-pulse 1s ease-in-out infinite;
+}
+@keyframes eddie-rec-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 64, 64, 0.6); }
+  50% { box-shadow: 0 0 24px rgba(255, 64, 64, 1); }
+}
+.eddie-rec-hint {
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #9fd9ff;
+  opacity: 0.85;
+}
+
+/* Bass window — one chip per measure root; the active one lights up in time. */
+.eddie-bass-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.eddie-bass-note {
+  display: inline-block;
+  min-width: 26px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #6b6b86;
+  border: 1px solid transparent;
+  text-shadow: none;
+  transition: color 0.08s ease, background 0.12s ease, box-shadow 0.12s ease,
+    transform 0.1s ease, border-color 0.12s ease;
+}
+.eddie-bass-note-on {
+  color: #10081c;
+  background: var(--eddie-cyan);
+  border-color: #fff;
+  box-shadow: 0 0 22px rgba(0, 240, 255, 1), 0 0 6px #fff;
+  transform: scale(1.35);
+}
+.eddie-bass-sep {
+  color: rgba(255, 255, 255, 0.3);
+}
+
 /* Live 4-measure input timeline mount — frame it like a tape window. */
 .eddie-settings-timeline {
   position: relative;
@@ -450,6 +572,10 @@
 .eddie-bgmenu {
   position: absolute;
   inset: 0;
+  /* #hud is pointer-events:none; re-enable here so the menu cards are clickable
+     by a real mouse (otherwise the 3D canvas underneath intercepts clicks). */
+  pointer-events: auto;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;

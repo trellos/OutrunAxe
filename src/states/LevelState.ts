@@ -631,6 +631,7 @@ export class LevelState implements GameState {
             confidence: 1,
             audioTime: this.conductor.audioTime,
             measureIdx: this.conductor.currentPlayMeasure(),
+            onsetId: 0,
           });
         }
       }, 30);

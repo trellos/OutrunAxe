@@ -60,8 +60,11 @@ export class PitchTracker {
     this.fakeMicBuffer = audioBuffer;
   }
 
-  startFakeMicPlayback() {
-    this.fakeSource?.start();
+  /** Start the prepared fake-mic source. `when` (audio-clock time) schedules
+   *  playback to begin exactly then — used to align a calibration file with the
+   *  first scored measure; omit for immediate start. */
+  startFakeMicPlayback(when?: number) {
+    this.fakeSource?.start(when);
   }
 
   async start(): Promise<void> {

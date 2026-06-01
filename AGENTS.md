@@ -93,7 +93,9 @@ same event stream as the mic, and plays an audible oscillator tone.
 src/
   engine/
     Game.ts            state machine + rAF; calls state.update(dt, audioTime)
-    Renderer.ts        WebGLRenderer (preserveDrawingBuffer), Composer, cams
+    Renderer.ts        WebGLRenderer + Composer + cams. Perf flags (URL): ?nofx
+                       (skip bloom), ?dpr1 (pixelRatio 1), ?norender, ?noaa,
+                       ?grab (preserveDrawingBuffer, for toDataURL — OFF by default)
     Clock.ts           audioNow() — the ONLY place that reads currentTime
     EventBus.ts        tiny typed pub/sub
     AssetLoader.ts     GLTFLoader + SkeletonUtils.clone + promise cache
@@ -158,8 +160,9 @@ plans/
   then `g.renderer.composer.render(0.016)` and screenshot.
 - The MCP screenshot tool intermittently stalls on the heavy frozen scene.
   Restarting the preview server gives a fresh window that captures fine.
-  `renderer.domElement.toDataURL()` works because `preserveDrawingBuffer`
-  is enabled in `Renderer.ts`.
+  `renderer.domElement.toDataURL()` needs `preserveDrawingBuffer`, which is now
+  OFF by default (it forced a per-frame framebuffer copy — a real perf cost).
+  Add `?grab` to the URL to re-enable it for an in-page canvas grab.
 - If `gl.drawingBufferWidth` reads 1, the headless window collapsed — force
   `renderer.setSize(w,h)` + `composer.setSize(w,h)` via eval.
 

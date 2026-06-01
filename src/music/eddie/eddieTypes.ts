@@ -141,5 +141,17 @@ export type EddieJuiceEvents = {
     midi: number;
     inKey: boolean;
     audioTime: number;
+    /** Engine onset id — pairs this note's start with its later eddieNoteEnd so
+     *  the grid can grow the note's duration bar. -1 for synthetic/keyboard. */
+    onsetId: number;
+  };
+  /** A previously-plotted note ended; the grid extends its bar to this point.
+   *  endBeatFraction is in the START measure's 0..1 span (clamped to 1 if the
+   *  note runs past its cell). */
+  eddieNoteEnd: {
+    onsetId: number;
+    measure: number;
+    endBeatFraction: number;
+    audioTime: number;
   };
 };
