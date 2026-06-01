@@ -699,22 +699,6 @@ export class EddieSettingsState implements GameState {
       ctx.lineTo(x, canvas.height);
       ctx.stroke();
     }
-    // Triplet subdivisions — at 1/3 and 2/3 of each beat, where the straight
-    // 16th grid has no line. Amber + dashed so triplet playing has something to
-    // sit on without being confused for the straight grid.
-    ctx.strokeStyle = "rgba(255,176,59,0.55)";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 4]);
-    for (let b = 0; b < BEATS; b++) {
-      for (const frac of [1 / 3, 2 / 3]) {
-        const x = Math.round((b + frac) * PX_PER_BEAT) + 0.5;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
-    }
-    ctx.setLineDash([]);
   }
 
   /** Drop notes older than ~one measure so the map stays small. */

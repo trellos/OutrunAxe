@@ -106,15 +106,19 @@ export const PITCH_DETECTION_DELAY = 0.025;
 // (~80ms) = much higher rate.
 const BEND_RATE_THRESHOLD = 1500;
 
-// Real guitar pluck has a secondary string-settle spike 100–200 ms after the
-// initial attack — same string still vibrating, same pitch. Without this
-// gate the engine fires a phantom OnsetEvent for every plucked note. When a
-// candidate onset lands inside this window of the last EMITTED onset, we
-// defer the emission until pitch is read; if the new pitch class matches
-// the last emitted pitch class, drop the candidate as a settle artefact.
-// Cost: ~25 ms onset latency for tentative onsets. Limitation: legitimate
-// same-pitch repeats inside this window are also suppressed.
-const DUPLICATE_ONSET_WINDOW = 0.25;
+// Window for same-pitch settle-spike suppression: a candidate onset this close
+// to the last EMITTED onset is deferred until pitch is read, and dropped if its
+// pitch class matches (a string-settle artefact, not a new note).
+//
+// This MUST stay below the spacing of real fast notes or it eats them: at
+// 120 BPM sixteenths are 125 ms and eighth-triplets 167 ms apart. The old
+// 250 ms value funneled EVERY fast note into a single-slot "pending" buffer
+// where the next onset overwrote it — dropping ~31% of triplets/16ths and
+// emitting some out of order. The onset gate's own DECAY_REQUIRED + 100 ms
+// attack-spike window are the real settle guards (a sustaining string can't
+// re-fire until it has decayed), so this only needs to catch near-simultaneous
+// double-fires. 90 ms < every real subdivision, so fast notes emit directly.
+const DUPLICATE_ONSET_WINDOW = 0.09;
 
 // Tighter window for the chromatic-neighbor (slide) suppression. A fretboard
 // slide between adjacent scale tones momentarily sounds the in-between pitch
