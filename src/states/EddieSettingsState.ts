@@ -16,7 +16,6 @@ import type { Game, GameState } from "../engine/Game";
 import { Conductor } from "../audio/Conductor";
 import { PitchTracker } from "../audio/PitchTracker";
 import { getAudioContext } from "../audio/AudioContextSingleton";
-import { BarAccumulator } from "../hud/noteBars";
 import { NOTE_NAMES } from "../audio/midi";
 import { generateBassline } from "../music/eddie/basslineGen";
 import type { EddieConfig, PitchClass, KeyMode } from "../music/eddie/eddieTypes";
@@ -97,7 +96,14 @@ export class EddieSettingsState implements GameState {
   private overlayCanvas: HTMLCanvasElement | null = null;
   private overlayCtx: CanvasRenderingContext2D | null = null;
   private measureStart = -1;
-  private bars = new BarAccumulator(PX_PER_BEAT / 10);
+  /** Notes for the timeline, keyed by onset id: a bar from the onset to the
+   *  note's end (next pluck / silence), positioned by actual played time. The
+   *  whole measure is redrawn each frame from this, so bars map to real timing
+   *  on the subdivision grid (not fragmented incremental draws). */
+  private timelineNotes = new Map<
+    number,
+    { start: number; end: number; ended: boolean; midi: number }
+  >();
 
 
   /** Realtime diagnostics overlay (?perf=1) — fps, frame gaps, beat-drop. */
@@ -151,6 +157,14 @@ export class EddieSettingsState implements GameState {
     // loops the beat + 4-measure bass like a metronome.
     this.conductor = new Conductor({ maxBpm: MAX_BPM });
     this.conductor.setBpm(this.bpm);
+
+    // DEBUG (?replay): render a recorded notes.json through the REAL plotPitch
+    // onto the timeline, statically, so the exact rendering can be inspected
+    // without mic/audio timing. Skips the live signal chain.
+    if (new URLSearchParams(location.search).has("replay")) {
+      void this.runReplay();
+      return;
+    }
     this.tracker = new PitchTracker();
     this.audio = createEddieAudio(AUDIO_VARIANT, this.conductor, this.currentConfig());
     this.audio.start();
@@ -197,7 +211,7 @@ export class EddieSettingsState implements GameState {
 
   update(dt: number) {
     this.playButton?.update(dt);
-    this.drawPulse();
+    this.redrawTimeline();
   }
 
   // ------------------------------------------------------------------------
@@ -435,8 +449,6 @@ export class EddieSettingsState implements GameState {
       }
       if (info.beat % BEATS === 0) {
         this.measureStart = info.time;
-        this.bars.reset();
-        this.drawGrid();
         // Highlight the bass chip whose downbeat root is now sounding. EddieBass
         // loops the 4-measure pattern off floor(beat/4)%4 in preroll; mirror it,
         // and fire the visual when the note is AUDIBLE (scheduled time + output
@@ -448,7 +460,14 @@ export class EddieSettingsState implements GameState {
       }
     });
     this.tracker.onPitchUpdate((u) => {
-      this.plotPitch(u.time, u.midi, u.onsetId);
+      // Fill in the lane (pitch) for this onset's note; create it if the onset
+      // event hasn't been seen (defensive).
+      const n = this.timelineNotes.get(u.onsetId);
+      if (n) {
+        if (n.midi < 0) n.midi = u.midi;
+      } else {
+        this.timelineNotes.set(u.onsetId, { start: u.time, end: u.time, ended: false, midi: u.midi });
+      }
       if (this.recording) {
         this.capPitches.push({
           onsetId: u.onsetId, time: u.time, freq: u.freq, midi: u.midi,
@@ -458,12 +477,21 @@ export class EddieSettingsState implements GameState {
     });
     this.tracker.onOnset((e) => {
       this.perf?.noteOnset();
+      // Open a note bar at the onset; lane filled by the first pitch update,
+      // end set by the NoteEnd (next pluck / silence). Until then it grows to
+      // the playhead in redrawTimeline.
+      if (!this.timelineNotes.has(e.id)) {
+        this.timelineNotes.set(e.id, { start: e.time, end: e.time, ended: false, midi: -1 });
+      }
+      this.pruneTimelineNotes(e.time);
       if (this.recording) {
         this.capOnsets.push({ time: e.time, energy: e.energy, synthetic: e.synthetic });
         this.updateRecHint();
       }
     });
     this.tracker.onNoteEnd((e) => {
+      const n = this.timelineNotes.get(e.onsetId);
+      if (n) { n.end = e.time; n.ended = true; }
       if (this.recording) this.capNoteEnds.push({ onsetId: e.onsetId, time: e.time, reason: e.reason });
     });
 
@@ -483,13 +511,20 @@ export class EddieSettingsState implements GameState {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(26, 15, 46, 0.55)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    for (let b = 0; b <= BEATS; b++) {
-      const isMeasure = b % BEATS === 0;
-      // Nudge the leftmost line in by 1px so the downbeat (beat 1) isn't clipped
-      // against the canvas edge — it was effectively invisible before.
-      const x = (b === 0 ? 1 : Math.round(b * PX_PER_BEAT)) + 0.5;
-      ctx.strokeStyle = isMeasure ? "rgba(255,43,214,0.95)" : "rgba(0,240,255,0.4)";
-      ctx.lineWidth = isMeasure ? 2 : 1;
+    // 16 sixteenth divisions across the 4-beat measure. Quarters bold (magenta),
+    // eighths medium (cyan), sixteenths faint — so eighth/sixteenth notes have a
+    // line to sit on instead of floating between quarter lines.
+    const sixteenth = PX_PER_BEAT / 4;
+    for (let i = 0; i <= BEATS * 4; i++) {
+      const isQuarter = i % 4 === 0;
+      const isEighth = i % 2 === 0;
+      const x = (i === 0 ? 1 : Math.round(i * sixteenth)) + 0.5;
+      ctx.strokeStyle = isQuarter
+        ? "rgba(255,43,214,0.95)"
+        : isEighth
+          ? "rgba(0,240,255,0.45)"
+          : "rgba(0,240,255,0.16)";
+      ctx.lineWidth = isQuarter ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, canvas.height);
@@ -503,62 +538,105 @@ export class EddieSettingsState implements GameState {
     }
   }
 
-  private drawPulse() {
-    const ctx = this.overlayCtx;
-    const ov = this.overlayCanvas;
-    if (!ctx || !ov || !this.conductor || this.measureStart < 0) {
-      if (ctx && ov) ctx.clearRect(0, 0, ov.width, ov.height);
-      return;
+  /** Drop notes older than ~one measure so the map stays small. */
+  private pruneTimelineNotes(now: number) {
+    const cutoff = now - BEATS * (60 / this.bpm) - 1;
+    for (const [id, n] of this.timelineNotes) {
+      if ((n.ended ? n.end : n.start) < cutoff) this.timelineNotes.delete(id);
     }
-    ctx.clearRect(0, 0, ov.width, ov.height);
-    const beatDur = 60 / this.conductor.currentBpm;
-    // Beats are scheduled on the audio clock, but the user HEARS them ~output
-    // latency later. Reference the playhead to audible-time so the pulse lands
-    // on the beat the player actually hears (and plays to), not when it was
-    // scheduled — otherwise the indicator leads the music.
-    const outLatency = getAudioContext().outputLatency || 0;
-    const into = this.conductor.audioTime - outLatency - this.measureStart;
-    if (into < 0 || into > BEATS * beatDur) return;
-    // CONTINUOUS playhead: position is read straight from the audio clock every
-    // frame, so it sweeps smoothly at the display's full rate and its position
-    // is exact to the sample (no per-beat snapping / no drift). The beats are
-    // where it crosses the gridlines; it flares brighter right on each beat.
-    const x = (into / beatDur) * PX_PER_BEAT;
-    const beatPhaseMs = (into % beatDur) * 1000;
-    const onBeat = Math.max(0, 1 - beatPhaseMs / 90); // 1 on the beat → 0 by 90ms
-    ctx.strokeStyle = `rgba(0, 240, 255, ${0.85 + 0.15 * onBeat})`;
-    ctx.lineWidth = 2 + 2 * onBeat;
-    ctx.shadowColor = "rgba(0, 240, 255, 0.9)";
-    ctx.shadowBlur = 6 + 10 * onBeat;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, ov.height);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
   }
 
-  private plotPitch(audioTime: number, midi: number, onsetId: number) {
+  /** Redraw the whole timeline each frame from the note map: a bar per note,
+   *  from its onset to its end (or the playhead while still sounding),
+   *  positioned by the actual played time on the subdivision grid. Drawing the
+   *  full measure each frame (instead of incremental dabs) is what makes the
+   *  bars faithfully represent timing. */
+  private redrawTimeline() {
     const ctx = this.ctx2d;
-    if (!ctx || !this.conductor || this.measureStart < 0) return;
+    const canvas = this.canvas;
+    if (!ctx || !canvas || !this.conductor || this.measureStart < 0) return;
     const beatDur = 60 / this.conductor.currentBpm;
     const span = BEATS * beatDur;
-    const into = audioTime - this.measureStart;
-    if (into < -0.05 || into > span) return;
-    const clamped = Math.max(0, Math.min(span, into));
-    const x = (clamped / beatDur) * PX_PER_BEAT;
-    const y = laneY(midi);
-    const bar = this.bars.feed(onsetId, x, y);
-    if (!bar) return;
-    // Pitched note bar. Enforce a minimum visible length (~a sixteenth) so a
-    // short note reads as a clear time-block, not a 1px glitch, and give it a
-    // bright core + glow so it pops at a glance.
-    const minW = PX_PER_BEAT * 0.18;
-    const w = Math.max(minW, bar.x1 - bar.x0);
+    this.drawGrid(); // clears + background + subdivision gridlines + numbers
+
+    const now = this.conductor.audioTime;
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
     ctx.fillStyle = "#00f0ff";
-    ctx.fillRect(Math.round(bar.x0), Math.round(bar.y - (BAND_HEIGHT + 2) / 2), Math.round(w), BAND_HEIGHT + 2);
+    for (const [, n] of this.timelineNotes) {
+      if (n.midi < 0) continue;
+      const endT = n.ended ? n.end : now;
+      const s = n.start - this.measureStart;
+      const e = endT - this.measureStart;
+      if (e < 0 || s > span) continue; // not in the current measure window
+      const x0 = (Math.max(0, s) / beatDur) * PX_PER_BEAT;
+      const x1 = (Math.min(span, e) / beatDur) * PX_PER_BEAT;
+      const y = laneY(n.midi);
+      ctx.fillRect(
+        Math.round(x0),
+        Math.round(y - (BAND_HEIGHT + 2) / 2),
+        Math.max(3, Math.round(x1 - x0)),
+        BAND_HEIGHT + 2,
+      );
+    }
     ctx.shadowBlur = 0;
+
+    // Playhead, referenced to AUDIBLE time (what the player hears/plays to).
+    const outLatency = getAudioContext().outputLatency || 0;
+    const into = now - outLatency - this.measureStart;
+    if (into >= 0 && into <= span) {
+      const x = (into / beatDur) * PX_PER_BEAT;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, canvas.height);
+      ctx.stroke();
+    }
+  }
+
+  /** DEBUG (?replay): render a recorded notes.json as onset→next-onset bars on
+   *  the timeline, one measure aligned to a real onset, so the bar→beat mapping
+   *  can be screenshotted and verified. */
+  private async runReplay() {
+    try {
+      const resp = await fetch("/replay.json");
+      const data = (await resp.json()) as {
+        onsets: { time: number }[];
+        pitches: { time: number; midi: number }[];
+      };
+      const onsets = (data.onsets ?? []).map((o) => o.time).sort((a, b) => a - b);
+      const pitches = data.pitches ?? [];
+      if (onsets.length < 2) return;
+      const midiAt = (t: number): number => {
+        let best = 64;
+        let bd = 0.08;
+        for (const p of pitches) {
+          const d = Math.abs(p.time - t);
+          if (d < bd) { bd = d; best = p.midi; }
+        }
+        return best;
+      };
+      const beatDur = 60 / this.bpm;
+      const winSec = BEATS * beatDur; // 2s @ 120
+      // Align the window origin to a real onset ~1 measure in, so the first bar
+      // sits exactly on the leftmost gridline (the "downbeat" of the window).
+      const winStart = onsets.find((t) => t >= onsets[0] + winSec) ?? onsets[0];
+      this.measureStart = winStart;
+      // Populate the SAME note map the live timeline uses, then let the per-frame
+      // redrawTimeline() render it — so the replay exercises the real render path.
+      this.timelineNotes.clear();
+      for (let i = 0; i < onsets.length; i++) {
+        const start = onsets[i];
+        if (start < winStart || start >= winStart + winSec) continue;
+        const end = onsets[i + 1] ?? start + beatDur / 2;
+        this.timelineNotes.set(i, { start, end, ended: true, midi: midiAt(start) });
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[replay] notes=${this.timelineNotes.size} winStart=${winStart.toFixed(3)}`);
+    } catch (err) {
+      console.warn("[replay]", err);
+    }
   }
 
   private playTone(midi: number, audioTime: number) {

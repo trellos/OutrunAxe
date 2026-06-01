@@ -12,3 +12,6 @@ dist
 # Playwright e2e artifacts
 test-results/
 playwright-report/
+
+# Debug replay recording (provide your own)
+public/replay.json
