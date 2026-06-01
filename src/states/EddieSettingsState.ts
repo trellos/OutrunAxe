@@ -104,6 +104,27 @@ export class EddieSettingsState implements GameState {
     number,
     { start: number; end: number; ended: boolean; midi: number }
   >();
+  /** Manual visual-sync trim (seconds) on top of the auto latency comp: shifts
+   *  bars earlier so a note played on the beat sits on the beat line. Persisted;
+   *  live-adjustable via the SYNC buttons / ?cal=<ms>. */
+  private visualCalSec = EddieSettingsState.readCalSec();
+  private calValEl: HTMLElement | null = null;
+
+  private static readCalSec(): number {
+    try {
+      const url = new URLSearchParams(location.search).get("cal");
+      if (url !== null && !Number.isNaN(parseFloat(url))) return parseFloat(url) / 1000;
+      const stored = localStorage.getItem("eddie.calMs");
+      if (stored !== null && !Number.isNaN(parseFloat(stored))) return parseFloat(stored) / 1000;
+    } catch { /* no storage */ }
+    return 0;
+  }
+
+  private nudgeCal(deltaMs: number) {
+    this.visualCalSec += deltaMs / 1000;
+    try { localStorage.setItem("eddie.calMs", String(Math.round(this.visualCalSec * 1000))); } catch { /* ignore */ }
+    if (this.calValEl) this.calValEl.textContent = `${Math.round(this.visualCalSec * 1000)} ms`;
+  }
 
 
   /** Realtime diagnostics overlay (?perf=1) — fps, frame gaps, beat-drop. */
@@ -121,6 +142,9 @@ export class EddieSettingsState implements GameState {
     onsetId: number; time: number; freq: number; midi: number; confidence: number; status: string;
   }[] = [];
   private capNoteEnds: { onsetId: number; time: number; reason: string }[] = [];
+  /** Conductor beat times during a recording — lets the bar↔beat offset (the
+   *  residual latency) be measured directly from the downloaded JSON. */
+  private capBeats: number[] = [];
   private recBtn: HTMLButtonElement | null = null;
   private recHint: HTMLElement | null = null;
 
@@ -274,6 +298,13 @@ export class EddieSettingsState implements GameState {
           <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
         </div>
         <div class="eddie-settings-timeline"></div>
+        <div class="eddie-settings-row eddie-cal-row">
+          <span class="eddie-settings-label">SYNC</span>
+          <button class="eddie-cal-btn" data-cal="-10" type="button">&minus;10ms</button>
+          <span class="eddie-cal-val" data-field="cal">0 ms</span>
+          <button class="eddie-cal-btn" data-cal="10" type="button">+10ms</button>
+          <span class="eddie-rec-hint">nudge until bars sit on the beat you played</span>
+        </div>
         <div class="eddie-settings-row eddie-rec-row">
           <button class="eddie-rec-btn" type="button">&#9679; RECORD</button>
           <span class="eddie-rec-hint">play a few bars, then it downloads your audio + detected notes</span>
@@ -312,6 +343,13 @@ export class EddieSettingsState implements GameState {
     this.recBtn = overlay.querySelector<HTMLButtonElement>(".eddie-rec-btn");
     this.recHint = overlay.querySelector<HTMLElement>(".eddie-rec-hint");
     this.recBtn?.addEventListener("click", () => this.toggleRec());
+
+    // SYNC calibration: nudge the visual offset so bars land on the played beat.
+    this.calValEl = overlay.querySelector<HTMLElement>('[data-field="cal"]');
+    if (this.calValEl) this.calValEl.textContent = `${Math.round(this.visualCalSec * 1000)} ms`;
+    overlay.querySelectorAll<HTMLButtonElement>(".eddie-cal-btn").forEach((b) => {
+      b.addEventListener("click", () => this.nudgeCal(Number(b.getAttribute("data-cal")) || 0));
+    });
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -438,6 +476,7 @@ export class EddieSettingsState implements GameState {
     // synchronously inside startPreroll) is caught and opens the first window.
     this.offBeat = this.conductor.onBeat((info) => {
       this.perf?.noteBeat();
+      if (this.recording) this.capBeats.push(info.time);
       // Beat-synced glitch hook: theme CSS reacts to .eddie-beat (every beat) and
       // .eddie-beat-down (downbeat) to flicker/RGB-split the settings UI in time.
       const root = this.overlay;
@@ -560,13 +599,17 @@ export class EddieSettingsState implements GameState {
     this.drawGrid(); // clears + background + subdivision gridlines + numbers
 
     const now = this.conductor.audioTime;
+    const outLat = getAudioContext().outputLatency || 0;
+    const cal = this.visualCalSec; // manual trim to zero residual latency
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
     ctx.fillStyle = "#00f0ff";
     for (const [, n] of this.timelineNotes) {
       if (n.midi < 0) continue;
-      const endT = n.ended ? n.end : now;
-      const s = n.start - this.measureStart;
+      // Trim detected times by the manual sync offset; an unfinished note grows
+      // to the audible playhead.
+      const endT = n.ended ? n.end - cal : now - outLat;
+      const s = n.start - cal - this.measureStart;
       const e = endT - this.measureStart;
       if (e < 0 || s > span) continue; // not in the current measure window
       const x0 = (Math.max(0, s) / beatDur) * PX_PER_BEAT;
@@ -670,6 +713,7 @@ export class EddieSettingsState implements GameState {
     this.capOnsets = [];
     this.capPitches = [];
     this.capNoteEnds = [];
+    this.capBeats = [];
     this.recordedChunks = [];
     this.recStartAudioTime = this.conductor?.audioTime ?? 0;
 
@@ -721,10 +765,15 @@ export class EddieSettingsState implements GameState {
         sampleRate: getAudioContext().sampleRate,
         recStartAudioTime: this.recStartAudioTime,
         startedAt: new Date().toISOString(),
+        // Latency model, so the bar↔beat offset can be reasoned about:
+        latencyCompSec: this.tracker?.latencyComp ?? 0,
+        visualCalMs: Math.round(this.visualCalSec * 1000),
+        outputLatencySec: getAudioContext().outputLatency ?? 0,
       },
       onsets: this.capOnsets,
       pitches: this.capPitches,
       noteEnds: this.capNoteEnds,
+      beats: this.capBeats,
     };
     this.downloadBlob(
       new Blob([JSON.stringify(log, null, 2)], { type: "application/json" }),

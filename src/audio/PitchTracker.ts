@@ -47,6 +47,15 @@ export class PitchTracker {
   private beatProximityProvider: ((audioTime: number) => number) | null = null;
   private fakeMicBuffer: AudioBuffer | null = null;
   private fakeSource: AudioBufferSourceNode | null = null;
+  /** Real mic input latency reported by the capture track (seconds), if the
+   *  browser provides it — replaces the INPUT_LATENCY_HINT guess. */
+  private measuredInputLatency: number | null = null;
+
+  /** Total round-trip latency compensation currently applied (seconds). Exposed
+   *  so the UI can show it and seed the visual calibration. */
+  get latencyComp(): number {
+    return this.totalBias();
+  }
 
   constructor() {
     this.ctx = getAudioContext();
@@ -100,8 +109,20 @@ export class PitchTracker {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-        },
+          // Ask for the lowest input latency the device can provide (non-standard
+          // constraint, supported by Chrome; cast since TS doesn't type it).
+          latency: 0,
+        } as MediaTrackConstraints & { latency?: number },
       });
+      // Use the REAL input latency the browser reports for this device instead
+      // of the INPUT_LATENCY_HINT guess (the guess under-compensated on Windows,
+      // pushing note bars late). Falls back to the hint if unreported.
+      const settings = this.stream.getAudioTracks()[0]?.getSettings() as
+        | (MediaTrackSettings & { latency?: number })
+        | undefined;
+      if (settings && typeof settings.latency === "number" && settings.latency > 0) {
+        this.measuredInputLatency = settings.latency;
+      }
       const source = this.ctx.createMediaStreamSource(this.stream);
       source.connect(this.analyser);
       source.connect(this.workletNode);
@@ -256,7 +277,12 @@ export class PitchTracker {
   };
 
   private totalBias() {
+    // Round-trip latency to compensate so a note played on the beat renders on
+    // the beat: output (you hear the click late) + input (your sound reaches the
+    // worklet late) + a manual calibration trim. Uses the device's measured
+    // input latency when available, else the hint.
     const out = this.ctx.outputLatency ?? 0;
-    return out + INPUT_LATENCY_HINT;
+    const input = this.measuredInputLatency ?? INPUT_LATENCY_HINT;
+    return out + input;
   }
 }
