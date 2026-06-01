@@ -21,11 +21,13 @@ import type { Game, GameState } from "../engine/Game";
 import { EventBus } from "../engine/EventBus";
 import { KeyResolver } from "../music/KeyResolver";
 import { keyPitchClasses } from "../music/keys";
+import { midiToPitchClass } from "../audio/midi";
 import { EddieScorer } from "../music/eddie/EddieScorer";
 import type {
   EddieConfig,
   EddieJuiceEvents,
   EddieScoreEvent,
+  PitchClass,
 } from "../music/eddie/eddieTypes";
 import { createEddieArt, type EddieArtRig } from "../eddie/art/eddieArtFactory";
 import { BACKGROUNDS } from "../eddie/art/backgrounds/registry";
@@ -136,6 +138,9 @@ export class InfiniteEddieState implements GameState {
   private offTotal?: () => void;
   private offNote?: () => void;
   private offNoteEnd?: () => void;
+  private offCountInPitch?: () => void;
+  /** onset ids already plotted to the intro row, so count-in notes don't dup. */
+  private countInPlotted = new Set<number>();
   /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
   private noteStarts = new Map<number, { measure: number; startTime: number }>();
   private keyHandler?: (e: KeyboardEvent) => void;
@@ -337,6 +342,36 @@ export class InfiniteEddieState implements GameState {
       this.noteStarts.set(p.onsetId, { measure: p.measureIdx, startTime: start });
     });
 
+    // Count-in feedback: during the 4 intro measures KeyResolver gates off
+    // pitchFired (no scoring/key-narrowing yet), so the grid would stay blank.
+    // Plot detected notes straight from the tracker into the intro row (-1..-4)
+    // so the player sees their playing land before scoring begins.
+    this.offCountInPitch = this.tracker.onPitchUpdate((u) => {
+      if (this.conductor.currentPhase !== "countIn") return;
+      if (u.status !== "settled") return;
+      if (this.introStart < 0 || this.countInPlotted.has(u.onsetId)) return;
+      const dur = this.conductor.measureDuration();
+      if (dur <= 0) return;
+      this.countInPlotted.add(u.onsetId);
+      const into = u.time - this.introStart;
+      const introMeasure = Math.max(0, Math.min(3, Math.floor(into / dur)));
+      const measure = -(introMeasure + 1); // intro-row convention (-1..-4)
+      const measureStart = this.introStart + introMeasure * dur;
+      const pitchClass = midiToPitchClass(u.midi) as PitchClass;
+      const note = {
+        measure,
+        beatFraction: Math.max(0, Math.min(1, (u.time - measureStart) / dur)),
+        pitchClass,
+        midi: u.midi,
+        inKey: this.keySet.has(pitchClass),
+        audioTime: u.time,
+        onsetId: u.onsetId,
+      };
+      this.juice.emit("eddieNote", note);
+      this.captureLog?.notes.push(note);
+      this.noteStarts.set(u.onsetId, { measure, startTime: measureStart });
+    });
+
     // A note ended — grow its grid bar from onset to here (clamped to its cell).
     this.offNoteEnd = this.tracker.onNoteEnd((e) => {
       const begun = this.noteStarts.get(e.onsetId);
@@ -459,7 +494,9 @@ export class InfiniteEddieState implements GameState {
     this.offTotal?.();
     this.offNote?.();
     this.offNoteEnd?.();
+    this.offCountInPitch?.();
     this.noteStarts.clear();
+    this.countInPlotted.clear();
 
     this.scorer?.detach();
     this.resolver?.detach();

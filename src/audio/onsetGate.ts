@@ -9,8 +9,24 @@
 // energy gates against the last accepted onset). On a true return, the
 // state has already been updated to reflect the new onset.
 
-/** Length of the analysis chunk, in samples. 512 @ 48kHz = ~10.7 ms. */
+/** Length of the analysis chunk, in samples, at the 48kHz reference rate.
+ *  512 @ 48kHz = ~10.7 ms. */
 export const ONSET_CHUNK = 512;
+
+/** The reference sample rate the gate constants were tuned at. */
+export const ONSET_REF_RATE = 48000;
+
+/**
+ * Chunk size for an arbitrary sample rate, keeping the analysis window a
+ * constant ~10.7 ms (so the gate behaves the same at 44.1k, 48k, 96k, …).
+ * Rounded to a multiple of 128 (the Web Audio render quantum) so the worklet
+ * fills it cleanly. Without this, a 96kHz context used 5.3 ms chunks, which
+ * badly under-detected re-plucked notes.
+ */
+export function onsetChunkFor(sampleRate: number): number {
+  const raw = (ONSET_CHUNK * sampleRate) / ONSET_REF_RATE;
+  return Math.max(128, Math.round(raw / 128) * 128);
+}
 
 /** Floor on absolute chunk RMS — anything quieter is silence noise. */
 export const ONSET_MIN_RMS = 0.008;

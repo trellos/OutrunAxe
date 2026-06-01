@@ -7,7 +7,7 @@
 import { YIN, AMDF, Macleod, ACF2PLUS } from "pitchfinder";
 import { freqToMidi, midiToName } from "./midi";
 import {
-  ONSET_CHUNK,
+  onsetChunkFor,
   newOnsetState,
   onsetGate,
   type OnsetState,
@@ -203,20 +203,21 @@ export class PitchEngine {
     // the legacy non-aligned (live rAF) cadence behaving as it always did.
     this.onsetState.prevChunkRms = 0;
 
-    // Walk the buffer in 512-sample chunks. The LAST chunk in the buffer
-    // that satisfies all gates wins (matches the prior process() semantics).
+    // Walk the buffer in ~10.7ms chunks (sample-rate-aware). The LAST chunk in
+    // the buffer that satisfies all gates wins (matches prior semantics).
+    const chunk = onsetChunkFor(this.sampleRate);
     let acceptedTime = -1;
     let acceptedRms = 0;
-    for (let c = 0; c + ONSET_CHUNK <= buffer.length; c += ONSET_CHUNK) {
+    for (let c = 0; c + chunk <= buffer.length; c += chunk) {
       let s = 0;
-      for (let i = 0; i < ONSET_CHUNK; i++) {
+      for (let i = 0; i < chunk; i++) {
         const v = buffer[c + i];
         s += v * v;
       }
-      const r = Math.sqrt(s / ONSET_CHUNK);
+      const r = Math.sqrt(s / chunk);
       const chunkEndTime =
-        audioTime - (buffer.length - (c + ONSET_CHUNK)) / this.sampleRate;
-      const chunkStartTime = chunkEndTime - ONSET_CHUNK / this.sampleRate;
+        audioTime - (buffer.length - (c + chunk)) / this.sampleRate;
+      const chunkStartTime = chunkEndTime - chunk / this.sampleRate;
       if (onsetGate(r, chunkStartTime, chunkEndTime, this.onsetState)) {
         acceptedTime = chunkStartTime;
         acceptedRms = r;
