@@ -104,26 +104,55 @@ export class EddieSettingsState implements GameState {
     number,
     { start: number; end: number; ended: boolean; midi: number }
   >();
-  /** Manual visual-sync trim (seconds) on top of the auto latency comp: shifts
-   *  bars earlier so a note played on the beat sits on the beat line. Persisted;
-   *  live-adjustable via the SYNC buttons / ?cal=<ms>. */
-  private visualCalSec = EddieSettingsState.readCalSec();
-  private calValEl: HTMLElement | null = null;
+  // --- Auto latency calibration -------------------------------------------
+  // The player plays to the metronome, so their onsets land at a CONSTANT
+  // offset from the beat grid — that offset is the round-trip latency. We
+  // estimate it from the playing itself (circular mean of onsets vs the
+  // sixteenth grid, disambiguated by the known output latency) and subtract it
+  // when drawing, so bars land on the beat with zero user setup. Optional
+  // ?cal=<ms> forces a fixed offset for debugging.
+  private autoOffsetSec = 0;
+  private autoOffsetInit = false;
+  private onsetTimesBuf: number[] = [];
+  private readonly forcedCalSec: number | null = (() => {
+    const url = new URLSearchParams(location.search).get("cal");
+    return url !== null && !Number.isNaN(parseFloat(url)) ? parseFloat(url) / 1000 : null;
+  })();
 
-  private static readCalSec(): number {
-    try {
-      const url = new URLSearchParams(location.search).get("cal");
-      if (url !== null && !Number.isNaN(parseFloat(url))) return parseFloat(url) / 1000;
-      const stored = localStorage.getItem("eddie.calMs");
-      if (stored !== null && !Number.isNaN(parseFloat(stored))) return parseFloat(stored) / 1000;
-    } catch { /* no storage */ }
-    return 0;
+  /** Refine the latency estimate from a new real onset. */
+  private refineLatency(onsetTime: number) {
+    if (this.measureStart < 0) return;
+    this.onsetTimesBuf.push(onsetTime);
+    if (this.onsetTimesBuf.length > 32) this.onsetTimesBuf.shift();
+    if (this.onsetTimesBuf.length < 5) return;
+    const beatDur = 60 / this.bpm;
+    const sixDur = beatDur / 4; // sixteenth grid (eighths/quarters are multiples)
+    // Circular mean of onset residuals mod the sixteenth grid.
+    let sx = 0;
+    let sy = 0;
+    for (const t of this.onsetTimesBuf) {
+      const r = (((t - this.measureStart) % sixDur) + sixDur) % sixDur;
+      const a = (r / sixDur) * 2 * Math.PI;
+      sx += Math.cos(a);
+      sy += Math.sin(a);
+    }
+    let mean = Math.atan2(sy, sx);
+    if (mean < 0) mean += 2 * Math.PI;
+    const dSub = (mean / (2 * Math.PI)) * sixDur; // [0, sixDur)
+    // Pick the whole-sixteenth multiple nearest the known output latency so the
+    // absolute offset (not just sub-grid phase) is right.
+    const prior = (getAudioContext().outputLatency || 0) + 0.06;
+    const k = Math.max(0, Math.round((prior - dSub) / sixDur));
+    const est = dSub + k * sixDur;
+    // Seed from the OS latency estimate, then ease toward the measured offset.
+    this.autoOffsetSec = this.autoOffsetInit ? this.autoOffsetSec * 0.6 + est * 0.4 : est;
+    this.autoOffsetInit = true;
   }
 
-  private nudgeCal(deltaMs: number) {
-    this.visualCalSec += deltaMs / 1000;
-    try { localStorage.setItem("eddie.calMs", String(Math.round(this.visualCalSec * 1000))); } catch { /* ignore */ }
-    if (this.calValEl) this.calValEl.textContent = `${Math.round(this.visualCalSec * 1000)} ms`;
+  /** Offset to subtract from detected times when drawing bars. */
+  private latencyOffset(): number {
+    if (this.forcedCalSec !== null) return this.forcedCalSec;
+    return this.autoOffsetInit ? this.autoOffsetSec : (this.tracker?.latencyComp ?? 0);
   }
 
 
@@ -298,13 +327,6 @@ export class EddieSettingsState implements GameState {
           <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
         </div>
         <div class="eddie-settings-timeline"></div>
-        <div class="eddie-settings-row eddie-cal-row">
-          <span class="eddie-settings-label">SYNC</span>
-          <button class="eddie-cal-btn" data-cal="-10" type="button">&minus;10ms</button>
-          <span class="eddie-cal-val" data-field="cal">0 ms</span>
-          <button class="eddie-cal-btn" data-cal="10" type="button">+10ms</button>
-          <span class="eddie-rec-hint">nudge until bars sit on the beat you played</span>
-        </div>
         <div class="eddie-settings-row eddie-rec-row">
           <button class="eddie-rec-btn" type="button">&#9679; RECORD</button>
           <span class="eddie-rec-hint">play a few bars, then it downloads your audio + detected notes</span>
@@ -343,13 +365,6 @@ export class EddieSettingsState implements GameState {
     this.recBtn = overlay.querySelector<HTMLButtonElement>(".eddie-rec-btn");
     this.recHint = overlay.querySelector<HTMLElement>(".eddie-rec-hint");
     this.recBtn?.addEventListener("click", () => this.toggleRec());
-
-    // SYNC calibration: nudge the visual offset so bars land on the played beat.
-    this.calValEl = overlay.querySelector<HTMLElement>('[data-field="cal"]');
-    if (this.calValEl) this.calValEl.textContent = `${Math.round(this.visualCalSec * 1000)} ms`;
-    overlay.querySelectorAll<HTMLButtonElement>(".eddie-cal-btn").forEach((b) => {
-      b.addEventListener("click", () => this.nudgeCal(Number(b.getAttribute("data-cal")) || 0));
-    });
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -523,6 +538,9 @@ export class EddieSettingsState implements GameState {
         this.timelineNotes.set(e.id, { start: e.time, end: e.time, ended: false, midi: -1 });
       }
       this.pruneTimelineNotes(e.time);
+      // Learn the round-trip latency from real playing (not synthetic events):
+      // onsets cluster at a constant offset from the beat grid → that's latency.
+      if (!e.synthetic) this.refineLatency(e.time);
       if (this.recording) {
         this.capOnsets.push({ time: e.time, energy: e.energy, synthetic: e.synthetic });
         this.updateRecHint();
@@ -600,14 +618,14 @@ export class EddieSettingsState implements GameState {
 
     const now = this.conductor.audioTime;
     const outLat = getAudioContext().outputLatency || 0;
-    const cal = this.visualCalSec; // manual trim to zero residual latency
+    const cal = this.latencyOffset(); // auto-measured round-trip latency
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
     ctx.fillStyle = "#00f0ff";
     for (const [, n] of this.timelineNotes) {
       if (n.midi < 0) continue;
-      // Trim detected times by the manual sync offset; an unfinished note grows
-      // to the audible playhead.
+      // Subtract the auto-measured latency so a note played on the beat draws on
+      // the beat; an unfinished note grows to the audible playhead.
       const endT = n.ended ? n.end - cal : now - outLat;
       const s = n.start - cal - this.measureStart;
       const e = endT - this.measureStart;
@@ -767,7 +785,7 @@ export class EddieSettingsState implements GameState {
         startedAt: new Date().toISOString(),
         // Latency model, so the bar↔beat offset can be reasoned about:
         latencyCompSec: this.tracker?.latencyComp ?? 0,
-        visualCalMs: Math.round(this.visualCalSec * 1000),
+        autoOffsetMs: Math.round(this.latencyOffset() * 1000),
         outputLatencySec: getAudioContext().outputLatency ?? 0,
       },
       onsets: this.capOnsets,

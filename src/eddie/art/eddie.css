@@ -456,32 +456,6 @@
   opacity: 0.85;
 }
 
-/* SYNC (visual latency) calibration controls. */
-.eddie-cal-btn {
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: 900;
-  color: var(--eddie-purple);
-  background: linear-gradient(180deg, var(--eddie-cyan), #00bcd4);
-  border: 2px solid #fff;
-  border-radius: 4px;
-  padding: 4px 10px;
-  cursor: pointer;
-  pointer-events: auto;
-  box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
-}
-.eddie-cal-btn:hover {
-  background: linear-gradient(180deg, var(--eddie-magenta), #c4189f);
-}
-.eddie-cal-val {
-  font-family: monospace;
-  font-size: 14px;
-  font-weight: 900;
-  color: #fff;
-  min-width: 60px;
-  text-align: center;
-}
-
 /* Bass window — one chip per measure root; the active one lights up in time. */
 .eddie-bass-window {
   display: inline-flex;
