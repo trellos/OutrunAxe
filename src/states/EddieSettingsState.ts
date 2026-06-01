@@ -143,11 +143,11 @@ export class EddieSettingsState implements GameState {
     return null;
   }
 
-  /** Offset to subtract from detected times when drawing bars. */
+  /** The timeline draws emitted times directly: the PitchTracker already
+   *  subtracts the one measured latency at the source (so the play-screen scorer
+   *  shares the same compensated times). No extra offset is applied here. */
   private latencyOffset(): number {
-    if (this.forcedCalSec !== null) return this.forcedCalSec;
-    if (this.calibratedSec !== null) return this.calibratedSec;
-    return this.tracker?.latencyComp ?? 0; // pre-calibration best-effort
+    return 0;
   }
 
   /** Enter the calibration gate: hide the settings UI, prompt for quarter notes. */
@@ -200,11 +200,7 @@ export class EddieSettingsState implements GameState {
     }
     const sorted = [...run].sort((a, b) => a - b);
     const med = sorted[Math.floor(sorted.length / 2)];
-    // The offset can be NEGATIVE: players commonly anticipate, landing ahead of
-    // the click, so detected onsets sit BEFORE the beat. A negative offset shifts
-    // bars right (later) onto the beat. Do NOT floor at 0 — that was the bug that
-    // discarded every early-playing measurement and applied zero compensation.
-    this.lockCalibration(Math.max(-0.3, Math.min(0.4, med)));
+    this.lockCalibration(med); // residual vs the already-compensated times
   }
 
   /** Signed offset of an onset from its nearest beat (grid = measureStart ± k·beatDur). */
@@ -213,11 +209,15 @@ export class EddieSettingsState implements GameState {
     return t - (this.measureStart + k * beatDur);
   }
 
-  private lockCalibration(cal: number) {
-    this.calibratedSec = cal;
-    try {
-      localStorage.setItem(EddieSettingsState.LS_LATENCY, String(Math.round(cal * 1000)));
-    } catch { /* no storage */ }
+  /** Fold the measured residual into the tracker's single compensation. The
+   *  residual can be negative (players often land slightly ahead of the click);
+   *  adding it to the current comp re-centres the player's playing on the beat.
+   *  setLatencyComp persists it and pushes it to the live engine. */
+  private lockCalibration(residual: number) {
+    const current = this.tracker?.latencyComp ?? 0;
+    const newComp = Math.max(-0.3, Math.min(0.4, current + residual));
+    this.tracker?.setLatencyComp(newComp);
+    this.calibratedSec = newComp;
     this.setSyncHint("calibrated — tap RESYNC to redo");
     this.setCalPrompt("✓ Locked in");
     this.setCalFill(1);
@@ -307,6 +307,9 @@ export class EddieSettingsState implements GameState {
       return;
     }
     this.tracker = new PitchTracker();
+    // ?cal=<ms> forces a transient compensation (debug); otherwise the tracker
+    // uses its persisted value and the gate re-measures it.
+    if (this.forcedCalSec !== null) this.tracker.setLatencyComp(this.forcedCalSec, false);
     this.audio = createEddieAudio(AUDIO_VARIANT, this.conductor, this.currentConfig());
     this.audio.start();
 
@@ -696,6 +699,22 @@ export class EddieSettingsState implements GameState {
       ctx.lineTo(x, canvas.height);
       ctx.stroke();
     }
+    // Triplet subdivisions — at 1/3 and 2/3 of each beat, where the straight
+    // 16th grid has no line. Amber + dashed so triplet playing has something to
+    // sit on without being confused for the straight grid.
+    ctx.strokeStyle = "rgba(255,176,59,0.55)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    for (let b = 0; b < BEATS; b++) {
+      for (const frac of [1 / 3, 2 / 3]) {
+        const x = Math.round((b + frac) * PX_PER_BEAT) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
   }
 
   /** Drop notes older than ~one measure so the map stays small. */
@@ -879,23 +898,28 @@ export class EddieSettingsState implements GameState {
   /** Per-onset record of what the timeline DREW, vs the beat grid — so a
    *  recording can be verified against the on-screen result without guessing. */
   private buildDisplayLog() {
-    const cal = this.latencyOffset();
+    // onset.time is already latency-compensated by the tracker, so the drawn
+    // time IS o.time. Report the applied compensation and the offset from both
+    // the straight (1/16) and triplet (1/12) grids, since either can be "right".
+    const appliedMs = Math.round((this.tracker?.latencyComp ?? 0) * 1000);
     const beatDur = 60 / this.bpm;
-    const sixDur = beatDur / 4;
+    const sixDur = beatDur / 4; // 1/16 grid
+    const tripDur = beatDur / 3; // 1/8-triplet grid
     const b0 = this.capBeats.length > 0 ? this.capBeats[0] : 0;
+    const nearest = (t: number, step: number) => {
+      let g = ((t - b0) % step + step) % step;
+      if (g > step / 2) g -= step;
+      return Math.round(g * 1000);
+    };
     return this.capOnsets
       .filter((o) => !o.synthetic)
-      .map((o) => {
-        const displayedTime = o.time - cal;
-        let g = ((displayedTime - b0) % sixDur + sixDur) % sixDur;
-        if (g > sixDur / 2) g -= sixDur;
-        return {
-          detectedTime: o.time,
-          displayedTime,
-          appliedOffsetMs: Math.round(cal * 1000),
-          gridOffsetMs: Math.round(g * 1000),
-        };
-      });
+      .map((o) => ({
+        detectedTime: o.time,
+        displayedTime: o.time,
+        appliedOffsetMs: appliedMs,
+        gridOffsetMs: nearest(o.time, sixDur),
+        tripletOffsetMs: nearest(o.time, tripDur),
+      }));
   }
 
   private stopRecAndDownload() {
@@ -917,7 +941,7 @@ export class EddieSettingsState implements GameState {
         startedAt: new Date().toISOString(),
         // Latency model, so the bar↔beat offset can be reasoned about:
         latencyCompSec: this.tracker?.latencyComp ?? 0,
-        autoOffsetMs: Math.round(this.latencyOffset() * 1000),
+        autoOffsetMs: Math.round((this.tracker?.latencyComp ?? 0) * 1000),
         outputLatencySec: getAudioContext().outputLatency ?? 0,
       },
       onsets: this.capOnsets,

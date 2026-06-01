@@ -25,7 +25,6 @@ import type { OnsetMessage } from "./onsetWorklet";
 export type { OnsetEvent, PitchUpdate, NoteEnd } from "./PitchEngine";
 
 const FFT_SIZE = 2048;
-const INPUT_LATENCY_HINT = 0.05;
 const PITCH_DETECTION_DELAY_MS = PITCH_DETECTION_DELAY * 1000;
 /** Cadence for sustain pitch detection (re-reads the AnalyserNode buffer
  *  while a note is active so bend updates and silence end can fire). */
@@ -47,14 +46,38 @@ export class PitchTracker {
   private beatProximityProvider: ((audioTime: number) => number) | null = null;
   private fakeMicBuffer: AudioBuffer | null = null;
   private fakeSource: AudioBufferSourceNode | null = null;
-  /** Real mic input latency reported by the capture track (seconds), if the
-   *  browser provides it — replaces the INPUT_LATENCY_HINT guess. */
-  private measuredInputLatency: number | null = null;
+  /** The ONE latency compensation, in seconds: measured by the SYNC step from
+   *  the player's own timing and persisted. Subtracted from every emitted time
+   *  so a note played on the beat is reported on the beat — on the settings
+   *  timeline AND the play-screen scorer. The browser's reported output/input
+   *  latency is deliberately NOT used; it's inaccurate, and we measure a human
+   *  instead. */
+  private latencyCompSec = PitchTracker.readPersistedComp();
 
-  /** Total round-trip latency compensation currently applied (seconds). Exposed
-   *  so the UI can show it and seed the visual calibration. */
+  private static readPersistedComp(): number {
+    try {
+      const v = localStorage.getItem("eddie.latencyMs");
+      if (v !== null && !Number.isNaN(parseFloat(v))) return parseFloat(v) / 1000;
+    } catch { /* no storage */ }
+    return 0;
+  }
+
+  /** Current compensation (seconds). */
   get latencyComp(): number {
-    return this.totalBias();
+    return this.latencyCompSec;
+  }
+
+  /** Update the measured compensation (called by the SYNC calibrator) and push
+   *  it to the live engine so it applies immediately. Persists by default;
+   *  pass persist=false for a transient override (e.g. ?cal debug). */
+  setLatencyComp(sec: number, persist = true) {
+    this.latencyCompSec = sec;
+    if (persist) {
+      try {
+        localStorage.setItem("eddie.latencyMs", String(Math.round(sec * 1000)));
+      } catch { /* no storage */ }
+    }
+    this.engine?.setLatencyBias(this.totalBias());
   }
 
   constructor() {
@@ -114,15 +137,6 @@ export class PitchTracker {
           latency: 0,
         } as MediaTrackConstraints & { latency?: number },
       });
-      // Use the REAL input latency the browser reports for this device instead
-      // of the INPUT_LATENCY_HINT guess (the guess under-compensated on Windows,
-      // pushing note bars late). Falls back to the hint if unreported.
-      const settings = this.stream.getAudioTracks()[0]?.getSettings() as
-        | (MediaTrackSettings & { latency?: number })
-        | undefined;
-      if (settings && typeof settings.latency === "number" && settings.latency > 0) {
-        this.measuredInputLatency = settings.latency;
-      }
       const source = this.ctx.createMediaStreamSource(this.stream);
       source.connect(this.analyser);
       source.connect(this.workletNode);
@@ -277,18 +291,9 @@ export class PitchTracker {
   };
 
   private totalBias() {
-    // Round-trip latency to compensate so a note played on the beat renders on
-    // the beat. ALL of this is known the moment the mic opens — before the
-    // player plays a note:
-    //   output path  = baseLatency (graph buffering) + outputLatency (OS→speaker)
-    //                  — how late you HEAR the click.
-    //   input path   = mic capture → worklet. Reported by the device when
-    //                  available; otherwise it shares the same audio subsystem
-    //                  as output, so outputLatency is a far better prior than a
-    //                  flat guess.
-    const out = this.ctx.outputLatency || 0;
-    const base = this.ctx.baseLatency || 0;
-    const input = this.measuredInputLatency ?? (out || INPUT_LATENCY_HINT);
-    return base + out + input;
+    // The single, player-measured compensation. The browser's reported
+    // output/input latency is deliberately NOT used — it's inaccurate; the SYNC
+    // step measures the real round-trip from the player's own timing.
+    return this.latencyCompSec;
   }
 }
