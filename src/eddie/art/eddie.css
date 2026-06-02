@@ -529,6 +529,32 @@
   pointer-events: none;
 }
 
+/* End-of-round TITLE button — the score screen stays up until it's pressed. */
+.eddie-title-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  transform: translateX(-50%);
+  z-index: 50;
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: #1a0f2e;
+  background: linear-gradient(180deg, #00f0ff, #00bcd4);
+  border: 2px solid #fff;
+  border-radius: 6px;
+  padding: 10px 28px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.7);
+  animation: eddie-title-pulse 1.4s ease-in-out infinite;
+}
+@keyframes eddie-title-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(0, 240, 255, 0.5); }
+  50% { box-shadow: 0 0 26px rgba(0, 240, 255, 1); }
+}
+
 /* Bass window — one chip per measure root; the active one lights up in time. */
 .eddie-bass-window {
   display: inline-flex;

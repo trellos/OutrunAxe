@@ -34,6 +34,7 @@ export class EddieGrid {
   private offBeat?: () => void;
   private offNote?: () => void;
   private offNoteEnd?: () => void;
+  private offScored?: () => void;
   /** onset id → its plotted note bar, so a later eddieNoteEnd can grow it. */
   private noteBars = new Map<number, { el: HTMLDivElement; startFrac: number }>();
   // Pulse phase for a subtle per-beat breathing of the active cell border.
@@ -125,6 +126,7 @@ export class EddieGrid {
     // grid is to visualize what the player played across the timeline.
     this.offNote = ctx.juice.on("eddieNote", (n) => this.plotNote(n));
     this.offNoteEnd = ctx.juice.on("eddieNoteEnd", (e) => this.endNote(e));
+    this.offScored = ctx.juice.on("eddieNoteScored", (s) => this.greenQuarter(s.measure, s.beat));
   }
 
   /** Draw the beat/subdivision gridlines for a cell. Quarter lines are bold;
@@ -168,6 +170,9 @@ export class EddieGrid {
       "height:5px;margin-top:-2.5px;min-width:4px;width:4px;border-radius:3px;" +
       `background:${color};box-shadow:0 0 7px ${color},0 0 2px #fff;` +
       "opacity:0;transition:opacity .12s ease,width .08s linear;";
+    // Tag the quarter (0..3) this note lands in, so a later score event can turn
+    // the scoring quarter's bars green.
+    bar.dataset.beat = String(Math.min(3, Math.floor(x * 4)));
     layer.appendChild(bar);
     if (n.onsetId >= 0) this.noteBars.set(n.onsetId, { el: bar, startFrac: x });
     // Fade in on next frame for a soft pop as each note lands.
@@ -185,6 +190,24 @@ export class EddieGrid {
     // Keep the 4px min-width stub for very short notes; otherwise size to span.
     if (widthPct > 0) entry.el.style.width = `${widthPct.toFixed(2)}%`;
     this.noteBars.delete(e.onsetId);
+  }
+
+  /** A quarter scored — turn its IN-KEY note bars green (out-of-key bars, which
+   *  earned nothing, stay red). Works off the DOM so it catches bars whose
+   *  eddieNoteEnd already fired (and were removed from noteBars). */
+  private greenQuarter(measure: number, beat: number): void {
+    const idx = this.indexFor(measure);
+    const layer = idx >= 0 ? this.noteLayers[idx] : null;
+    if (!layer) return;
+    const want = String(beat);
+    for (const child of Array.from(layer.children)) {
+      const el = child as HTMLElement;
+      if (el.dataset.beat !== want) continue;
+      if (el.classList.contains("eddie-note-off")) continue; // out-of-key: no score
+      el.classList.add("eddie-note-scored");
+      el.style.background = "#39ff7a";
+      el.style.boxShadow = "0 0 8px #39ff7a,0 0 2px #fff";
+    }
   }
 
   /** scoredMeasure: 0..15 = a scored cell (rows 1-4); negative = intro row 0,
@@ -226,6 +249,7 @@ export class EddieGrid {
     this.offBeat?.();
     this.offNote?.();
     this.offNoteEnd?.();
+    this.offScored?.();
     this.offBeat = undefined;
     this.offNote = undefined;
     this.offNoteEnd = undefined;

@@ -85,6 +85,8 @@ interface CaptureLog {
   /** measureStartTime(0) — the audio time scored measure 0 opens, so every
    *  other audioTime below can be related to the musical grid. */
   playStartTime: number;
+  /** Conductor beat times (count-in + playing), so bar timing can be checked. */
+  beats: number[];
   onsets: { time: number; energy: number; synthetic: boolean }[];
   pitches: {
     onsetId: number;
@@ -141,6 +143,7 @@ export class InfiniteEddieState implements GameState {
   private offNoteEnd?: () => void;
   private offGridOnset?: () => void;
   private offCountInPitch?: () => void;
+  private endBtn?: HTMLButtonElement;
   /** onset ids already plotted to the intro row, so count-in notes don't dup. */
   private countInPlotted = new Set<number>();
   /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
@@ -277,6 +280,7 @@ export class InfiniteEddieState implements GameState {
     // Conductor clock (never rAF).
     this.offBeat = this.conductor.onBeat((info) => {
       this.perfHud?.noteBeat();
+      this.captureLog?.beats.push(info.time);
       if (info.phase === "countIn") {
         if (info.beatInPhase === 0 && this.introStart < 0) {
           this.introStart = info.time;
@@ -489,6 +493,7 @@ export class InfiniteEddieState implements GameState {
         source: this.fakeMicBuffer ? "file" : "mic",
       },
       playStartTime: 0,
+      beats: [],
       onsets: [],
       pitches: [],
       noteEnds: [],
@@ -559,6 +564,8 @@ export class InfiniteEddieState implements GameState {
     this.offNoteEnd?.();
     this.offGridOnset?.();
     this.offCountInPitch?.();
+    this.endBtn?.remove();
+    this.endBtn = undefined;
     this.noteStarts.clear();
     this.onsetTimes.clear();
     this.pendingNoteEnds.clear();
@@ -617,11 +624,24 @@ export class InfiniteEddieState implements GameState {
 
     if (this.finishedAt > 0 && audioTime >= this.finishedAt) {
       this.finishedAt = 0;
-      // Record/debug mode holds on the final populated timeline (Esc to exit)
-      // so the run can be inspected/screenshotted; normal play returns to menu.
       if (this.capture) this.markCaptureDone();
-      else this.onExit();
+      // The final score screen stays up until the player chooses to leave —
+      // show a TITLE button instead of auto-returning to the menu.
+      this.showEndScreen();
     }
+  }
+
+  /** End of round: leave the populated grid + score on screen and add a TITLE
+   *  button. The screen persists until the player presses it. */
+  private showEndScreen(): void {
+    if (this.demo || this.endBtn) return;
+    const btn = document.createElement("button");
+    btn.className = "eddie-title-btn";
+    btn.type = "button";
+    btn.textContent = "TITLE";
+    btn.addEventListener("click", () => this.onExit());
+    this.hudParent.appendChild(btn);
+    this.endBtn = btn;
   }
 
   private markCaptureDone() {
@@ -754,6 +774,11 @@ export class InfiniteEddieState implements GameState {
     // kind; measure-level tag-clears don't). onBeat applies the +/-0.0315
     // intensity step at the quarter boundary using this flag.
     if (ev.points > 0 && ev.kinds.includes("quarter")) this.quarterScored = true;
+
+    // Turn the scoring quarter's note bars green on the grid (per-note feedback).
+    if (ev.points > 0 && ev.measure >= 0) {
+      this.juice.emit("eddieNoteScored", { measure: ev.measure, beat: ev.beat });
+    }
 
     // No points (out-of-key / silent) earns no shake or particles.
     if (ev.points <= 0) return;

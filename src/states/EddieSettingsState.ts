@@ -472,11 +472,10 @@ export class EddieSettingsState implements GameState {
     this.calFill = overlay.querySelector<HTMLElement>('[data-field="cal-fill"]');
     this.syncBtn?.addEventListener("click", () => this.enterGate());
 
-    // The latency determiner always runs on entry (unless ?cal forces a value):
-    // the screen opens to the gate — metronome + timeline + prompt — and reveals
-    // the settings only once the player locks it in. A saved value still seeds
-    // the play screen; here we always confirm against the real instrument.
-    if (this.forcedCalSec === null) this.enterGate();
+    // Run the calibration gate ONLY when there's no saved value yet (and ?cal
+    // isn't forcing one). If already calibrated, go straight to the settings —
+    // RESYNC re-runs it on demand.
+    if (this.forcedCalSec === null && this.calibratedSec === null) this.enterGate();
 
     // Live input timeline.
     this.timelineWrap = overlay.querySelector(".eddie-settings-timeline");
@@ -977,8 +976,11 @@ export class EddieSettingsState implements GameState {
 
   private startPlay() {
     const config = this.currentConfig();
+    // ?rec records the play session (mic + detection + scores) for diagnosis,
+    // same downloadable bundle as the debug menu.
+    const capture = new URLSearchParams(location.search).has("rec");
     this.game.setState(
-      new InfiniteEddieState(this.hudParent, config, () => this.goLevelSelect()),
+      new InfiniteEddieState(this.hudParent, config, () => this.goLevelSelect(), { capture }),
     );
   }
 
