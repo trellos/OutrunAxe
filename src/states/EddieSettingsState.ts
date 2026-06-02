@@ -980,7 +980,10 @@ export class EddieSettingsState implements GameState {
     // same downloadable bundle as the debug menu.
     const capture = new URLSearchParams(location.search).has("rec");
     this.game.setState(
-      new InfiniteEddieState(this.hudParent, config, () => this.goLevelSelect(), { capture }),
+      new InfiniteEddieState(this.hudParent, config, () => this.goLevelSelect(), {
+        capture,
+        onReplay: () => this.startPlay(),
+      }),
     );
   }
 

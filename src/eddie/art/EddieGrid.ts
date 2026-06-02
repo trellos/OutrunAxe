@@ -150,6 +150,10 @@ export class EddieGrid {
     }
   }
 
+  /** Plot OR update a note bar. Called first at the onset (provisional pitch, so
+   *  every played note shows immediately — fast notes that never settle a pitch
+   *  still appear), then again as the pitch resolves to set the lane + color.
+   *  Idempotent per onsetId so the second call updates rather than duplicates. */
   private plotNote(n: EddieJuiceEvents["eddieNote"]): void {
     const idx = this.indexFor(n.measure);
     const layer = idx >= 0 ? this.noteLayers[idx] : null;
@@ -158,13 +162,25 @@ export class EddieGrid {
     const x = Math.max(0, Math.min(1, n.beatFraction));
     const midi = Math.max(MIDI_LO, Math.min(MIDI_HI, n.midi));
     const y = 1 - (midi - MIDI_LO) / (MIDI_HI - MIDI_LO); // 0 = top
+    const color = n.inKey ? "#00f0ff" : "#ff5a6e";
 
-    // A note is a horizontal duration BAR (start at the onset, grown to its
-    // detected end by endNote). Until the NoteEnd arrives it shows a minimal
-    // stub so the attack is visible immediately.
+    const existing = n.onsetId >= 0 ? this.noteBars.get(n.onsetId) : undefined;
+    if (existing) {
+      // Pitch resolved/changed — move to the right lane + recolor. Don't touch a
+      // bar that already scored green.
+      const bar = existing.el;
+      if (!bar.classList.contains("eddie-note-scored")) {
+        bar.style.top = `${(y * 84 + 8).toFixed(1)}%`;
+        bar.style.background = color;
+        bar.style.boxShadow = `0 0 7px ${color},0 0 2px #fff`;
+        bar.classList.toggle("eddie-note-off", !n.inKey);
+      }
+      return;
+    }
+
+    // A note is a horizontal duration BAR (onset → detected end via endNote).
     const bar = document.createElement("div");
     bar.className = "eddie-note" + (n.inKey ? "" : " eddie-note-off");
-    const color = n.inKey ? "#00f0ff" : "#ff5a6e";
     bar.style.cssText =
       `position:absolute;left:${(x * 100).toFixed(2)}%;top:${(y * 84 + 8).toFixed(1)}%;` +
       "height:5px;margin-top:-2.5px;min-width:4px;width:4px;border-radius:3px;" +
@@ -181,7 +197,9 @@ export class EddieGrid {
     });
   }
 
-  /** Grow a plotted note's bar to its detected end (within the start cell). */
+  /** Grow a plotted note's bar to its detected end (within the start cell). The
+   *  bar entry is KEPT (not deleted) so a late pitch update can still find it
+   *  instead of spawning a duplicate. */
   private endNote(e: EddieJuiceEvents["eddieNoteEnd"]): void {
     const entry = this.noteBars.get(e.onsetId);
     if (!entry) return;
@@ -189,7 +207,6 @@ export class EddieGrid {
     const widthPct = Math.max(0, (endFrac - entry.startFrac) * 100);
     // Keep the 4px min-width stub for very short notes; otherwise size to span.
     if (widthPct > 0) entry.el.style.width = `${widthPct.toFixed(2)}%`;
-    this.noteBars.delete(e.onsetId);
   }
 
   /** A quarter scored — turn its IN-KEY note bars green (out-of-key bars, which

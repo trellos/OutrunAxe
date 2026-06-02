@@ -52,8 +52,12 @@ const COUNT_IN_BEATS = 16;
 const PLAY_MEASURES = 16;
 const MAX_BPM = 200;
 
-// How long to linger on the final score before returning to the menu.
+// How long after the round before the final score screen + buttons appear.
 const DONE_LINGER_SEC = 2.5;
+
+// Lane a freshly-plucked note sits at before its pitch resolves (mid-range, so
+// the bar is visible immediately; it jumps to the real lane when pitch lands).
+const PROVISIONAL_MIDI = 67;
 
 // Juice scaling. Particles/shake grow with the score multiplier so a fat,
 // many-bonus quarter reads louder than a bare baseline quarter.
@@ -127,6 +131,7 @@ export class InfiniteEddieState implements GameState {
   private hudParent: HTMLElement;
   private config: EddieConfig;
   private onExit: () => void;
+  private onReplay?: () => void;
 
   private conductor!: Conductor;
   private tracker!: PitchTracker;
@@ -142,8 +147,9 @@ export class InfiniteEddieState implements GameState {
   private offNote?: () => void;
   private offNoteEnd?: () => void;
   private offGridOnset?: () => void;
+  private offGridPitch?: () => void;
   private offCountInPitch?: () => void;
-  private endBtn?: HTMLButtonElement;
+  private endBtn?: HTMLElement;
   /** onset ids already plotted to the intro row, so count-in notes don't dup. */
   private countInPlotted = new Set<number>();
   /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
@@ -218,11 +224,15 @@ export class InfiniteEddieState implements GameState {
       fakeMicBuffer?: AudioBuffer;
       capture?: boolean;
       fileName?: string;
+      /** If provided, the end screen shows an INFINITE EDDIE button that calls
+       *  this to start a fresh round. */
+      onReplay?: () => void;
     },
   ) {
     this.hudParent = hudParent;
     this.config = config;
     this.onExit = onExit;
+    this.onReplay = opts?.onReplay;
     this.bgIndex =
       opts?.bgIndex !== undefined
         ? opts.bgIndex
@@ -339,74 +349,28 @@ export class InfiniteEddieState implements GameState {
       });
     });
 
-    // Plot every played note into its measure cell on the grid (GDD §13: the
-    // grid cells are note timelines). pitchFired fires only during the playing
-    // phase (KeyResolver gates on phase), so measureIdx is a scored measure.
-    this.offNote = this.resolver.bus.on("pitchFired", (p) => {
-      const dur = this.conductor.measureDuration();
-      const start = this.conductor.measureStartTime(p.measureIdx);
-      // Anchor the bar at the ONSET (attack), not the settled-pitch time, so its
-      // width spans the true note duration instead of collapsing to a dot.
-      const onsetTime = this.onsetTimes.get(p.onsetId) ?? p.audioTime;
-      const frac = dur > 0 ? (onsetTime - start) / dur : 0;
-      const note = {
-        measure: p.measureIdx,
-        beatFraction: Math.max(0, Math.min(1, frac)),
-        pitchClass: p.pitchClass,
-        midi: p.midi,
-        inKey: this.keySet.has(p.pitchClass),
-        audioTime: p.audioTime,
-        onsetId: p.onsetId,
-      };
-      this.juice.emit("eddieNote", note);
-      this.captureLog?.notes.push(note);
-      // Remember where this onset's note opened so its NoteEnd can grow a bar.
-      this.noteStarts.set(p.onsetId, { measure: p.measureIdx, startTime: start });
-      this.applyPendingEnd(p.onsetId);
-    });
-
-    // Count-in feedback: during the 4 intro measures KeyResolver gates off
-    // pitchFired (no scoring/key-narrowing yet), so the grid would stay blank.
-    // Plot detected notes straight from the tracker into the intro row (-1..-4)
-    // so the player sees their playing land before scoring begins.
-    this.offCountInPitch = this.tracker.onPitchUpdate((u) => {
-      if (this.conductor.currentPhase !== "countIn") return;
-      if (u.status !== "settled") return;
-      if (this.introStart < 0 || this.countInPlotted.has(u.onsetId)) return;
-      const dur = this.conductor.measureDuration();
-      if (dur <= 0) return;
-      this.countInPlotted.add(u.onsetId);
-      // Anchor at the onset (attack), not the settled-pitch time it lags behind.
-      const onsetTime = this.onsetTimes.get(u.onsetId) ?? u.time;
-      const into = onsetTime - this.introStart;
-      const introMeasure = Math.max(0, Math.min(3, Math.floor(into / dur)));
-      const measure = -(introMeasure + 1); // intro-row convention (-1..-4)
-      const measureStart = this.introStart + introMeasure * dur;
-      const pitchClass = midiToPitchClass(u.midi) as PitchClass;
-      const note = {
-        measure,
-        beatFraction: Math.max(0, Math.min(1, (onsetTime - measureStart) / dur)),
-        pitchClass,
-        midi: u.midi,
-        inKey: this.keySet.has(pitchClass),
-        audioTime: u.time,
-        onsetId: u.onsetId,
-      };
-      this.juice.emit("eddieNote", note);
-      this.captureLog?.notes.push(note);
-      this.noteStarts.set(u.onsetId, { measure, startTime: measureStart });
-      this.applyPendingEnd(u.onsetId);
-    });
-
-    // Record every onset's attack time so the grid bar starts at the pluck (see
-    // onsetTimes). Fires before the pitch settles, so it's ready when plotted.
+    // Grid plotting is driven by the ONSET stream (every played note), NOT by
+    // settled pitch. At fast subdivisions most onsets never settle a pitch
+    // (measured: ~46% settle at 95 BPM triplets), so a settled-only grid dropped
+    // half the notes. Instead we plot a bar the instant a note is plucked
+    // (provisional lane) and refine its lane/colour when the pitch resolves — so
+    // the grid shows exactly what was played, like the settings timeline. The
+    // scorer consumes pitchFired on its own bus and is untouched.
     this.offGridOnset = this.tracker.onOnset((e) => {
+      if (e.synthetic) return; // keyboard tones plot via the pitch path below
       this.onsetTimes.set(e.id, e.time);
-      if (this.onsetTimes.size > 64) {
-        // bound it — drop the oldest insertion
+      if (this.onsetTimes.size > 96) {
         const oldest = this.onsetTimes.keys().next().value;
         if (oldest !== undefined) this.onsetTimes.delete(oldest);
       }
+      this.plotGridNote(e.id, e.time, null);
+    });
+
+    // Pitch resolved (preliminary OR settled) — refine the bar's lane + colour.
+    // For keyboard/synthetic notes (no onset event) this also creates the bar.
+    this.offGridPitch = this.tracker.onPitchUpdate((u) => {
+      const onsetTime = this.onsetTimes.get(u.onsetId) ?? u.time;
+      this.plotGridNote(u.onsetId, onsetTime, u.midi);
     });
 
     // A note ended — grow its grid bar from onset to here. If the bar isn't
@@ -449,6 +413,54 @@ export class InfiniteEddieState implements GameState {
     }
 
     void this.startEngine();
+  }
+
+  /** Plot (or, on later pitch updates, refine) a grid bar for a played note.
+   *  `midi` is null at the onset (no pitch yet → provisional lane) and set once
+   *  the pitch resolves. Anchors the bar at the onset time so its width is the
+   *  true note duration; the grid keeps one bar per onsetId (idempotent). */
+  private plotGridNote(onsetId: number, time: number, midi: number | null): void {
+    const dur = this.conductor.measureDuration();
+    if (dur <= 0) return;
+    let begun = this.noteStarts.get(onsetId);
+    if (!begun) {
+      const placed = this.placeOnGrid(time);
+      if (!placed) return; // outside the play/intro window
+      begun = { measure: placed.measure, startTime: placed.start };
+      this.noteStarts.set(onsetId, begun);
+      this.applyPendingEnd(onsetId); // a note-end may have raced ahead of us
+    }
+    const m = midi ?? PROVISIONAL_MIDI;
+    const pitchClass = midiToPitchClass(m) as PitchClass;
+    const note = {
+      measure: begun.measure,
+      beatFraction: Math.max(0, Math.min(1, (time - begun.startTime) / dur)),
+      pitchClass,
+      midi: m,
+      inKey: midi === null ? true : this.keySet.has(pitchClass),
+      audioTime: time,
+      onsetId,
+    };
+    this.juice.emit("eddieNote", note);
+    if (midi === null) this.captureLog?.notes.push(note);
+  }
+
+  /** Which grid cell + measure-start a time falls in: scored 0..15 during play,
+   *  intro rows -1..-4 during count-in, or null if outside either window. */
+  private placeOnGrid(time: number): { measure: number; start: number } | null {
+    const dur = this.conductor.measureDuration();
+    if (dur <= 0) return null;
+    if (this.conductor.currentPhase === "playing") {
+      const m = this.conductor.measureForTime(time);
+      if (m < 0) return null;
+      return { measure: m, start: this.conductor.measureStartTime(m) };
+    }
+    if (this.conductor.currentPhase === "countIn" && this.introStart >= 0) {
+      const introMeasure = Math.floor((time - this.introStart) / dur);
+      if (introMeasure < 0 || introMeasure > 3) return null;
+      return { measure: -(introMeasure + 1), start: this.introStart + introMeasure * dur };
+    }
+    return null;
   }
 
   /** Grow a plotted note's grid bar from its onset to `endTime`. Returns false
@@ -563,6 +575,7 @@ export class InfiniteEddieState implements GameState {
     this.offNote?.();
     this.offNoteEnd?.();
     this.offGridOnset?.();
+    this.offGridPitch?.();
     this.offCountInPitch?.();
     this.endBtn?.remove();
     this.endBtn = undefined;
@@ -635,13 +648,28 @@ export class InfiniteEddieState implements GameState {
    *  button. The screen persists until the player presses it. */
   private showEndScreen(): void {
     if (this.demo || this.endBtn) return;
-    const btn = document.createElement("button");
-    btn.className = "eddie-title-btn";
-    btn.type = "button";
-    btn.textContent = "TITLE";
-    btn.addEventListener("click", () => this.onExit());
-    this.hudParent.appendChild(btn);
-    this.endBtn = btn;
+    const row = document.createElement("div");
+    row.className = "eddie-endrow";
+
+    // INFINITE EDDIE — play another round (if the launcher supports it).
+    if (this.onReplay) {
+      const again = document.createElement("button");
+      again.className = "eddie-title-btn eddie-again-btn";
+      again.type = "button";
+      again.textContent = "INFINITE EDDIE";
+      again.addEventListener("click", () => this.onReplay?.());
+      row.appendChild(again);
+    }
+
+    const title = document.createElement("button");
+    title.className = "eddie-title-btn";
+    title.type = "button";
+    title.textContent = "TITLE";
+    title.addEventListener("click", () => this.onExit());
+    row.appendChild(title);
+
+    this.hudParent.appendChild(row);
+    this.endBtn = row;
   }
 
   private markCaptureDone() {

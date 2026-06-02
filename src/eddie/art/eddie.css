@@ -529,13 +529,18 @@
   pointer-events: none;
 }
 
-/* End-of-round TITLE button — the score screen stays up until it's pressed. */
-.eddie-title-btn {
+/* End-of-round buttons — the score screen stays up until one is pressed. */
+.eddie-endrow {
   position: absolute;
   left: 50%;
   bottom: 6%;
   transform: translateX(-50%);
   z-index: 50;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.eddie-title-btn {
   font-family: monospace;
   font-size: 18px;
   font-weight: 900;
@@ -549,6 +554,12 @@
   pointer-events: auto;
   box-shadow: 0 0 18px rgba(0, 240, 255, 0.7);
   animation: eddie-title-pulse 1.4s ease-in-out infinite;
+}
+/* INFINITE EDDIE (replay) — magenta to distinguish from the cyan TITLE. */
+.eddie-again-btn {
+  color: #fff;
+  background: linear-gradient(180deg, #ff2bd6, #c4189f);
+  box-shadow: 0 0 18px rgba(255, 43, 214, 0.7);
 }
 @keyframes eddie-title-pulse {
   0%, 100% { box-shadow: 0 0 12px rgba(0, 240, 255, 0.5); }
