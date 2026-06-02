@@ -353,6 +353,9 @@ html, body {
   box-shadow: 0 0 60px rgba(0, 240, 255, 0.4);
   text-align: center;
   min-width: 360px;
+  max-width: 92vw;
+  max-height: 92vh;
+  overflow-y: auto;
 }
 
 .outrun-results-fail .results-card {
@@ -393,6 +396,84 @@ html, body {
 .results-stats td:last-child {
   text-align: right;
   color: #fff;
+}
+
+.results-dispatch {
+  margin: 0 0 20px 0;
+  text-align: left;
+}
+
+.results-dispatch-title {
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #ff3ec8;
+  margin-bottom: 6px;
+}
+
+.results-dispatch-empty {
+  font-family: monospace;
+  font-size: 13px;
+  color: #888;
+  padding: 6px 8px;
+}
+
+.results-dispatch-scroll {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 62, 200, 0.4);
+  background: rgba(10, 6, 18, 0.5);
+  box-shadow: inset 0 0 18px rgba(255, 62, 200, 0.15);
+}
+
+.results-dispatch-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.results-dispatch-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 62, 200, 0.6);
+}
+
+.results-dispatch-table {
+  width: 100%;
+  font-family: monospace;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.results-dispatch-table th {
+  position: sticky;
+  top: 0;
+  background: rgba(26, 15, 46, 0.97);
+  color: #00f0ff;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.4);
+}
+
+.results-dispatch-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.results-dispatch-pitch {
+  color: #c7ff2b;
+  font-weight: 900;
+}
+
+.results-dispatch-dmg {
+  color: #fff;
+  text-align: right;
+}
+
+.results-dispatch-time {
+  color: #00f0ff;
+  text-align: right;
 }
 
 .results-actions {

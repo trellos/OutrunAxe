@@ -391,6 +391,7 @@ export class LevelState implements GameState {
           this.level.name,
           () => this.restart(),
           () => this.goLevelSelect(),
+          this.elapsedSeconds(audioTime),
         ),
       );
       return;
@@ -407,9 +408,19 @@ export class LevelState implements GameState {
           this.level.name,
           () => this.restart(),
           () => this.goLevelSelect(),
+          this.elapsedSeconds(audioTime),
         ),
       );
     }
+  }
+
+  /** Seconds of play elapsed from the level's play-start (measure 0) to now.
+   *  Guards against NaN/negative so the results screen always gets a sane
+   *  value. */
+  private elapsedSeconds(audioTime: number): number {
+    const playStart = this.conductor.measureStartTime(0);
+    const elapsed = audioTime - playStart;
+    return Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0;
   }
 
   private applyMeasureCombo(combo: MeasureComboResult) {
