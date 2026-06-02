@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { LevelConfig } from "../levels/level1";
 import { sharedToonRamp } from "../render/ToonRamp";
 import { addOutline } from "../render/Outline";
+import { buildFlatRibbon } from "./roadVerify";
 import {
   makeCar,
   makeLamppost,
@@ -714,18 +715,13 @@ function buildRoad(group: THREE.Group, level: LevelConfig, theme: Theme) {
   const roadColor = theme === "subway" ? 0x222a32 : theme === "rooftop" ? 0x0a0814 : 0x1a0e22;
   const roadMat = new THREE.MeshToonMaterial({ color: roadColor, gradientMap: sharedToonRamp() });
 
-  const roadShape = new THREE.Shape();
-  roadShape.moveTo(-railWidth / 2, 0);
-  roadShape.lineTo(railWidth / 2, 0);
-  roadShape.lineTo(railWidth / 2, 0.02);
-  roadShape.lineTo(-railWidth / 2, 0.02);
-  roadShape.closePath();
-
-  const roadGeom = new THREE.ExtrudeGeometry(roadShape, {
-    extrudePath: level.curve,
-    steps: 160,
-    bevelEnabled: false,
-  });
+  // Build the road as a FLAT ribbon lying on the ground plane. ExtrudeGeometry
+  // with an extrudePath orients the 2D cross-section using Frenet frames, which
+  // for a curve in the XZ plane map the shape's wide (railWidth) axis onto the
+  // VERTICAL — making the road "stand up" toward the camera. buildFlatRibbon
+  // instead offsets each curve sample along the horizontal perpendicular, so the
+  // width spans the ground (X/Z) and only the thickness rises in Y.
+  const roadGeom = buildFlatRibbon(level.curve, railWidth, 0.02, 160);
   const road = new THREE.Mesh(roadGeom, roadMat);
   road.position.y = GROUND_Y;
   group.add(road);
@@ -762,18 +758,12 @@ function buildRoad(group: THREE.Group, level: LevelConfig, theme: Theme) {
 
   const sideColor = theme === "subway" ? 0x4a3a32 : theme === "rooftop" ? 0x4a2a7a : 0x3a1f5e;
   const curbMat = new THREE.MeshToonMaterial({ color: sideColor, gradientMap: sharedToonRamp() });
+  // Curbs: thin (0.3 wide) ribbons offset 4.15 to each side, 0.18 tall. Built as
+  // flat ribbons for the same reason as the road (see buildFlatRibbon). A
+  // positive lateral offset moves toward the road's left edge, so we flip the
+  // sign to keep the original left/right placement.
   for (const side of [-1, 1]) {
-    const shape = new THREE.Shape();
-    shape.moveTo(side * 4.0, 0);
-    shape.lineTo(side * 4.3, 0);
-    shape.lineTo(side * 4.3, 0.18);
-    shape.lineTo(side * 4.0, 0.18);
-    shape.closePath();
-    const geom = new THREE.ExtrudeGeometry(shape, {
-      extrudePath: level.curve,
-      steps: 160,
-      bevelEnabled: false,
-    });
+    const geom = buildFlatRibbon(level.curve, 0.3, 0.18, 160, -side * 4.15);
     const curb = new THREE.Mesh(geom, curbMat);
     curb.position.y = GROUND_Y;
     group.add(curb);
