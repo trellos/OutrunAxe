@@ -274,6 +274,21 @@ touch PitchEngine.
 3. **Background & particles are registries** under `src/eddie/art/backgrounds/`
    and `src/eddie/art/particles/` (6 options each), reviewable via
    `?eddieart=1&bg=N` / `&fx=N`. Settings themes via `?eddie=1&theme=N`.
+4. **Latency calibration is ONE measured value — never the browser's reported
+   latency.** The player runs a guided gate on the settings screen (play 8
+   quarter notes); the median onset-vs-beat offset is persisted as
+   `localStorage["eddie.latencyMs"]` (see `audio/latencyStore.ts`) and applied
+   once in `PitchTracker` (subtracted from every emitted time). Do NOT reintroduce
+   `outputLatency`/`baseLatency`-based compensation — it's inaccurate on Windows
+   and was removed. The offset can be negative (players land ahead of the click).
+5. **The grid plots on the ONSET, not on settled pitch.** Each played note gets a
+   bar at its attack time (lane filled in when the pitch resolves); the
+   `DUPLICATE_ONSET_WINDOW` in `PitchEngine` is 90ms — anything larger eats fast
+   notes (triplets/16ths). Bars are duration bars (onset→note end); scored
+   quarters turn green.
+6. **Recording for diagnosis:** `?eddie=1&rec` records a play session; the
+   settings RECORD button records there. The capture JSON includes the beat grid
+   so bar timing can be checked offline.
 
 ## Glossary
 
