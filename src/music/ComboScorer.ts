@@ -2,7 +2,6 @@ import type { Conductor, BeatInfo, Phase } from "../audio/Conductor";
 import type { KeyResolver } from "./KeyResolver";
 import type { PitchFiredEvent, KeysNarrowedEvent } from "./KeyResolver";
 import { EventBus } from "../engine/EventBus";
-import { NOTE_NAMES } from "../audio/midi";
 import type { PitchClass } from "./keys";
 
 export type ComboTag =
@@ -35,11 +34,6 @@ const BASE_MULTIPLIER = 1.0;
 const TRIPLET_SUBS = [0, 1 / 3, 2 / 3] as const;
 const SIXTEENTH_SUBS = [0, 0.25, 0.5, 0.75] as const;
 const SUB_TOLERANCE = 0.25; // +/- 25% of beat duration
-
-function midiToPitchClass(midi: number): PitchClass {
-  const idx = ((Math.round(midi) % 12) + 12) % 12;
-  return NOTE_NAMES[idx];
-}
 
 export class ComboScorer {
   readonly bus = new EventBus<ComboEvents>();
@@ -284,7 +278,3 @@ export class ComboScorer {
     return out;
   }
 }
-
-// Suppress unused-warning for the midiToPitchClass helper (kept for parity
-// with KeyResolver's usage if future detectors need it).
-void midiToPitchClass;

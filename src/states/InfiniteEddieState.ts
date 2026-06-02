@@ -144,14 +144,10 @@ export class InfiniteEddieState implements GameState {
   private offPhase?: () => void;
   private offScore?: () => void;
   private offTotal?: () => void;
-  private offNote?: () => void;
   private offNoteEnd?: () => void;
   private offGridOnset?: () => void;
   private offGridPitch?: () => void;
-  private offCountInPitch?: () => void;
   private endBtn?: HTMLElement;
-  /** onset ids already plotted to the intro row, so count-in notes don't dup. */
-  private countInPlotted = new Set<number>();
   /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
   private noteStarts = new Map<number, { measure: number; startTime: number }>();
   /** onset id → the ONSET (attack) audio time. The grid bar's left edge must be
@@ -572,17 +568,14 @@ export class InfiniteEddieState implements GameState {
     this.offPhase?.();
     this.offScore?.();
     this.offTotal?.();
-    this.offNote?.();
     this.offNoteEnd?.();
     this.offGridOnset?.();
     this.offGridPitch?.();
-    this.offCountInPitch?.();
     this.endBtn?.remove();
     this.endBtn = undefined;
     this.noteStarts.clear();
     this.onsetTimes.clear();
     this.pendingNoteEnds.clear();
-    this.countInPlotted.clear();
 
     this.scorer?.detach();
     this.resolver?.detach();
@@ -703,7 +696,12 @@ export class InfiniteEddieState implements GameState {
       "font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#cfe;" +
       "background:rgba(10,8,24,0.82);border:1px solid #ff2bd6;border-radius:8px;" +
       "padding:10px 12px;box-shadow:0 0 18px rgba(255,43,214,0.4);";
-    const src = this.fakeMicBuffer ? `FILE: ${this.fileName}` : "LIVE MIC";
+    // fileName comes from an uploaded File.name — escape before innerHTML.
+    const safeName = this.fileName.replace(
+      /[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c,
+    );
+    const src = this.fakeMicBuffer ? `FILE: ${safeName}` : "LIVE MIC";
     el.innerHTML =
       `<div style="font-weight:700;color:#ff7be9;margin-bottom:6px">● REC &middot; ${src}</div>` +
       `<div data-cap="counts">onsets 0 · notes 0 · score 0</div>` +
@@ -868,6 +866,7 @@ export class InfiniteEddieState implements GameState {
     // Begin the count-in shortly after preroll so the player hears a couple of
     // metronome/drum beats first (mirrors LevelState's 600ms lead-in).
     setTimeout(() => {
+      if (this.exited) return; // player navigated away during the lead-in
       this.conductor.triggerPlay();
       // Align the calibration file so its first note lands at scored measure 0.
       if (this.fakeMicBuffer) {

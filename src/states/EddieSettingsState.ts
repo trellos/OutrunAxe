@@ -16,6 +16,7 @@ import type { Game, GameState } from "../engine/Game";
 import { Conductor } from "../audio/Conductor";
 import { PitchTracker } from "../audio/PitchTracker";
 import { getAudioContext } from "../audio/AudioContextSingleton";
+import { readLatencyMs } from "../audio/latencyStore";
 import { NOTE_NAMES } from "../audio/midi";
 import { generateBassline } from "../music/eddie/basslineGen";
 import type { EddieConfig, PitchClass, KeyMode } from "../music/eddie/eddieTypes";
@@ -87,6 +88,8 @@ export class EddieSettingsState implements GameState {
   private audio: EddieAudioRig | null = null;
   private playButton: EddiePlayButton | null = null;
   private offBeat?: () => void;
+  /** Unsubscribers for the tracker onset/pitch/noteEnd listeners, cleared on exit. */
+  private offTracker: Array<() => void> = [];
   private keyHandler?: (e: KeyboardEvent) => void;
 
   // Timeline canvas state.
@@ -115,10 +118,9 @@ export class EddieSettingsState implements GameState {
   // measures the median onset-vs-beat offset, PERSISTS it, then reveals the full
   // settings UI. One-time: later sessions (and the play screen) start
   // pre-calibrated; RESYNC redoes it. ?cal=<ms> forces a value (debug).
-  private static readonly LS_LATENCY = "eddie.latencyMs";
   private static readonly CAL_NOTES = 8; // consecutive quarter notes required
   private calibratedSec: number | null = (() => {
-    const m = EddieSettingsState.readSeedMs();
+    const m = readLatencyMs();
     return m !== null ? m / 1000 : null;
   })();
   private readonly forcedCalSec: number | null = (() => {
@@ -134,21 +136,6 @@ export class EddieSettingsState implements GameState {
   private syncHint: HTMLElement | null = null;
   private calPrompt: HTMLElement | null = null;
   private calFill: HTMLElement | null = null;
-
-  private static readSeedMs(): number | null {
-    try {
-      const v = localStorage.getItem(EddieSettingsState.LS_LATENCY);
-      if (v !== null && !Number.isNaN(parseFloat(v))) return parseFloat(v);
-    } catch { /* no storage */ }
-    return null;
-  }
-
-  /** The timeline draws emitted times directly: the PitchTracker already
-   *  subtracts the one measured latency at the source (so the play-screen scorer
-   *  shares the same compensated times). No extra offset is applied here. */
-  private latencyOffset(): number {
-    return 0;
-  }
 
   /** Enter the calibration gate: hide the settings UI, prompt for quarter notes. */
   private enterGate() {
@@ -336,6 +323,8 @@ export class EddieSettingsState implements GameState {
     this.perf?.dispose();
     this.perf = null;
     this.offBeat?.();
+    this.offTracker.forEach((off) => off());
+    this.offTracker = [];
     this.playButton?.dispose();
     this.playButton = null;
     this.tracker?.stop();
@@ -624,7 +613,7 @@ export class EddieSettingsState implements GameState {
         window.setTimeout(() => this.highlightBass(loopMeasure), delayMs);
       }
     });
-    this.tracker.onPitchUpdate((u) => {
+    this.offTracker.push(this.tracker.onPitchUpdate((u) => {
       // Fill in the lane (pitch) for this onset's note; create it if the onset
       // event hasn't been seen (defensive).
       const n = this.timelineNotes.get(u.onsetId);
@@ -639,8 +628,8 @@ export class EddieSettingsState implements GameState {
           confidence: u.confidence, status: u.status,
         });
       }
-    });
-    this.tracker.onOnset((e) => {
+    }));
+    this.offTracker.push(this.tracker.onOnset((e) => {
       this.perf?.noteOnset();
       // Open a note bar at the onset; lane filled by the first pitch update,
       // end set by the NoteEnd (next pluck / silence). Until then it grows to
@@ -656,12 +645,12 @@ export class EddieSettingsState implements GameState {
         this.capOnsets.push({ time: e.time, energy: e.energy, synthetic: e.synthetic });
         this.updateRecHint();
       }
-    });
-    this.tracker.onNoteEnd((e) => {
+    }));
+    this.offTracker.push(this.tracker.onNoteEnd((e) => {
       const n = this.timelineNotes.get(e.onsetId);
       if (n) { n.end = e.time; n.ended = true; }
       if (this.recording) this.capNoteEnds.push({ onsetId: e.onsetId, time: e.time, reason: e.reason });
-    });
+    }));
 
     this.conductor.startPreroll();
 
@@ -723,7 +712,6 @@ export class EddieSettingsState implements GameState {
 
     const now = this.conductor.audioTime;
     const outLat = getAudioContext().outputLatency || 0;
-    const cal = this.latencyOffset(); // auto-measured round-trip latency
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
     // Gap between a bar's end and the next bar's start so back-to-back notes
@@ -731,10 +719,10 @@ export class EddieSettingsState implements GameState {
     const NOTE_GAP_PX = 3;
     for (const [, n] of this.timelineNotes) {
       if (n.midi < 0) continue;
-      // Subtract the auto-measured latency so a note played on the beat draws on
-      // the beat; an unfinished note grows to the audible playhead.
-      const endT = n.ended ? n.end - cal : now - outLat;
-      const s = n.start - cal - this.measureStart;
+      // Times are already latency-compensated by the PitchTracker; an unfinished
+      // note grows to the audible playhead.
+      const endT = n.ended ? n.end : now - outLat;
+      const s = n.start - this.measureStart;
       const e = endT - this.measureStart;
       if (e < 0 || s > span) continue; // not in the current measure window
       const x0 = (Math.max(0, s) / beatDur) * PX_PER_BEAT;

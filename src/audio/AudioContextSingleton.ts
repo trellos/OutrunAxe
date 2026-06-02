@@ -12,7 +12,9 @@ export function getAudioContext(): AudioContext {
     ctx = new AudioContext({ latencyHint: "interactive" });
   }
   if (ctx.state === "suspended") {
-    void ctx.resume();
+    // resume() can reject when called outside a user gesture (notably iOS);
+    // surface it rather than swallowing so a dead-audio state is diagnosable.
+    ctx.resume().catch((err) => console.warn("[audio] resume failed", err));
   }
   return ctx;
 }

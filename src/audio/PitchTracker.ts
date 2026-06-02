@@ -19,6 +19,7 @@ import {
   type NoteEnd,
 } from "./PitchEngine";
 import { getAudioContext } from "./AudioContextSingleton";
+import { readLatencyMs, writeLatencyMs } from "./latencyStore";
 import workletUrl from "./onsetWorklet.ts?worker&url";
 import type { OnsetMessage } from "./onsetWorklet";
 
@@ -52,15 +53,7 @@ export class PitchTracker {
    *  timeline AND the play-screen scorer. The browser's reported output/input
    *  latency is deliberately NOT used; it's inaccurate, and we measure a human
    *  instead. */
-  private latencyCompSec = PitchTracker.readPersistedComp();
-
-  private static readPersistedComp(): number {
-    try {
-      const v = localStorage.getItem("eddie.latencyMs");
-      if (v !== null && !Number.isNaN(parseFloat(v))) return parseFloat(v) / 1000;
-    } catch { /* no storage */ }
-    return 0;
-  }
+  private latencyCompSec = (readLatencyMs() ?? 0) / 1000;
 
   /** Current compensation (seconds). */
   get latencyComp(): number {
@@ -72,11 +65,7 @@ export class PitchTracker {
    *  pass persist=false for a transient override (e.g. ?cal debug). */
   setLatencyComp(sec: number, persist = true) {
     this.latencyCompSec = sec;
-    if (persist) {
-      try {
-        localStorage.setItem("eddie.latencyMs", String(Math.round(sec * 1000)));
-      } catch { /* no storage */ }
-    }
+    if (persist) writeLatencyMs(sec * 1000);
     this.engine?.setLatencyBias(this.totalBias());
   }
 
@@ -174,6 +163,12 @@ export class PitchTracker {
     this.analyser = null;
     this.buffer = null;
     this.engine = null;
+    // Release the mic so the browser's recording indicator turns off and the
+    // device is freed when the player leaves the screen.
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    }
   }
 
   reset() {
