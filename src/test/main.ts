@@ -241,7 +241,7 @@ function rerun() {
     fftSize: parseInt(els.fft.value, 10),
     yinThreshold: parseFloat(els.yin.value),
     tickStep: parseInt(els.step.value, 10),
-    inputLatencyHint: 0,
+    latencyBiasSec: 0,
     algorithm: els.algo.value as AnalyzeOptions["algorithm"],
     beatProximityProvider: makeBeatProximity(bpm, loaded.playStartSec),
   };

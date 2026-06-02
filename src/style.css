@@ -28,7 +28,10 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-  backdrop-filter: blur(2px);
+  /* No backdrop-filter: it blurred the ENTIRE screen behind this full-screen
+     overlay, and because the 3D canvas animates every frame the browser re-ran
+     that blur every frame (~100ms/frame compositing — see PerfHud "other").
+     The panel's own background keeps text legible without it. */
 }
 
 .boot-card {
@@ -85,6 +88,29 @@ html, body {
 .boot-play:hover, .results-retry:hover, .results-menu:hover {
   transform: scale(1.04);
   box-shadow: 0 0 36px rgba(255, 43, 214, 1);
+}
+
+/* Title-screen mode buttons: Infinite Eddie + Outrun side by side. */
+.boot-modes {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 6px;
+}
+.boot-modes .boot-play {
+  font-size: 20px;
+  padding: 12px 28px;
+  margin: 0;
+}
+/* Eddie = cyan-forward to distinguish it from the magenta Outrun button. */
+.boot-play-eddie {
+  background: #00f0ff;
+  border-color: #ff2bd6;
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.7);
+}
+.boot-play-eddie:hover {
+  box-shadow: 0 0 36px rgba(0, 240, 255, 1);
 }
 
 .outrun-hud {
@@ -296,7 +322,8 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-  backdrop-filter: blur(3px);
+  /* No backdrop-filter — see note above; full-screen per-frame blur is a
+     compositing killer over the animated canvas. */
 }
 
 .results-card {
@@ -442,7 +469,10 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-  backdrop-filter: blur(2px);
+  /* No backdrop-filter: it blurred the ENTIRE screen behind this full-screen
+     overlay, and because the 3D canvas animates every frame the browser re-ran
+     that blur every frame (~100ms/frame compositing — see PerfHud "other").
+     The panel's own background keeps text legible without it. */
 }
 
 .loadout-card {
@@ -555,7 +585,10 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-  backdrop-filter: blur(2px);
+  /* No backdrop-filter: it blurred the ENTIRE screen behind this full-screen
+     overlay, and because the 3D canvas animates every frame the browser re-ran
+     that blur every frame (~100ms/frame compositing — see PerfHud "other").
+     The panel's own background keeps text legible without it. */
 }
 
 .levelselect-inner {

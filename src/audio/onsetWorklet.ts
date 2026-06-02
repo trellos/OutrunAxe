@@ -12,7 +12,7 @@
 // runtime. Vite handles bundling via `?worker&url` (see vite.config.ts).
 
 import {
-  ONSET_CHUNK,
+  onsetChunkFor,
   newOnsetState,
   onsetGate,
   type OnsetState,
@@ -48,19 +48,16 @@ declare function registerProcessor(
 
 class OnsetProcessor extends AudioWorkletProcessor {
   private state: OnsetState = newOnsetState();
-  /** Rolling 512-sample chunk buffer. Filled in 128-sample increments. */
-  private chunk = new Float32Array(ONSET_CHUNK);
+  /** Analysis chunk sized to ~10.7 ms for THIS context's sample rate (512 @
+   *  48k, 1024 @ 96k). Filled in 128-sample render-quantum increments. */
+  private chunkSize = onsetChunkFor(sampleRate);
+  private chunk = new Float32Array(this.chunkSize);
   private chunkFill = 0;
   /**
    * Sample index (since worklet start) of the FIRST sample currently
    * accumulated in `chunk`. Used to compute the chunk's audio-clock time.
    */
   private chunkStartFrame = 0;
-  /** Pre-allocated mono mixdown buffer — reused each quantum to avoid
-   *  GC pressure on the audio render thread. Sized to the Web Audio
-   *  quantum (128 samples); if an unusually large input quantum ever
-   *  arrives, we allocate once and keep the larger buffer. */
-  private mixBuf = new Float32Array(128);
 
   constructor() {
     super();
@@ -80,43 +77,47 @@ class OnsetProcessor extends AudioWorkletProcessor {
     const ch0 = input[0];
     if (!ch0 || ch0.length === 0) return true;
 
-    // Mono mixdown — sum channels into ch0 work region. The actual mic
-    // path delivers a single channel from getUserMedia, but defensively
-    // mix down if more arrive.
+    // Loudest-channel selection — pick the channel with the highest energy
+    // this quantum rather than averaging, so a silent channel can't dilute a
+    // loud one. The actual mic path delivers a single channel from
+    // getUserMedia; this branch is defensive for multi-channel inputs.
     let mono: Float32Array;
     if (input.length === 1) {
       mono = ch0;
     } else {
-      if (ch0.length > this.mixBuf.length) this.mixBuf = new Float32Array(ch0.length);
-      const buf = this.mixBuf;
-      buf.fill(0, 0, ch0.length);
+      let loudest = 0;
+      let bestSumSq = -1;
       for (let c = 0; c < input.length; c++) {
         const data = input[c];
-        for (let i = 0; i < ch0.length; i++) buf[i] += data[i];
+        let sumSq = 0;
+        for (let i = 0; i < ch0.length; i++) sumSq += data[i] * data[i];
+        if (sumSq > bestSumSq) {
+          bestSumSq = sumSq;
+          loudest = c;
+        }
       }
-      const inv = 1 / input.length;
-      for (let i = 0; i < ch0.length; i++) buf[i] *= inv;
-      mono = buf.subarray(0, ch0.length);
+      mono = input[loudest];
     }
 
+    const chunkSize = this.chunkSize;
     let read = 0;
     while (read < mono.length) {
-      const room = ONSET_CHUNK - this.chunkFill;
+      const room = chunkSize - this.chunkFill;
       const take = Math.min(room, mono.length - read);
       this.chunk.set(mono.subarray(read, read + take), this.chunkFill);
       this.chunkFill += take;
       read += take;
 
-      if (this.chunkFill === ONSET_CHUNK) {
+      if (this.chunkFill === chunkSize) {
         // Chunk is full — compute RMS and run the gate.
         let s = 0;
-        for (let i = 0; i < ONSET_CHUNK; i++) {
+        for (let i = 0; i < chunkSize; i++) {
           const v = this.chunk[i];
           s += v * v;
         }
-        const rms = Math.sqrt(s / ONSET_CHUNK);
+        const rms = Math.sqrt(s / chunkSize);
         const chunkStartTime = this.chunkStartFrame / sampleRate;
-        const chunkEndTime = (this.chunkStartFrame + ONSET_CHUNK) / sampleRate;
+        const chunkEndTime = (this.chunkStartFrame + chunkSize) / sampleRate;
 
         if (onsetGate(rms, chunkStartTime, chunkEndTime, this.state)) {
           const msg: OnsetMessage = {
@@ -127,7 +128,7 @@ class OnsetProcessor extends AudioWorkletProcessor {
           this.port.postMessage(msg);
         }
 
-        this.chunkStartFrame += ONSET_CHUNK;
+        this.chunkStartFrame += chunkSize;
         this.chunkFill = 0;
       }
     }

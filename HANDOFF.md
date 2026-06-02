@@ -119,7 +119,6 @@ Character is the CC0 `RobotExpressive` GLB via `GLTFLoader`.
 - ComboScorer unit tests.
 - Audible verification of the `BackingTrack` mix.
 - L2/L3 difficulty tuning for unaided human play.
-- Mic-latency calibration screen.
 
 ---
 

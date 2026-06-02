@@ -7,7 +7,7 @@
 import { YIN, AMDF, Macleod, ACF2PLUS } from "pitchfinder";
 import { freqToMidi, midiToName } from "./midi";
 import {
-  ONSET_CHUNK,
+  onsetChunkFor,
   newOnsetState,
   onsetGate,
   type OnsetState,
@@ -106,15 +106,19 @@ export const PITCH_DETECTION_DELAY = 0.025;
 // (~80ms) = much higher rate.
 const BEND_RATE_THRESHOLD = 1500;
 
-// Real guitar pluck has a secondary string-settle spike 100–200 ms after the
-// initial attack — same string still vibrating, same pitch. Without this
-// gate the engine fires a phantom OnsetEvent for every plucked note. When a
-// candidate onset lands inside this window of the last EMITTED onset, we
-// defer the emission until pitch is read; if the new pitch class matches
-// the last emitted pitch class, drop the candidate as a settle artefact.
-// Cost: ~25 ms onset latency for tentative onsets. Limitation: legitimate
-// same-pitch repeats inside this window are also suppressed.
-const DUPLICATE_ONSET_WINDOW = 0.25;
+// Window for same-pitch settle-spike suppression: a candidate onset this close
+// to the last EMITTED onset is deferred until pitch is read, and dropped if its
+// pitch class matches (a string-settle artefact, not a new note).
+//
+// This MUST stay below the spacing of real fast notes or it eats them: at
+// 120 BPM sixteenths are 125 ms and eighth-triplets 167 ms apart. The old
+// 250 ms value funneled EVERY fast note into a single-slot "pending" buffer
+// where the next onset overwrote it — dropping ~31% of triplets/16ths and
+// emitting some out of order. The onset gate's own DECAY_REQUIRED + 100 ms
+// attack-spike window are the real settle guards (a sustaining string can't
+// re-fire until it has decayed), so this only needs to catch near-simultaneous
+// double-fires. 90 ms < every real subdivision, so fast notes emit directly.
+const DUPLICATE_ONSET_WINDOW = 0.09;
 
 // Tighter window for the chromatic-neighbor (slide) suppression. A fretboard
 // slide between adjacent scale tones momentarily sounds the in-between pitch
@@ -203,20 +207,21 @@ export class PitchEngine {
     // the legacy non-aligned (live rAF) cadence behaving as it always did.
     this.onsetState.prevChunkRms = 0;
 
-    // Walk the buffer in 512-sample chunks. The LAST chunk in the buffer
-    // that satisfies all gates wins (matches the prior process() semantics).
+    // Walk the buffer in ~10.7ms chunks (sample-rate-aware). The LAST chunk in
+    // the buffer that satisfies all gates wins (matches prior semantics).
+    const chunk = onsetChunkFor(this.sampleRate);
     let acceptedTime = -1;
     let acceptedRms = 0;
-    for (let c = 0; c + ONSET_CHUNK <= buffer.length; c += ONSET_CHUNK) {
+    for (let c = 0; c + chunk <= buffer.length; c += chunk) {
       let s = 0;
-      for (let i = 0; i < ONSET_CHUNK; i++) {
+      for (let i = 0; i < chunk; i++) {
         const v = buffer[c + i];
         s += v * v;
       }
-      const r = Math.sqrt(s / ONSET_CHUNK);
+      const r = Math.sqrt(s / chunk);
       const chunkEndTime =
-        audioTime - (buffer.length - (c + ONSET_CHUNK)) / this.sampleRate;
-      const chunkStartTime = chunkEndTime - ONSET_CHUNK / this.sampleRate;
+        audioTime - (buffer.length - (c + chunk)) / this.sampleRate;
+      const chunkStartTime = chunkEndTime - chunk / this.sampleRate;
       if (onsetGate(r, chunkStartTime, chunkEndTime, this.onsetState)) {
         acceptedTime = chunkStartTime;
         acceptedRms = r;

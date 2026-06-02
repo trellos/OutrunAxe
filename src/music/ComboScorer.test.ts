@@ -54,6 +54,7 @@ function fireNote(
     confidence: 1,
     audioTime,
     measureIdx: 0,
+    onsetId: 0,
   });
 }
 

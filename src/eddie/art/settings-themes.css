@@ -690,6 +690,17 @@
   background: var(--ps-paper);
   z-index: 0;
 }
+/* Keep the title text legible above the paper name-plate inset. The base
+   .levelselect-title uses gradient-clipped (transparent-fill) text, which the
+   span inherits — so reset the fill or it renders invisible. */
+.eddie-theme-6 .levelselect-title span {
+  position: relative;
+  z-index: 3;
+  color: var(--ps-ink);
+  -webkit-text-fill-color: var(--ps-ink);
+  background: none;
+  filter: none;
+}
 .eddie-theme-6 .levelselect-title::before {
   content: "";
   position: absolute; left: 9px; top: 50%;

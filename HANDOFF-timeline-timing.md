@@ -1,5 +1,9 @@
 # Timeline Timing Investigation Handoff
 
+> **RESOLVED (2026-06).** All bugs described below were fixed in
+> `src/hud/Timeline.ts` — see the in-code `// Bug N fix:` comments. This file is
+> retained for historical context only; it does **not** describe open work.
+
 This document is a scoped handoff for someone picking up timing issues in the
 HUD timeline (`src/hud/Timeline.ts`). It covers what the timeline is, the
 specific bugs found during the 2026-05-16 code review, where to look, and

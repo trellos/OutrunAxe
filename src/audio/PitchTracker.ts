@@ -19,13 +19,13 @@ import {
   type NoteEnd,
 } from "./PitchEngine";
 import { getAudioContext } from "./AudioContextSingleton";
+import { readLatencyMs, writeLatencyMs } from "./latencyStore";
 import workletUrl from "./onsetWorklet.ts?worker&url";
 import type { OnsetMessage } from "./onsetWorklet";
 
 export type { OnsetEvent, PitchUpdate, NoteEnd } from "./PitchEngine";
 
 const FFT_SIZE = 2048;
-const INPUT_LATENCY_HINT = 0.05;
 const PITCH_DETECTION_DELAY_MS = PITCH_DETECTION_DELAY * 1000;
 /** Cadence for sustain pitch detection (re-reads the AnalyserNode buffer
  *  while a note is active so bend updates and silence end can fire). */
@@ -47,6 +47,27 @@ export class PitchTracker {
   private beatProximityProvider: ((audioTime: number) => number) | null = null;
   private fakeMicBuffer: AudioBuffer | null = null;
   private fakeSource: AudioBufferSourceNode | null = null;
+  /** The ONE latency compensation, in seconds: measured by the SYNC step from
+   *  the player's own timing and persisted. Subtracted from every emitted time
+   *  so a note played on the beat is reported on the beat — on the settings
+   *  timeline AND the play-screen scorer. The browser's reported output/input
+   *  latency is deliberately NOT used; it's inaccurate, and we measure a human
+   *  instead. */
+  private latencyCompSec = (readLatencyMs() ?? 0) / 1000;
+
+  /** Current compensation (seconds). */
+  get latencyComp(): number {
+    return this.latencyCompSec;
+  }
+
+  /** Update the measured compensation (called by the SYNC calibrator) and push
+   *  it to the live engine so it applies immediately. Persists by default;
+   *  pass persist=false for a transient override (e.g. ?cal debug). */
+  setLatencyComp(sec: number, persist = true) {
+    this.latencyCompSec = sec;
+    if (persist) writeLatencyMs(sec * 1000);
+    this.engine?.setLatencyBias(this.totalBias());
+  }
 
   constructor() {
     this.ctx = getAudioContext();
@@ -60,8 +81,11 @@ export class PitchTracker {
     this.fakeMicBuffer = audioBuffer;
   }
 
-  startFakeMicPlayback() {
-    this.fakeSource?.start();
+  /** Start the prepared fake-mic source. `when` (audio-clock time) schedules
+   *  playback to begin exactly then — used to align a calibration file with the
+   *  first scored measure; omit for immediate start. */
+  startFakeMicPlayback(when?: number) {
+    this.fakeSource?.start(when);
   }
 
   async start(): Promise<void> {
@@ -97,7 +121,10 @@ export class PitchTracker {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-        },
+          // Ask for the lowest input latency the device can provide (non-standard
+          // constraint, supported by Chrome; cast since TS doesn't type it).
+          latency: 0,
+        } as MediaTrackConstraints & { latency?: number },
       });
       const source = this.ctx.createMediaStreamSource(this.stream);
       source.connect(this.analyser);
@@ -136,6 +163,12 @@ export class PitchTracker {
     this.analyser = null;
     this.buffer = null;
     this.engine = null;
+    // Release the mic so the browser's recording indicator turns off and the
+    // device is freed when the player leaves the screen.
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    }
   }
 
   reset() {
@@ -253,7 +286,9 @@ export class PitchTracker {
   };
 
   private totalBias() {
-    const out = this.ctx.outputLatency ?? 0;
-    return out + INPUT_LATENCY_HINT;
+    // The single, player-measured compensation. The browser's reported
+    // output/input latency is deliberately NOT used — it's inaccurate; the SYNC
+    // step measures the real round-trip from the player's own timing.
+    return this.latencyCompSec;
   }
 }

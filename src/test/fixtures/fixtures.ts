@@ -59,12 +59,21 @@ export async function loadAudio(
     if (ch === 1) {
       samples = decoded.getChannelData(0);
     } else {
-      samples = new Float32Array(n);
+      // Loudest-channel selection: a silent channel must not dilute a loud
+      // one, so pick the channel with the highest RMS rather than averaging.
+      let loudest = 0;
+      let bestSumSq = -1;
       for (let c = 0; c < ch; c++) {
         const data = decoded.getChannelData(c);
-        for (let i = 0; i < n; i++) samples[i] += data[i];
+        let sumSq = 0;
+        for (let i = 0; i < n; i++) sumSq += data[i] * data[i];
+        if (sumSq > bestSumSq) {
+          bestSumSq = sumSq;
+          loudest = c;
+        }
       }
-      for (let i = 0; i < n; i++) samples[i] /= ch;
+      // Copy: getChannelData's view is invalid after ctx.close().
+      samples = Float32Array.from(decoded.getChannelData(loudest));
     }
     return { samples, sampleRate: decoded.sampleRate, duration: decoded.duration };
   } finally {

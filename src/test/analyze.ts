@@ -31,7 +31,7 @@ export interface AnalyzeOptions {
   fftSize?: number;
   tickStep?: number;
   yinThreshold?: number;
-  inputLatencyHint?: number; // applied as PitchEngine latency bias
+  latencyBiasSec?: number; // total measured latency to subtract at emit time (sec)
   algorithm?: Algorithm;
   /** 0..1 hint per tick — pass-through to PitchEngine.process. */
   beatProximityProvider?: (audioTime: number) => number;
@@ -50,7 +50,7 @@ export function analyze(
     fftSize,
     algorithm: opts.algorithm ?? "Macleod",
     yinThreshold: opts.yinThreshold ?? 0.10,
-    latencyBiasSec: opts.inputLatencyHint ?? 0,
+    latencyBiasSec: opts.latencyBiasSec ?? 0,
   });
 
   const buffer = new Float32Array(fftSize);
