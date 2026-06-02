@@ -139,11 +139,20 @@ export class InfiniteEddieState implements GameState {
   private offTotal?: () => void;
   private offNote?: () => void;
   private offNoteEnd?: () => void;
+  private offGridOnset?: () => void;
   private offCountInPitch?: () => void;
   /** onset ids already plotted to the intro row, so count-in notes don't dup. */
   private countInPlotted = new Set<number>();
   /** onset id → where that note opened, so its NoteEnd can size the grid bar. */
   private noteStarts = new Map<number, { measure: number; startTime: number }>();
+  /** onset id → the ONSET (attack) audio time. The grid bar's left edge must be
+   *  the onset, NOT the settled-pitch time (which lags it): for fast notes the
+   *  lag collapses the bar to a dot. Populated from the raw onset stream. */
+  private onsetTimes = new Map<number, number>();
+  /** onset id → note-end time that arrived BEFORE the bar was plotted (fast
+   *  notes whose pitch hadn't settled yet). Applied the moment the bar lands so
+   *  it still grows instead of staying a dot. */
+  private pendingNoteEnds = new Map<number, number>();
   private keyHandler?: (e: KeyboardEvent) => void;
 
   /** Pitch classes of the selected key, for the in-key note coloring. */
@@ -332,7 +341,10 @@ export class InfiniteEddieState implements GameState {
     this.offNote = this.resolver.bus.on("pitchFired", (p) => {
       const dur = this.conductor.measureDuration();
       const start = this.conductor.measureStartTime(p.measureIdx);
-      const frac = dur > 0 ? (p.audioTime - start) / dur : 0;
+      // Anchor the bar at the ONSET (attack), not the settled-pitch time, so its
+      // width spans the true note duration instead of collapsing to a dot.
+      const onsetTime = this.onsetTimes.get(p.onsetId) ?? p.audioTime;
+      const frac = dur > 0 ? (onsetTime - start) / dur : 0;
       const note = {
         measure: p.measureIdx,
         beatFraction: Math.max(0, Math.min(1, frac)),
@@ -346,6 +358,7 @@ export class InfiniteEddieState implements GameState {
       this.captureLog?.notes.push(note);
       // Remember where this onset's note opened so its NoteEnd can grow a bar.
       this.noteStarts.set(p.onsetId, { measure: p.measureIdx, startTime: start });
+      this.applyPendingEnd(p.onsetId);
     });
 
     // Count-in feedback: during the 4 intro measures KeyResolver gates off
@@ -359,14 +372,16 @@ export class InfiniteEddieState implements GameState {
       const dur = this.conductor.measureDuration();
       if (dur <= 0) return;
       this.countInPlotted.add(u.onsetId);
-      const into = u.time - this.introStart;
+      // Anchor at the onset (attack), not the settled-pitch time it lags behind.
+      const onsetTime = this.onsetTimes.get(u.onsetId) ?? u.time;
+      const into = onsetTime - this.introStart;
       const introMeasure = Math.max(0, Math.min(3, Math.floor(into / dur)));
       const measure = -(introMeasure + 1); // intro-row convention (-1..-4)
       const measureStart = this.introStart + introMeasure * dur;
       const pitchClass = midiToPitchClass(u.midi) as PitchClass;
       const note = {
         measure,
-        beatFraction: Math.max(0, Math.min(1, (u.time - measureStart) / dur)),
+        beatFraction: Math.max(0, Math.min(1, (onsetTime - measureStart) / dur)),
         pitchClass,
         midi: u.midi,
         inKey: this.keySet.has(pitchClass),
@@ -376,21 +391,27 @@ export class InfiniteEddieState implements GameState {
       this.juice.emit("eddieNote", note);
       this.captureLog?.notes.push(note);
       this.noteStarts.set(u.onsetId, { measure, startTime: measureStart });
+      this.applyPendingEnd(u.onsetId);
     });
 
-    // A note ended — grow its grid bar from onset to here (clamped to its cell).
+    // Record every onset's attack time so the grid bar starts at the pluck (see
+    // onsetTimes). Fires before the pitch settles, so it's ready when plotted.
+    this.offGridOnset = this.tracker.onOnset((e) => {
+      this.onsetTimes.set(e.id, e.time);
+      if (this.onsetTimes.size > 64) {
+        // bound it — drop the oldest insertion
+        const oldest = this.onsetTimes.keys().next().value;
+        if (oldest !== undefined) this.onsetTimes.delete(oldest);
+      }
+    });
+
+    // A note ended — grow its grid bar from onset to here. If the bar isn't
+    // plotted yet (pitch still settling on a fast note), stash the end time and
+    // apply it when the bar lands (see applyPendingEnd in the plot handlers).
     this.offNoteEnd = this.tracker.onNoteEnd((e) => {
-      const begun = this.noteStarts.get(e.onsetId);
-      if (!begun) return;
-      const dur = this.conductor.measureDuration();
-      const endFrac = dur > 0 ? (e.time - begun.startTime) / dur : 0;
-      this.juice.emit("eddieNoteEnd", {
-        onsetId: e.onsetId,
-        measure: begun.measure,
-        endBeatFraction: Math.max(0, Math.min(1, endFrac)),
-        audioTime: e.time,
-      });
-      this.noteStarts.delete(e.onsetId);
+      if (!this.growGridBar(e.onsetId, e.time)) {
+        this.pendingNoteEnds.set(e.onsetId, e.time);
+      }
     });
 
     this.keyHandler = (e: KeyboardEvent) => {
@@ -424,6 +445,33 @@ export class InfiniteEddieState implements GameState {
     }
 
     void this.startEngine();
+  }
+
+  /** Grow a plotted note's grid bar from its onset to `endTime`. Returns false
+   *  if the note hasn't been plotted yet (so the caller can stash the end). */
+  private growGridBar(onsetId: number, endTime: number): boolean {
+    const begun = this.noteStarts.get(onsetId);
+    if (!begun) return false;
+    const dur = this.conductor.measureDuration();
+    const endFrac = dur > 0 ? (endTime - begun.startTime) / dur : 0;
+    this.juice.emit("eddieNoteEnd", {
+      onsetId,
+      measure: begun.measure,
+      endBeatFraction: Math.max(0, Math.min(1, endFrac)),
+      audioTime: endTime,
+    });
+    this.noteStarts.delete(onsetId);
+    this.onsetTimes.delete(onsetId);
+    return true;
+  }
+
+  /** If a note-end arrived before this note's bar was plotted, apply it now so
+   *  the bar grows to its true width instead of staying a dot. */
+  private applyPendingEnd(onsetId: number): void {
+    const end = this.pendingNoteEnds.get(onsetId);
+    if (end === undefined) return;
+    this.pendingNoteEnds.delete(onsetId);
+    this.growGridBar(onsetId, end);
   }
 
   /** Record/debug mode: collect the raw detection stream + build the download
@@ -509,8 +557,11 @@ export class InfiniteEddieState implements GameState {
     this.offTotal?.();
     this.offNote?.();
     this.offNoteEnd?.();
+    this.offGridOnset?.();
     this.offCountInPitch?.();
     this.noteStarts.clear();
+    this.onsetTimes.clear();
+    this.pendingNoteEnds.clear();
     this.countInPlotted.clear();
 
     this.scorer?.detach();
