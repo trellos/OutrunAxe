@@ -243,4 +243,11 @@ asked, what was done, resulting commit(s) if any.
   **Open questions:** L1's two-key choice (C+E vs C+F# for sharper distinction), boss HP ramp, damage popup world-projection vs HUD-centered.
   `npx tsc --noEmit` clean.
 
+- **2026-06-02** — Combat feedback & scoring batch (commits `0cbf107`, `6b99cda`, `0dde692`, `a7318a1`) + docs/tests pass.
+  **Dispatch chord + juice + log:** kills voice a triad rooted on the killing note's pitch class (`src/audio/chords.ts`, pure), with self-decaying camera shake and a "DISPATCHED" letter; both kill paths log to `PlayerStats.dispatches`.
+  **Live score HUD:** `PlayerStats.score` (`kills*100 + round(totalDamage*50)`) is the single source of truth for the in-play HUD counter (`setScore`) AND the results tally — they read the same getter so they can't drift. Eddie's separate readout left as-is.
+  **Flat road:** `Environment.buildRoad` no longer extrudes a vertical cross-section (the `ExtrudeGeometry` Frenet frame stood the road up on its width); it now uses `buildFlatRibbon` from the new `src/world/roadVerify.ts`, which offsets curve samples along the horizontal tangent perpendicular. `isRoadFlat`/`roadBoundingBox` rebuild the shipped geometry for verification. Curbs share the builder via its `offset` arg.
+  **Results screen:** `ResultsState` gains `elapsedSeconds` + a scrollable dispatch list and TOTAL TIME row, formatted by the pure `src/states/resultsFormat.ts`.
+  **Docs/tests:** documented all five in `AGENTS.md` (layout map, new "Combat feedback & scoring" section, glossary). Filled test gaps without duplicating prior coverage — extended `roadVerify.test.ts` (flat-ribbon shape/vertex count, vertical-ribbon rejection, ratio boundary, degenerate curve, curb offset) and `PlayerStats.test.ts` (HUD/results display-string parity). Edge cases for `chords`/`PlayerStats` dispatch log/`resultsFormat` were already covered. `npm test` = 10 files / 120 tests green; `npm run build` clean.
+
 <!-- Append new actions here -->

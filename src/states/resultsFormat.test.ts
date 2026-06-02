@@ -81,4 +81,44 @@ describe("formatDispatchRows", () => {
     ]);
     expect(rows[0].damage).toBe("7.0");
   });
+
+  it("clamps offsets to +0.00s when a row predates the reference", () => {
+    // An explicit reference later than a dispatch must not produce a negative
+    // label; the formatter floors offsets at zero.
+    const rows = formatDispatchRows(
+      [{ pitchClass: "C", damage: 3, time: 100 }],
+      { reference: 110 },
+    );
+    expect(rows[0].timeLabel).toBe("+0.00s");
+  });
+
+  it("preserves order and per-row offsets for a large list", () => {
+    const dispatches: Dispatch[] = Array.from({ length: 50 }, (_, i) => ({
+      pitchClass: "C",
+      damage: i,
+      time: 100 + i * 0.5,
+    }));
+    const rows = formatDispatchRows(dispatches);
+    expect(rows).toHaveLength(50);
+    expect(rows[0].timeLabel).toBe("+0.00s");
+    expect(rows[1].timeLabel).toBe("+0.50s");
+    expect(rows[49].timeLabel).toBe("+24.50s");
+    // Damage labels track each entry in order.
+    expect(rows.map((r) => r.damage).slice(0, 3)).toEqual(["0.0", "1.0", "2.0"]);
+  });
+
+  it("rounds fractional damage to one decimal in rows", () => {
+    const rows = formatDispatchRows([
+      { pitchClass: "C", damage: 2.46, time: 0 },
+      { pitchClass: "D", damage: 4.04, time: 1 },
+    ]);
+    expect(rows.map((r) => r.damage)).toEqual(["2.5", "4.0"]);
+  });
+
+  it("a single non-zero-time dispatch with no reference reads as the origin", () => {
+    const rows = formatDispatchRows([
+      { pitchClass: "C", damage: 3, time: 137.4 },
+    ]);
+    expect(rows[0].timeLabel).toBe("+0.00s");
+  });
 });

@@ -103,13 +103,18 @@ src/
     BootState.ts       title, best scores, PLAY
     LoadoutState.ts    pick character, variant, guitar (live avatar preview)
     LevelSelectState.ts 3 level cards + spinning icosahedra
-    LevelState.ts      *** the game *** — wires every subsystem, chase cam
-    ResultsState.ts    ENCORE/WIPEOUT, stats, NEW BEST, persistence
+    LevelState.ts      *** the game *** — wires every subsystem, chase cam,
+                       live score HUD, dispatch chord + juice
+    ResultsState.ts    ENCORE/WIPEOUT, stats, NEW BEST, persistence,
+                       scrollable dispatch log + total time
+    resultsFormat.ts   pure formatters for the results dispatch list / total time
   world/
     RailRunner.ts      advances t along a CatmullRomCurve3; pos + forward
     Avatar.ts          procedural character from registry; cel-shaded; strum anim
     PlayerAnchor.ts    transform the avatar/bullets hang off
-    Environment.ts     per-theme procedural canvas-textured city
+    Environment.ts     per-theme procedural canvas-textured city; lays the
+                       road + curbs FLAT via buildFlatRibbon (roadVerify.ts)
+    roadVerify.ts      pure flat-ribbon builder + bounding-box / isRoadFlat checks
     Props.ts           cars, lamps, hydrants, dumpsters, signs, benches…
     characters/
       Killer7Style.ts    shared cel-shading (2-tone ramp, ink outline), HumanoidRig
@@ -119,7 +124,9 @@ src/
     Enemy.ts           12 designs (boombox/cassette/…/robots), faces, pop
     EnemyDirector.ts   spawn schedule, approach easing, contact damage
     BulletSystem.ts    tracer lines + instant damage on pitchFired
-    PlayerStats.ts     hp, kills, passes, score
+    PlayerStats.ts     hp, kills, passes, score getter, dispatch log
+  audio/
+    chords.ts          pure triad helper for the enemy-dispatch chord (no WebAudio)
   music/
     keys.ts            major-key pitch-class tables, narrowing math
     KeyResolver.ts     candidate-key narrowing -> pitchFired events
@@ -129,7 +136,7 @@ src/
     ToonRamp.ts        shared 3-step gradient map for MeshToonMaterial
     Outline.ts         inverse-hull (back-face, scaled) black outline
   hud/
-    Overlay.ts         HP bar, status, key readout, combo flash (DOM)
+    Overlay.ts         HP bar, status, key readout, combo flash, live SCORE (DOM)
     Timeline.ts        3 lines x 4 measures, scrolls up; plots played notes
   levels/
     level1.ts          Strip Mall Sunset (90 BPM) + LevelConfig type
@@ -210,6 +217,57 @@ Killer7 enemy archetypes (preserving HP/flash/death/label tinting) is pending.
 6. **Shared geo/tex caches in `Enemy.ts` are module-scope and never
    per-instance disposed.** Only per-instance materials are freed. Disposing
    shared resources corrupts other live enemies.
+
+## Combat feedback & scoring
+
+Five features layer feedback and score onto the core combat loop. All the
+math/formatting lives in small **pure modules** (no WebAudio/WebGL/DOM) so it
+is unit-tested headlessly; the stateful `LevelState`/`ResultsState`/
+`Environment` wiring consumes those helpers.
+
+1. **Enemy-dispatch chord + juice + log.** When a shot (or an `applyMeasureCombo`
+   burst) kills an enemy, `LevelState.playDispatchChord` voices a triad whose
+   ROOT is the killing note's pitch class, so the burst is musically tied to
+   the shot. The voicing is pure: `src/audio/chords.ts` exports
+   `TRIAD_INTERVALS` (`major:[0,4,7]`, `minor:[0,3,7]`), `CHORD_ROOT_MIDI_BASE`
+   (48 = C3, keeping the chord in a low-ish C3..C4 register under the per-note
+   blips), and `chordForPitchClass(pc, mode="major") → [root, third, fifth]`
+   absolute MIDI; an unknown pitch class falls back to a C root so the
+   oscillator never gets a NaN frequency. The kill also fires self-decaying
+   camera shake and a "DISPATCHED" juice letter. Both kill paths (`pitchFired`
+   and `applyMeasureCombo`) call `PlayerStats.recordDispatch(pitchClass,
+   damage, time)`, appending to `stats.dispatches` in dispatch order for the
+   results screen.
+2. **Real-time score HUD.** `PlayerStats.score` is the single source of truth:
+   `kills*100 + round(totalDamage*50)`. `LevelState` pushes it to the HUD each
+   frame via `setScore` (`src/hud/Overlay.ts`, `.hud-score*`), and
+   `ResultsState` reads the same getter — so the live counter and the final
+   tally can never diverge. Infinite Eddie keeps its own readout
+   (`eddieTotal → eddieScorePop → onScorePop` in `eddieArtFactory.ts`); it is
+   unrelated to combat scoring and was left as-is.
+3. **Flat road.** `Environment.buildRoad` previously extruded a vertical
+   cross-section along the level curve with `THREE.ExtrudeGeometry`, whose
+   Frenet frame mapped the road's WIDTH onto the vertical axis — the road
+   "stood up" as a tall ribbon facing the camera. It now uses
+   `buildFlatRibbon` (`src/world/roadVerify.ts`), which samples the curve and
+   offsets each sample left/right along the *horizontal* (XZ) perpendicular of
+   the tangent, so the strip is wide across the ground and only `thickness`
+   tall regardless of the curve's frame. `roadBoundingBox` / `isRoadFlat`
+   (sizeY / max(sizeX,sizeZ) ≤ ratio, default 0.2) rebuild the exact shipped
+   geometry so a test and the renderer can never disagree. The same builder
+   lays the curbs (via its `offset` arg).
+4. **Enhanced results screen.** `ResultsState` takes an `elapsedSeconds` ctor
+   param (computed and passed by `LevelState`) and renders a scrollable list of
+   every dispatched enemy plus a TOTAL TIME row (`.results-dispatch*`). The row
+   strings come from pure formatters in `src/states/resultsFormat.ts`:
+   `formatDuration(s)→"m:ss"`, `formatDispatchTime(offset)→"+s.ss"` under a
+   minute / `"mm:ss.mmm"` beyond, and `formatDispatchRows(dispatches, opts?)`
+   which normalizes each time against the first dispatch (or an explicit
+   `reference`) and formats damage to one decimal.
+
+**Tests** (co-located `*.test.ts`, all headless under the `node` vitest env):
+`src/audio/chords.test.ts`, `src/combat/PlayerStats.test.ts`,
+`src/world/roadVerify.test.ts`, `src/states/resultsFormat.test.ts`.
 
 ## Audio engine (unchanged — original project rules still apply)
 
@@ -302,5 +360,11 @@ touch PitchEngine.
   arrival beat.
 - **Chase cam** — `LevelState` places the avatar on the rail and positions
   the camera behind+above it, looking down the rail. Not camera-parented.
+- **Dispatch** — an enemy kill. Logged to `PlayerStats.dispatches`
+  (`{pitchClass, damage, time}`) and surfaced as the dispatch chord + juice in
+  play and the scrollable dispatch list on the results screen.
+- **Dispatch chord** — a `chordForPitchClass`-voiced triad rooted on the
+  killing note's pitch class, played on each kill so the burst is tied to the
+  shot that landed it.
 - **Preroll / count-in / playing / done** — Conductor phases (unchanged).
   Enemies spawn during count-in but are hidden until `playing`.
