@@ -188,6 +188,26 @@ html, body {
   display: inline-block;
 }
 
+.hud-score {
+  margin-bottom: 8px;
+}
+
+.hud-score-label {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 4px;
+  color: #00f0ff;
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+
+.hud-score-value {
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #c7ff2b;
+  text-shadow: 0 0 14px rgba(199, 255, 43, 0.7);
+}
+
 .hud-enemy-count {
   font-size: 12px;
   color: #d4c2ff;

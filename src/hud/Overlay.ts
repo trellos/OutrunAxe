@@ -7,6 +7,7 @@ export interface OverlayElements {
   keyInfo: HTMLDivElement;
   comboFlash: HTMLDivElement;
   enemyCount: HTMLDivElement;
+  score: HTMLDivElement;
 }
 
 export function createOverlay(parent: HTMLElement): OverlayElements {
@@ -26,6 +27,10 @@ export function createOverlay(parent: HTMLElement): OverlayElements {
       <div class="hud-status"></div>
     </div>
     <div class="hud-top-right">
+      <div class="hud-score">
+        <div class="hud-score-label">SCORE</div>
+        <div class="hud-score-value">0</div>
+      </div>
       <div class="hud-enemy-count"></div>
     </div>
     <div class="hud-combo-flash"></div>
@@ -41,7 +46,13 @@ export function createOverlay(parent: HTMLElement): OverlayElements {
     keyInfo: root.querySelector(".hud-key") as HTMLDivElement,
     comboFlash: root.querySelector(".hud-combo-flash") as HTMLDivElement,
     enemyCount: root.querySelector(".hud-enemy-count") as HTMLDivElement,
+    score: root.querySelector(".hud-score-value") as HTMLDivElement,
   };
+}
+
+/** Update the live HUD score readout. */
+export function setScore(el: OverlayElements, value: number) {
+  el.score.textContent = String(value);
 }
 
 export function setHp(el: OverlayElements, hp: number, maxHp: number) {

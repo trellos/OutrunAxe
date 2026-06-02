@@ -17,8 +17,7 @@ export class ResultsState implements GameState {
   ) {}
 
   enter(_game: Game) {
-    const score =
-      this.stats.kills * 100 + Math.round(this.stats.totalDamage * 50);
+    const score = this.stats.score;
 
     const key = "outrunaxe.best." + this.levelName;
     const prevRaw = localStorage.getItem(key);

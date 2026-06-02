@@ -12,7 +12,7 @@ import { EnemyDirector } from "../combat/EnemyDirector";
 import type { Enemy } from "../combat/Enemy";
 import { BulletSystem } from "../combat/BulletSystem";
 import { PlayerStats } from "../combat/PlayerStats";
-import { createOverlay, flashCombo, setHp, spawnDamagePopup, spawnKillLetter, type OverlayElements } from "../hud/Overlay";
+import { createOverlay, flashCombo, setHp, setScore, spawnDamagePopup, spawnKillLetter, type OverlayElements } from "../hud/Overlay";
 import { Timeline } from "../hud/Timeline";
 import { level1, type LevelConfig } from "../levels/level1";
 import { ResultsState } from "./ResultsState";
@@ -159,6 +159,7 @@ export class LevelState implements GameState {
     this.timeline = new Timeline(this.hudParent, this.conductor);
     this.timeline.attach(this.tracker);
     setHp(this.overlay, this.stats.hp, this.stats.maxHp);
+    setScore(this.overlay, this.stats.score);
     this.overlay.status.textContent = "READY";
     this.overlay.keyInfo.textContent = "key: --";
 
@@ -376,6 +377,7 @@ export class LevelState implements GameState {
     this.bullets.update(audioTime);
     this.avatar?.update(audioTime);
     setHp(this.overlay, this.stats.hp, this.stats.maxHp);
+    setScore(this.overlay, this.stats.score);
     this.overlay.enemyCount.textContent =
       `kills ${this.stats.kills}  passes ${this.stats.passes}  alive ${this.director.aliveCount}`;
 

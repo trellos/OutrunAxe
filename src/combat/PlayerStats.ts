@@ -23,4 +23,10 @@ export class PlayerStats {
   get isDead(): boolean {
     return this.hp <= 0;
   }
+
+  /** Running score. Single source of truth shared by the live HUD counter and
+   *  the final results screen so the two always agree. */
+  get score(): number {
+    return this.kills * 100 + Math.round(this.totalDamage * 50);
+  }
 }

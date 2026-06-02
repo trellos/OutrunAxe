@@ -46,4 +46,12 @@ describe("PlayerStats", () => {
     s.takeDamage(20);
     expect(s.hp).toBe(60);
   });
+
+  it("score starts at zero and combines kills and damage", () => {
+    const s = new PlayerStats();
+    expect(s.score).toBe(0);
+    s.kills = 3;
+    s.totalDamage = 2.4;
+    expect(s.score).toBe(3 * 100 + Math.round(2.4 * 50));
+  });
 });
