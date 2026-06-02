@@ -53,6 +53,20 @@ test.use({
 /** The valid initial roots per GDD §9 ({E,A,G,C} × {maj,min}). */
 const RANDOM_ROOTS = ["E", "A", "G", "C"];
 
+/** The sample guitar tracks offered by the ?eddiedebug record/calibrate menu
+ *  (mirrors SAMPLES in EddieDebugState.ts). Each is routed through the REAL
+ *  onset→pitch chain via the fake mic, so the grid must plot what's in it.
+ *  `match` is a distinctive substring of the card label (Playwright hasText).
+ *  `minNotes` is a conservative per-file floor (the "Taps" file is intentionally
+ *  quiet — peak ~0.09 — so the gate finds only ~4 onsets in it; that's faithful
+ *  detection, not a display bug). The real assertion is display FIDELITY: the
+ *  grid plots essentially every detected onset. */
+const SAMPLE_TRACKS = [
+  { match: "90 BPM", name: "Eighths · 90 BPM (mp3)", minNotes: 8 },
+  { match: "Scale eighths", name: "Scale eighths · 120 BPM", minNotes: 8 },
+  { match: "Taps", name: 'Taps "16ths" · 120 BPM', minNotes: 2 },
+];
+
 /** Press a piano key (KeyZ..) which the states map through emitSyntheticNote. */
 async function jam(page: Page, codes: string[]) {
   for (const code of codes) {
@@ -169,41 +183,68 @@ test.describe("Infinite Eddie", () => {
     await expect(page.locator(".outrun-levelselect")).toBeVisible({ timeout: 90000 });
   });
 
-  // Deterministic detection test: route a KNOWN calibration file through the
-  // real onset→pitch chain (record mode), with no mic/keyboard randomness, and
-  // assert that notes are detected and plotted as duration bars on the timeline.
-  test("calibration: a known file detects notes through the live chain", async ({ page }) => {
-    await page.goto(`${BASE_URL}/?eddiedebug=1`);
+  // Per-sample timeline-fidelity tests: route each KNOWN sample guitar track
+  // through the real onset→pitch chain (fake mic, record mode) and assert the
+  // grid TIMELINE displays the played notes correctly — plotted as duration
+  // bars, spread across measures, and matching the detected onset count. No
+  // mic/keyboard randomness, so this is deterministic up to detector variance.
+  test.describe("sample tracks: the timeline displays the notes", () => {
+    for (const track of SAMPLE_TRACKS) {
+      test(`${track.name}`, async ({ page }) => {
+        await page.goto(`${BASE_URL}/?eddiedebug=1`);
 
-    // Pick the scale-eighths file (loud, unambiguous onsets).
-    const card = page.locator(".eddie-bgmenu-card", { hasText: "Scale eighths" });
-    await expect(card).toBeVisible();
-    await card.click();
+        const card = page.locator(".eddie-bgmenu-card", { hasText: track.match });
+        await expect(card).toBeVisible();
+        await card.click();
 
-    // The record HUD appears and the play screen mounts the 20-cell grid.
-    await expect(page.locator(".eddie-capture-hud")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator(".eddie-cell")).toHaveCount(20);
+        // Record HUD up + the play screen mounts the 20-cell grid.
+        await expect(page.locator(".eddie-capture-hud")).toBeVisible({ timeout: 10000 });
+        await expect(page.locator(".eddie-cell")).toHaveCount(20);
 
-    // After the count-in + file playback, onsets are detected and notes plotted.
-    // (~10s count-in at 120 BPM, then the file's notes stream in.)
-    await expect
-      .poll(async () => page.locator(".eddie-note").count(), { timeout: 75000 })
-      .toBeGreaterThan(8);
+        // Helper: how many distinct measure cells currently hold ≥1 note bar.
+        const cellsWithNotes = () =>
+          page.evaluate(() => {
+            const cells = new Set<Element>();
+            document.querySelectorAll(".eddie-note").forEach((n) => {
+              const cell = n.closest(".eddie-cell");
+              if (cell) cells.add(cell);
+            });
+            return cells.size;
+          });
 
-    // Each plotted note is a duration BAR, not a zero-width dot: at least one has
-    // grown past the initial stub once its NoteEnd arrives.
-    const maxWidthPx = await page.evaluate(() =>
-      Math.max(
-        0,
-        ...Array.from(document.querySelectorAll<HTMLElement>(".eddie-note")).map(
-          (n) => n.getBoundingClientRect().width,
-        ),
-      ),
-    );
-    expect(maxWidthPx).toBeGreaterThan(5);
+        // After the count-in + file playback, the file's notes stream onto the
+        // grid (~8-10s count-in, then the notes). Wait for enough to land.
+        await expect
+          .poll(async () => page.locator(".eddie-note").count(), { timeout: 90000 })
+          .toBeGreaterThan(track.minNotes);
 
-    // The capture HUD reflects a non-zero detection count.
-    const counts = (await page.locator('[data-cap="counts"]').textContent()) ?? "";
-    expect(counts).toMatch(/onsets [1-9]/);
+        // 1) Notes are PLACED across the timeline (≥2 distinct measure cells),
+        //    not dumped into one — proves per-measure timing placement. Poll,
+        //    since the notes spread as successive measures play.
+        await expect.poll(cellsWithNotes, { timeout: 60000 }).toBeGreaterThanOrEqual(2);
+
+        // 2) Notes render as duration BARS (onset→end), not zero-width dots:
+        //    at least one bar has grown past the 4px attack stub.
+        const maxWidthPx = await page.evaluate(() =>
+          Math.max(
+            0,
+            ...Array.from(document.querySelectorAll<HTMLElement>(".eddie-note")).map(
+              (n) => n.getBoundingClientRect().width,
+            ),
+          ),
+        );
+        expect(maxWidthPx).toBeGreaterThan(5);
+
+        // 3) DISPLAY FIDELITY (the core check): the grid plots essentially every
+        //    detected onset — the timeline shows what was played, not a subset.
+        //    Read both at the same instant (both update off the same onset event;
+        //    a few onsets past measure 15 aren't plotted, hence the 0.6 floor).
+        const counts = (await page.locator('[data-cap="counts"]').textContent()) ?? "";
+        const onsets = Number(counts.match(/onsets\s+(\d+)/)?.[1] ?? "0");
+        expect(onsets).toBeGreaterThan(0);
+        const gridNotes = await page.locator(".eddie-note").count();
+        expect(gridNotes).toBeGreaterThanOrEqual(Math.floor(onsets * 0.6));
+      });
+    }
   });
 });
