@@ -12,7 +12,7 @@ import { EnemyDirector } from "../combat/EnemyDirector";
 import type { Enemy } from "../combat/Enemy";
 import { BulletSystem } from "../combat/BulletSystem";
 import { PlayerStats } from "../combat/PlayerStats";
-import { createOverlay, flashCombo, setHp, spawnDamagePopup, spawnKillLetter, type OverlayElements } from "../hud/Overlay";
+import { createOverlay, flashCombo, setHp, setScore, spawnDamagePopup, spawnKillLetter, type OverlayElements } from "../hud/Overlay";
 import { Timeline } from "../hud/Timeline";
 import { level1, type LevelConfig } from "../levels/level1";
 import { ResultsState } from "./ResultsState";
@@ -20,6 +20,8 @@ import { LevelSelectState } from "./LevelSelectState";
 import { Avatar } from "../world/Avatar";
 import { loadLoadout } from "../state/Loadout";
 import { ComboScorer, type MeasureComboResult } from "../music/ComboScorer";
+import { chordForPitchClass } from "../audio/chords";
+import type { PitchClass } from "../music/keys";
 
 const ENEMY_CONTACT_DAMAGE = 18;
 
@@ -79,6 +81,12 @@ export class LevelState implements GameState {
   /** Cached white-noise buffer for the hit thud. Filled once on first hit so
    *  we don't allocate a fresh AudioBuffer per note. */
   private noiseBuffer: AudioBuffer | null = null;
+  /** Self-decaying camera-shake state for dispatch juice. `shakeAmp` is the
+   *  current peak offset (world units); it decays linearly to 0 by
+   *  `shakeUntil`. Kept tiny so it punctuates a kill without breaking the
+   *  chase framing. Applied AFTER the chase-camera positioning in update(). */
+  private shakeAmp = 0;
+  private shakeUntil = 0;
 
   constructor(hudParent: HTMLElement, level: LevelConfig = level1) {
     this.hudParent = hudParent;
@@ -151,6 +159,7 @@ export class LevelState implements GameState {
     this.timeline = new Timeline(this.hudParent, this.conductor);
     this.timeline.attach(this.tracker);
     setHp(this.overlay, this.stats.hp, this.stats.maxHp);
+    setScore(this.overlay, this.stats.score);
     this.overlay.status.textContent = "READY";
     this.overlay.keyInfo.textContent = "key: --";
 
@@ -211,9 +220,20 @@ export class LevelState implements GameState {
       // Killed-enemy feedback: detach each dead enemy's pitch label and fly it
       // up to the timeline bar that just landed the kill. The mesh keeps doing
       // its slow expand-fade in world space (Enemy.update / DEATH_DURATION).
+      let dispatched = 0;
       for (const t of targets) {
         if (t.alive) continue;
         this.spawnKillLetterFor(t, ev.midi, ev.audioTime);
+        this.dispatchEnemy(t, ev.audioTime);
+        dispatched++;
+      }
+      if (dispatched > 0) {
+        // One chord per kill EVENT (even if several enemies died at once): the
+        // chord root is the killing note's pitch class, so simultaneous kills
+        // don't stack multiple low triads and clip. Per-voice gain is modest
+        // (see playDispatchChord).
+        this.playDispatchChord(ev.pitchClass, ev.audioTime);
+        this.triggerShake();
       }
       this.avatar?.triggerStrum(ev.audioTime);
 
@@ -332,6 +352,20 @@ export class LevelState implements GameState {
       railPos.y + 1.1,
       railPos.z + fwd.z * 7,
     );
+    // Dispatch camera shake: a tiny random offset added AFTER the chase-camera
+    // placement so the framing target is unchanged — only the eye jitters. The
+    // amplitude decays linearly to 0 over the shake window so it self-clears.
+    if (this.shakeAmp > 0 && audioTime < this.shakeUntil) {
+      const remaining = this.shakeUntil - audioTime;
+      const decay = Math.max(0, remaining / 0.18);
+      const amp = this.shakeAmp * decay;
+      camera.position.x += (Math.random() * 2 - 1) * amp;
+      camera.position.y += (Math.random() * 2 - 1) * amp;
+      camera.position.z += (Math.random() * 2 - 1) * amp;
+    } else {
+      this.shakeAmp = 0;
+    }
+
     this.anchor.position.copy(railPos);
     this.anchor.lookAt(this.rail.lookAtPoint);
 
@@ -343,6 +377,7 @@ export class LevelState implements GameState {
     this.bullets.update(audioTime);
     this.avatar?.update(audioTime);
     setHp(this.overlay, this.stats.hp, this.stats.maxHp);
+    setScore(this.overlay, this.stats.score);
     this.overlay.enemyCount.textContent =
       `kills ${this.stats.kills}  passes ${this.stats.passes}  alive ${this.director.aliveCount}`;
 
@@ -356,6 +391,7 @@ export class LevelState implements GameState {
           this.level.name,
           () => this.restart(),
           () => this.goLevelSelect(),
+          this.elapsedSeconds(audioTime),
         ),
       );
       return;
@@ -372,9 +408,19 @@ export class LevelState implements GameState {
           this.level.name,
           () => this.restart(),
           () => this.goLevelSelect(),
+          this.elapsedSeconds(audioTime),
         ),
       );
     }
+  }
+
+  /** Seconds of play elapsed from the level's play-start (measure 0) to now.
+   *  Guards against NaN/negative so the results screen always gets a sane
+   *  value. */
+  private elapsedSeconds(audioTime: number): number {
+    const playStart = this.conductor.measureStartTime(0);
+    const elapsed = audioTime - playStart;
+    return Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0;
   }
 
   private applyMeasureCombo(combo: MeasureComboResult) {
@@ -390,11 +436,26 @@ export class LevelState implements GameState {
       // Distribute the bonus across all currently alive enemies.
       const targets = this.director.enemiesAlive();
       const dmgEach = bonus / Math.max(1, targets.length);
+      const comboTime = this.conductor.audioTime;
+      let dispatched = 0;
       for (const e of targets) {
-        const applied = e.takeDamage(dmgEach, this.conductor.audioTime);
+        const applied = e.takeDamage(dmgEach, comboTime);
         this.stats.totalDamage += applied;
-        if (!e.alive) this.stats.kills++;
+        if (!e.alive) {
+          this.stats.kills++;
+          // Combo bonus kills are dispatches too: log them and play a chord per
+          // kill, keyed on each enemy's own pitch class (no single "killing
+          // note" here — the combo damages everything at once). The chord root
+          // is the enemy's pitch class, so we use that triad's root MIDI for
+          // the kill-letter's timeline anchor.
+          const killMidi = chordForPitchClass(e.pitchClass)[0];
+          this.spawnKillLetterFor(e, killMidi, comboTime);
+          this.dispatchEnemy(e, comboTime);
+          this.playDispatchChord(e.pitchClass, comboTime);
+          dispatched++;
+        }
       }
+      if (dispatched > 0) this.triggerShake();
     }
     // Loud HUD flash.
     const labels: Record<string, string> = {
@@ -495,6 +556,84 @@ export class LevelState implements GameState {
     sawOsc.start(t0);
     sineOsc.stop(end);
     sawOsc.stop(end);
+  }
+
+  /**
+   * Per-dispatch (enemy-killed) feedback shared by both kill paths: record the
+   * dispatch for the results screen and pop extra HUD juice in the enemy's
+   * color. The chord + camera shake are fired ONCE per kill event by the
+   * caller (so simultaneous kills don't stack), but the popup/log are per
+   * enemy. `damage` logged is the enemy's maxHp (total damage it took to die).
+   */
+  private dispatchEnemy(enemy: Enemy, audioTime: number) {
+    this.stats.recordDispatch(enemy.pitchClass, enemy.maxHp, audioTime);
+    const color = `#${(enemy.mesh.material as THREE.MeshToonMaterial).color.getHexString()}`;
+    spawnDamagePopup(this.overlay, `DISPATCHED ${enemy.pitchClass}`, color);
+  }
+
+  /**
+   * Kick the self-decaying camera shake. Subtle on purpose: a small peak
+   * amplitude over a short window so a kill reads as a punch without yanking
+   * the chase framing off the avatar. Re-kicking refreshes (does not stack)
+   * the amplitude/window so rapid kills stay bounded.
+   */
+  private triggerShake() {
+    const ctx = getAudioContext();
+    this.shakeAmp = 0.12;
+    this.shakeUntil = ctx.currentTime + 0.18;
+  }
+
+  /**
+   * Synthesize the enemy-dispatch chord: a short, pleasant triad whose ROOT is
+   * the pitch class of the killing note (see chords.ts). Modeled on
+   * `playNoteFeedback` — same past-time guard (audioTime is usually backdated),
+   * same percussive envelope idiom. Each chord tone gets its own oscillator
+   * through a SHARED envelope so layered/simultaneous kills keep a modest
+   * combined gain and don't clip.
+   */
+  private playDispatchChord(pitchClass: PitchClass, audioTime: number) {
+    const ctx = getAudioContext();
+    // Same backdated-onset guard as playNoteFeedback: only honour audioTime if
+    // it's genuinely in the future, else start now so the chord is audible.
+    const now = ctx.currentTime;
+    const t0 = Number.isFinite(audioTime) && audioTime > now ? audioTime : now;
+
+    // A bit longer than a per-note blip so the triad rings as a satisfying
+    // "downed" stinger, but still short. ~0.45s regardless of BPM.
+    const dur = 0.45;
+    const end = t0 + dur;
+
+    const midis = chordForPitchClass(pitchClass);
+
+    // Shared percussive envelope: sharp attack, exponential decay to the end.
+    // Peak is per-VOICE-summed-modest: divided across the chord tones below so
+    // the combined chord sits over the drums without clipping.
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.linearRampToValueAtTime(0.22, t0 + 0.006);
+    env.gain.exponentialRampToValueAtTime(0.0001, end);
+
+    // Gentle lowpass keeps the triad warm (it lives in the low C3..C4 register)
+    // and out of the way of the brighter per-note blips.
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 1800;
+    lp.connect(env).connect(ctx.destination);
+
+    // Per-voice gain divided by the number of tones so the summed chord stays
+    // modest even when several dispatch chords overlap on a multi-kill measure.
+    const perVoice = 0.9 / midis.length;
+    for (const midi of midis) {
+      const freq = 440 * Math.pow(2, (midi - 69) / 12);
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      const g = ctx.createGain();
+      g.gain.value = perVoice;
+      osc.connect(g).connect(lp);
+      osc.start(t0);
+      osc.stop(end);
+    }
   }
 
   /**
