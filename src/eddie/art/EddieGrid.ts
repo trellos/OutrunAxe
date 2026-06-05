@@ -18,20 +18,25 @@
 // dispose() simply removes the root (zero Three.js resources).
 
 import type { EventBus } from "../../engine/EventBus";
-import type { EddieConfig, EddieJuiceEvents } from "../../music/eddie/eddieTypes";
+import type {
+  EddieConfig,
+  EddieJuiceEvents,
+  PitchClass,
+} from "../../music/eddie/eddieTypes";
 import { NOTE_NAMES } from "../../audio/midi";
+import {
+  COLOR_CHORD_TINT_DARK,
+  COLOR_CHORD_TINT_MEDIUM,
+  diamondColor,
+  diamondTile,
+  noteColor,
+  subdivisionCount,
+  timingQuality,
+} from "./eddieFeedback";
 
 const ROWS = 5;
 const COLS = 4;
 const PITCH_LANES = 13; // 0..12: key root to octave+1
-
-// Color palette
-const COLOR_ROOT = "#FFC837"; // Bright gold
-const COLOR_STRONG = "#FF6B9D"; // Hot pink (3rd/5th)
-const COLOR_WEAK = "#FFB84D"; // Warm orange
-const COLOR_BOGUS = "#ff5a6e"; // Red/pink (out-of-key)
-const COLOR_CHORD_TINT_DARK = "#2D1B3D"; // Deep purple (bass row)
-const COLOR_CHORD_TINT_MEDIUM = "#4A2E5A"; // Lighter purple (3rd/5th rows)
 
 // Chord tone row background tints
 const CHORD_ROW_ALPHA = 0.25;
@@ -56,8 +61,10 @@ export class EddieGrid {
   // Configuration
   private keyRoot: string = "C";
   private pitchClassToLane = new Map<string, number>();
-  // Per-measure chord tones: measure index → [root lane, 3rd lane, 5th lane]
-  private chordTonesByMeasure = new Map<number, number[]>();
+  // Per-measure chord tones, two views of the same chord: lane numbers (for the
+  // background-darkening geometry) and pitch classes (for note colouring).
+  private chordToneLanesByMeasure = new Map<number, number[]>();
+  private chordTonePcsByMeasure = new Map<number, PitchClass[]>();
 
   mount(ctx: {
     hudParent: HTMLElement;
@@ -71,24 +78,25 @@ export class EddieGrid {
     this.keyRoot = ctx.config.keyRoot;
     this.initializePitchClassLanes();
 
-    // Pre-compute chord tone lanes for each measure (used for darkening)
-    // The bassline loops every 4 measures, so pattern measure m % 4 applies to measure m
+    // Pre-compute the chord tones for each measure (root, 3rd, 5th), both as
+    // lane numbers (for the row darkening) and as pitch classes (for colouring).
+    // The bassline loops every 4 measures, so pattern measure m % 4 applies to m.
     const chordRootByPatternMeasure = new Map<number, string>();
     for (const n of ctx.config.bassline) {
       if (n.beat === 0 && !chordRootByPatternMeasure.has(n.measure)) {
         chordRootByPatternMeasure.set(n.measure, n.pitchClass);
-        // Store the chord tones (root, 3rd, 5th) as lane numbers
         const rootLane = this.pitchClassToLane.get(n.pitchClass) ?? 0;
         const chordToneLanes = [rootLane];
+        const chordTonePcs: PitchClass[] = [n.pitchClass];
         for (const pc of n.chordTones) {
           const lane = this.pitchClassToLane.get(pc) ?? 0;
-          if (!chordToneLanes.includes(lane)) {
-            chordToneLanes.push(lane);
-          }
+          if (!chordToneLanes.includes(lane)) chordToneLanes.push(lane);
+          if (!chordTonePcs.includes(pc)) chordTonePcs.push(pc);
         }
-        // Store for measures 0..15 and also loop back to 16..19 (intro would not use this)
+        // Store for measures 0..15 and also loop back to 16..19 (intro unused).
         for (let m = n.measure; m < 20; m += 4) {
-          this.chordTonesByMeasure.set(m, chordToneLanes);
+          this.chordToneLanesByMeasure.set(m, chordToneLanes);
+          this.chordTonePcsByMeasure.set(m, chordTonePcs);
         }
       }
     }
@@ -173,7 +181,7 @@ export class EddieGrid {
   /** Add chord-tone row background tints to a cell: darkened backgrounds for
    *  root, 3rd, and 5th rows so the harmonic context is always visible. */
   private addChordRowTints(layer: HTMLDivElement, measure: number): void {
-    const chordTones = this.chordTonesByMeasure.get(measure);
+    const chordTones = this.chordToneLanesByMeasure.get(measure);
     if (!chordTones || chordTones.length === 0) return;
 
     // Root is the first lane, 3rd/5th are any additional lanes
@@ -305,26 +313,9 @@ export class EddieGrid {
     if (widthPct > 0) entry.el.style.width = `${widthPct.toFixed(2)}%`;
   }
 
-  /** Determine note bar color based on pitch class chord role. */
+  /** Determine note bar color based on pitch class chord role (shared rule). */
   private getNoteColor(n: EddieJuiceEvents["eddieNote"]): string {
-    if (!n.inKey) return COLOR_BOGUS;
-
-    const pitchClass = NOTE_NAMES[((n.midi % 12) + 12) % 12];
-
-    // Check if it's a root note
-    if (pitchClass === this.keyRoot) return COLOR_ROOT;
-
-    // Check if it's a chord tone (3rd or 5th) from the current measure's bassline
-    const measureChordTones = this.chordTonesByMeasure.get(n.measure);
-    if (measureChordTones) {
-      const lane = this.pitchClassToLane.get(pitchClass) ?? 0;
-      // First element is root (handled above), check if lane matches 3rd or 5th
-      if (measureChordTones.length > 1 && measureChordTones.slice(1).includes(lane)) {
-        return COLOR_STRONG;
-      }
-    }
-
-    return COLOR_WEAK;
+    return noteColor(n.midi, this.keyRoot, this.chordTonePcsByMeasure.get(n.measure) ?? null, n.inKey);
   }
 
   /** Spawn 3 white shimmer particles at a note's birth position, fading over time. */
@@ -381,34 +372,17 @@ export class EddieGrid {
     // One diamond region per quarter — skip if this quarter was already decorated.
     if (layer.querySelector(`.eddie-quarter-diamond[data-beat="${beat}"]`)) return;
 
-    // Subdivision = how many notes were played in the quarter (clamped to the
-    // sixteenth ceiling). Average timing quality drives the colour saturation.
-    const subdiv = Math.max(1, Math.min(4, bars.length));
+    // Subdivision = how many notes were played in the quarter; average timing
+    // quality (vs the in-quarter subdivision grid) drives the colour saturation.
+    const subdiv = subdivisionCount(bars.length);
     let q = 0;
-    for (const el of bars) q += this.timingQuality(parseFloat(el.dataset.bf ?? "0"));
+    for (const el of bars) {
+      const bf = parseFloat(el.dataset.bf ?? "0");
+      q += timingQuality((bf * 4) % 1); // bf is the measure fraction → in-quarter
+    }
     q /= bars.length;
 
     this.addQuarterDiamonds(layer, beat, subdiv, q);
-  }
-
-  /** Grade a note's timing: how close its in-measure position lands to the
-   *  nearest musical subdivision point (eighth, sixteenth, or triplet) WITHIN its
-   *  quarter. Returns 0 (loose) .. 1 (dead on the grid). */
-  private timingQuality(beatFraction: number): number {
-    // Position inside the quarter the note belongs to (0..1).
-    const inQuarter = ((beatFraction * 4) % 1 + 1) % 1;
-    // Ideal subdivision points a player might be aiming for, within one quarter.
-    const targets = [
-      0, 1, // quarter boundaries
-      0.5, // eighth
-      0.25, 0.75, // sixteenths
-      1 / 3, 2 / 3, // triplets
-    ];
-    let best = 1;
-    for (const t of targets) best = Math.min(best, Math.abs(inQuarter - t));
-    // Worst-case nearest distance between the densest grid points is ~0.125.
-    const maxErr = 0.125;
-    return Math.max(0, Math.min(1, 1 - best / maxErr));
   }
 
   /** Fill a quarter-note region with a tall argyle diamond pattern. `subdiv`
@@ -422,12 +396,7 @@ export class EddieGrid {
     subdiv: number,
     quality: number,
   ): void {
-    // Interpolate the success colour from muted (loose) to vibrant gold (tight).
-    const r = Math.round(150 + (255 - 150) * quality);
-    const g = Math.round(135 + (215 - 135) * quality);
-    const b = Math.round(70 + (0 - 70) * quality);
-    const a = 0.5 + 0.4 * quality;
-    const color = `rgba(${r},${g},${b},${a})`;
+    const color = diamondColor(quality);
 
     // Geometry in pixels: the quarter is one of the cell's four columns.
     const cellW = layer.clientWidth;
@@ -438,8 +407,7 @@ export class EddieGrid {
     const regionH = cellH - insetY * 2;
 
     // `subdiv` diamonds across the quarter; tall (taller than wide) like argyle.
-    const tileW = quarterW / subdiv;
-    const tileH = Math.max(tileW * 1.7, 16);
+    const { tileW, tileH } = diamondTile(quarterW, subdiv);
 
     // One rhombus per tile, drawn as an inline SVG so tall diamonds tile exactly
     // (CSS-gradient diamonds only tile cleanly when square). The negative space
