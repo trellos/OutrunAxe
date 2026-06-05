@@ -32,6 +32,8 @@ import { InfiniteEddieState } from "./InfiniteEddieState";
 import { LevelState } from "./LevelState";
 import { PerfHud } from "../hud/PerfHud";
 import {
+  COLOR_CHORD_TINT_DARK,
+  COLOR_CHORD_TINT_MEDIUM,
   diamondColor,
   diamondTile,
   noteColor,
@@ -114,6 +116,7 @@ export class EddieSettingsState implements GameState {
     number,
     { start: number; end: number; ended: boolean; midi: number }
   >();
+  private currentMeasureInLoop = 0;
   // --- Latency calibration -------------------------------------------------
   // The browser UNDER-REPORTS real mic latency on Windows (reports ~60ms when
   // the true round-trip is ~190ms — shared-mode WASAPI input buffering it never
@@ -380,10 +383,10 @@ export class EddieSettingsState implements GameState {
   }
 
   /** Note colour for the timeline (shared rule). The settings audition has no
-   *  out-of-key gate, so every plotted note is treated as in-key; the chord is
-   *  the current bassline downbeat. */
-  private getNoteColorForTimeline(midi: number, inKey: boolean): string {
-    const chord = this.bassline.find((n) => n.beat === 0)?.chordTones ?? null;
+   *  out-of-key gate, so every plotted note is treated as in-key. The chord is
+   *  looked up per-measure from the bassline. */
+  private getNoteColorForTimeline(midi: number, inKey: boolean, measureInLoop: number): string {
+    const chord = this.bassline.find((n) => n.measure === measureInLoop && n.beat === 0)?.chordTones ?? null;
     return noteColor(midi, this.keyRoot, chord, inKey);
   }
 
@@ -689,6 +692,7 @@ export class EddieSettingsState implements GameState {
         // and fire the visual when the note is AUDIBLE (scheduled time + output
         // latency), not when it was scheduled — so it matches what you hear.
         const loopMeasure = Math.floor(info.beat / 4) % 4;
+        this.currentMeasureInLoop = loopMeasure;
         const outLatency = getAudioContext().outputLatency || 0;
         const delayMs = Math.max(0, (info.time + outLatency - this.conductor!.audioTime) * 1000);
         window.setTimeout(() => this.highlightBass(loopMeasure), delayMs);
@@ -791,6 +795,28 @@ export class EddieSettingsState implements GameState {
     const span = BEATS * beatDur;
     this.drawGrid(); // clears + background + subdivision gridlines
 
+    // --- Chord tone lane tints (darkened backgrounds for root, 3rd, 5th).
+    // Always visible as a harmony cue, drawn before diamonds and note bars.
+    const bassNote = this.bassline.find((n) => n.measure === this.currentMeasureInLoop && n.beat === 0);
+    if (bassNote?.chordTones) {
+      for (const chordTone of bassNote.chordTones) {
+        // Map pitch class to a MIDI note in the display range (48-59 = C3-B3).
+        const noteIndex = NOTE_NAMES.indexOf(chordTone);
+        if (noteIndex < 0) continue;
+        const midi = 48 + noteIndex;
+        const y = laneY(midi);
+
+        // Determine color: deep purple for root, lighter purple for 3rd/5th.
+        const isRoot = chordTone === this.keyRoot;
+        const tintColor = isRoot ? COLOR_CHORD_TINT_DARK : COLOR_CHORD_TINT_MEDIUM;
+        const tintAlpha = isRoot ? 0.25 : 0.12;
+        const rgba = this.hexToRgba(tintColor, tintAlpha);
+
+        ctx.fillStyle = rgba;
+        ctx.fillRect(0, y - LANE_PITCH / 2, canvas.width, LANE_PITCH);
+      }
+    }
+
     const now = this.conductor.audioTime;
     const outLat = getAudioContext().outputLatency || 0;
 
@@ -839,8 +865,9 @@ export class EddieSettingsState implements GameState {
       const w = Math.max(3, Math.round(x1 - x0));
 
       // Note colour by pitch/chord role. The audition has no out-of-key gate, so
-      // every plotted note is treated as in-key (true).
-      const brightColor = this.getNoteColorForTimeline(n.midi, true);
+      // every plotted note is treated as in-key (true). Chord is looked up for the
+      // current measure in the 4-measure loop.
+      const brightColor = this.getNoteColorForTimeline(n.midi, true, this.currentMeasureInLoop);
       const fadedColor = this.hexToRgba(brightColor, 0.3);
 
       // Bright at the attack (left), fading toward the release (right) so the
