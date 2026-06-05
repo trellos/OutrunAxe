@@ -107,6 +107,10 @@ export class EddieSoundDebugState implements GameState {
     // Eddie BPM range allows up to 200; bench runs at 120.
     this.conductor = new Conductor({ countInBeats: 16, playMeasures: 16, maxBpm: 200 });
     this.conductor.setBpm(BENCH_BPM);
+    // The Conductor plays its OWN combat drum pattern in preroll (the menu-pulse
+    // metronome). Eddie supplies its own beat via EddieBeat, so silence the
+    // Conductor's voices — otherwise the two patterns double up.
+    this.conductor.setMuted(true);
 
     const config = benchConfig(this.keyRoot, this.keyMode, this.bassline);
     const pair = createEddieAudioPair(

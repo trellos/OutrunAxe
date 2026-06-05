@@ -318,6 +318,9 @@ export class EddieSettingsState implements GameState {
     // loops the beat + 4-measure bass like a metronome.
     this.conductor = new Conductor({ maxBpm: MAX_BPM });
     this.conductor.setBpm(this.bpm);
+    // Silence the Conductor's own combat drum pattern (the preroll menu-pulse
+    // metronome) — Eddie's beat comes from EddieBeat, so the two would double up.
+    this.conductor.setMuted(true);
 
     // DEBUG (?replay): render a recorded notes.json through the REAL plotPitch
     // onto the timeline, statically, so the exact rendering can be inspected
