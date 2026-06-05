@@ -9,8 +9,9 @@
 //
 // HARD RULE (AGENTS.md Infinite Eddie #1): each cell is a NOTE TIMELINE, not a
 // label. The notes the player plays are plotted INSIDE the cell (x = position in
-// the measure, y = pitch) via the eddieNote juice event. The cell body never
-// shows text/number labels — only the bass label (above) and tag badges.
+// the measure, y = pitch) via the eddieNote juice event. Each cell now contains
+// 13 horizontal pitch-class lanes (the key's octave, folded by semitone class).
+// Chord tones (root, 3rd, 5th) get subtle background darkening.
 //
 // VARIANT option-1: "chunky neon-bordered cells" — solid DOM cells with thick
 // neon borders, the active cell lifting + glowing magenta. Pure DOM/CSS so
@@ -18,13 +19,17 @@
 
 import type { EventBus } from "../../engine/EventBus";
 import type { EddieConfig, EddieJuiceEvents } from "../../music/eddie/eddieTypes";
+import { NOTE_NAMES } from "../../audio/midi";
 
 const ROWS = 5;
 const COLS = 4;
+const PITCH_LANES = 13; // 0..12: key root to octave+1
 
-// Pitch range mapped to the vertical extent of a cell when plotting notes.
-const MIDI_LO = 45; // ~A2
-const MIDI_HI = 72; // C5
+// Color palette
+const COLOR_ROOT = "#FFC837"; // Bright gold
+const COLOR_STRONG = "#FF6B9D"; // Hot pink (3rd/5th)
+const COLOR_WEAK = "#FFB84D"; // Warm orange
+const COLOR_BOGUS = "#ff5a6e"; // Red/pink (out-of-key)
 
 export class EddieGrid {
   private root: HTMLDivElement | null = null;
@@ -40,6 +45,12 @@ export class EddieGrid {
   // Pulse phase for a subtle per-beat breathing of the active cell border.
   private pulse = 0;
 
+  // Configuration
+  private keyRoot: string = "C";
+  private pitchClassToLane = new Map<string, number>();
+  // Per-measure chord tones: measure index → [root lane, 3rd lane, 5th lane]
+  private chordTonesByMeasure = new Map<number, number[]>();
+
   mount(ctx: {
     hudParent: HTMLElement;
     config: EddieConfig;
@@ -48,14 +59,29 @@ export class EddieGrid {
     const root = document.createElement("div");
     root.className = "eddie-grid";
 
-    // Bass labels keyed by the SCORED measure that starts a chord. The bassline
-    // is a 4-measure pattern (BasslineNote.measure 0..3) looping across the 16
-    // scored measures; the chord for scored measure m comes from bassline
-    // measure (m % 4)'s beat-0 note.
+    // Initialize key and pitch-class → lane mapping
+    this.keyRoot = ctx.config.keyRoot;
+    this.initializePitchClassLanes();
+
+    // Pre-compute chord tone lanes for each measure (used for darkening)
+    // The bassline loops every 4 measures, so pattern measure m % 4 applies to measure m
     const chordRootByPatternMeasure = new Map<number, string>();
     for (const n of ctx.config.bassline) {
       if (n.beat === 0 && !chordRootByPatternMeasure.has(n.measure)) {
         chordRootByPatternMeasure.set(n.measure, n.pitchClass);
+        // Store the chord tones (root, 3rd, 5th) as lane numbers
+        const rootLane = this.pitchClassToLane.get(n.pitchClass) ?? 0;
+        const chordToneLanes = [rootLane];
+        for (const pc of n.chordTones) {
+          const lane = this.pitchClassToLane.get(pc) ?? 0;
+          if (!chordToneLanes.includes(lane)) {
+            chordToneLanes.push(lane);
+          }
+        }
+        // Store for measures 0..15 and also loop back to 16..19 (intro would not use this)
+        for (let m = n.measure; m < 20; m += 4) {
+          this.chordTonesByMeasure.set(m, chordToneLanes);
+        }
       }
     }
 
@@ -150,6 +176,20 @@ export class EddieGrid {
     }
   }
 
+  /** Initialize pitch-class → lane mapping for the current key. */
+  private initializePitchClassLanes(): void {
+    const keyRootIndex = NOTE_NAMES.indexOf(this.keyRoot as any);
+    this.pitchClassToLane.clear();
+    for (let i = 0; i < 12; i++) {
+      const pitchClass = NOTE_NAMES[(keyRootIndex + i) % 12];
+      // Lane 0 = root, lanes 1..11 = next 11 semitones, lane 12 = octave+1
+      // But display as 0..12 where 12 is the top (key root again)
+      this.pitchClassToLane.set(pitchClass, i);
+    }
+    // Add octave+1 mapping (same pitch class as root)
+    this.pitchClassToLane.set(this.keyRoot, PITCH_LANES - 1);
+  }
+
   /** Plot OR update a note bar. Called first at the onset (provisional pitch, so
    *  every played note shows immediately — fast notes that never settle a pitch
    *  still appear), then again as the pitch resolves to set the lane + color.
@@ -160,9 +200,11 @@ export class EddieGrid {
     if (!layer) return;
 
     const x = Math.max(0, Math.min(1, n.beatFraction));
-    const midi = Math.max(MIDI_LO, Math.min(MIDI_HI, n.midi));
-    const y = 1 - (midi - MIDI_LO) / (MIDI_HI - MIDI_LO); // 0 = top
-    const color = n.inKey ? "#00f0ff" : "#ff5a6e";
+    // Map MIDI to pitch-class lane (fold into 0..12)
+    const pitchClass = NOTE_NAMES[((n.midi % 12) + 12) % 12];
+    const lane = this.pitchClassToLane.get(pitchClass) ?? 0;
+    const y = 1 - (lane / (PITCH_LANES - 1)); // 0 = top (lane 0), 1 = bottom (lane 12)
+    const color = this.getNoteColor(n);
 
     const existing = n.onsetId >= 0 ? this.noteBars.get(n.onsetId) : undefined;
     if (existing) {
@@ -207,6 +249,28 @@ export class EddieGrid {
     const widthPct = Math.max(0, (endFrac - entry.startFrac) * 100);
     // Keep the 4px min-width stub for very short notes; otherwise size to span.
     if (widthPct > 0) entry.el.style.width = `${widthPct.toFixed(2)}%`;
+  }
+
+  /** Determine note bar color based on pitch class chord role. */
+  private getNoteColor(n: EddieJuiceEvents["eddieNote"]): string {
+    if (!n.inKey) return COLOR_BOGUS;
+
+    const pitchClass = NOTE_NAMES[((n.midi % 12) + 12) % 12];
+
+    // Check if it's a root note
+    if (pitchClass === this.keyRoot) return COLOR_ROOT;
+
+    // Check if it's a chord tone (3rd or 5th) from the current measure's bassline
+    const measureChordTones = this.chordTonesByMeasure.get(n.measure);
+    if (measureChordTones) {
+      const lane = this.pitchClassToLane.get(pitchClass) ?? 0;
+      // First element is root (handled above), check if lane matches 3rd or 5th
+      if (measureChordTones.length > 1 && measureChordTones.slice(1).includes(lane)) {
+        return COLOR_STRONG;
+      }
+    }
+
+    return COLOR_WEAK;
   }
 
   /** A quarter scored — turn its IN-KEY note bars green (out-of-key bars, which
