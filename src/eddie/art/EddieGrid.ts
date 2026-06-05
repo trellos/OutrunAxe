@@ -30,6 +30,12 @@ const COLOR_ROOT = "#FFC837"; // Bright gold
 const COLOR_STRONG = "#FF6B9D"; // Hot pink (3rd/5th)
 const COLOR_WEAK = "#FFB84D"; // Warm orange
 const COLOR_BOGUS = "#ff5a6e"; // Red/pink (out-of-key)
+const COLOR_CHORD_TINT_DARK = "#2D1B3D"; // Deep purple (bass row)
+const COLOR_CHORD_TINT_MEDIUM = "#4A2E5A"; // Lighter purple (3rd/5th rows)
+
+// Chord tone row background tints
+const CHORD_ROW_ALPHA = 0.25;
+const CHORD_3RD_5TH_ALPHA = 0.12;
 
 export class EddieGrid {
   private root: HTMLDivElement | null = null;
@@ -44,6 +50,8 @@ export class EddieGrid {
   private noteBars = new Map<number, { el: HTMLDivElement; startFrac: number }>();
   // Pulse phase for a subtle per-beat breathing of the active cell border.
   private pulse = 0;
+  /** Birth shimmer particles for notes. */
+  private birthParticles: Array<{ el: HTMLDivElement; age: number; lifetime: number }> = [];
 
   // Configuration
   private keyRoot: string = "C";
@@ -131,6 +139,13 @@ export class EddieGrid {
         notes.className = "eddie-cell-notes";
         notes.style.cssText =
           "position:absolute;inset:0;overflow:hidden;pointer-events:none;";
+
+        // Add chord-tone row background tints (if not intro)
+        if (!isIntro) {
+          const scored = (row - 1) * COLS + col;
+          this.addChordRowTints(notes, scored);
+        }
+
         this.buildGridlines(notes, subdivision);
         cell.appendChild(notes);
         this.noteLayers.push(notes);
@@ -153,6 +168,39 @@ export class EddieGrid {
     this.offNote = ctx.juice.on("eddieNote", (n) => this.plotNote(n));
     this.offNoteEnd = ctx.juice.on("eddieNoteEnd", (e) => this.endNote(e));
     this.offScored = ctx.juice.on("eddieNoteScored", (s) => this.greenQuarter(s.measure, s.beat));
+  }
+
+  /** Add chord-tone row background tints to a cell: darkened backgrounds for
+   *  root, 3rd, and 5th rows so the harmonic context is always visible. */
+  private addChordRowTints(layer: HTMLDivElement, measure: number): void {
+    const chordTones = this.chordTonesByMeasure.get(measure);
+    if (!chordTones || chordTones.length === 0) return;
+
+    // Root is the first lane, 3rd/5th are any additional lanes
+    const rootLane = chordTones[0];
+    const strongLanes = chordTones.slice(1);
+
+    // Draw a tint bar for the root (darkest)
+    const rootBar = document.createElement("div");
+    const rootY = 1 - (rootLane / (PITCH_LANES - 1)); // 0 = top, 1 = bottom
+    const rootTop = rootY * 84 + 8; // same y-calculation as notes
+    rootBar.style.cssText =
+      `position:absolute;left:0;right:0;top:${rootTop.toFixed(1)}%;` +
+      `height:8%;background:${COLOR_CHORD_TINT_DARK};opacity:${CHORD_ROW_ALPHA};` +
+      `pointer-events:none;z-index:0;`;
+    layer.appendChild(rootBar);
+
+    // Draw tint bars for 3rd/5th (medium dark)
+    for (const lane of strongLanes) {
+      const y = 1 - (lane / (PITCH_LANES - 1));
+      const top = y * 84 + 8;
+      const bar = document.createElement("div");
+      bar.style.cssText =
+        `position:absolute;left:0;right:0;top:${top.toFixed(1)}%;` +
+        `height:8%;background:${COLOR_CHORD_TINT_MEDIUM};opacity:${CHORD_3RD_5TH_ALPHA};` +
+        `pointer-events:none;z-index:0;`;
+      layer.appendChild(bar);
+    }
   }
 
   /** Draw the beat/subdivision gridlines for a cell. Quarter lines are bold;
@@ -233,6 +281,10 @@ export class EddieGrid {
     bar.dataset.beat = String(Math.min(3, Math.floor(x * 4)));
     layer.appendChild(bar);
     if (n.onsetId >= 0) this.noteBars.set(n.onsetId, { el: bar, startFrac: x });
+
+    // Spawn birth shimmer particles before the bar solidifies
+    this.spawnBirthParticles(layer, x * 100, y * 84 + 8);
+
     // Fade in on next frame for a soft pop as each note lands.
     requestAnimationFrame(() => {
       bar.style.opacity = "1";
@@ -273,9 +325,30 @@ export class EddieGrid {
     return COLOR_WEAK;
   }
 
+  /** Spawn 3 white shimmer particles at a note's birth position, fading over time. */
+  private spawnBirthParticles(layer: HTMLDivElement, leftPct: number, topPct: number): void {
+    const count = 3;
+    for (let i = 0; i < count; i++) {
+      const particle = document.createElement("div");
+      const jx = (Math.random() - 0.5) * 20;
+      const jy = (Math.random() - 0.5) * 20;
+      particle.style.cssText =
+        `position:absolute;left:${leftPct + jx}%;top:${topPct + jy}%;` +
+        `width:3px;height:3px;border-radius:50%;background:#fff;` +
+        `opacity:0.8;pointer-events:none;box-shadow:0 0 4px #fff;`;
+      layer.appendChild(particle);
+      this.birthParticles.push({
+        el: particle,
+        age: 0,
+        lifetime: 0.25 + Math.random() * 0.1,
+      });
+    }
+  }
+
   /** A quarter scored — turn its IN-KEY note bars green (out-of-key bars, which
-   *  earned nothing, stay red). Works off the DOM so it catches bars whose
-   *  eddieNoteEnd already fired (and were removed from noteBars). */
+   *  earned nothing, stay red) and add a diamond pattern overlay based on timing
+   *  quality. Works off the DOM so it catches bars whose eddieNoteEnd already
+   *  fired (and were removed from noteBars). */
   private greenQuarter(measure: number, beat: number): void {
     const idx = this.indexFor(measure);
     const layer = idx >= 0 ? this.noteLayers[idx] : null;
@@ -288,6 +361,27 @@ export class EddieGrid {
       el.classList.add("eddie-note-scored");
       el.style.background = "#39ff7a";
       el.style.boxShadow = "0 0 8px #39ff7a,0 0 2px #fff";
+
+      // Add diamond pattern overlay for timing feedback
+      // Calculate timing quality from bar width (tighter timing = more intensity)
+      const widthStr = el.style.width;
+      let widthPct = 4; // default for very short notes
+      if (widthStr && widthStr.includes("%")) {
+        widthPct = parseFloat(widthStr);
+      }
+      // Timing quality: perfect (wide bar) = 1, narrow = 0
+      const timingQuality = Math.min(1, widthPct / 30);
+      // Diamond opacity/saturation based on timing quality
+      const diamondOpacity = 0.3 + timingQuality * 0.5;
+      const successColor = `rgba(255, 215, 0, ${diamondOpacity})`;
+
+      // Create diamond pattern overlay as a striped background
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        `position:absolute;left:0;top:0;right:0;bottom:0;` +
+        `pointer-events:none;background:repeating-linear-gradient(45deg,` +
+        `transparent,transparent 4px,${successColor} 4px,${successColor} 8px);`;
+      el.appendChild(overlay);
     }
   }
 
@@ -324,6 +418,23 @@ export class EddieGrid {
           `inset 0 0 26px rgba(255,43,214,0.28)`;
       }
     }
+
+    // Update birth shimmer particles
+    for (let i = this.birthParticles.length - 1; i >= 0; i--) {
+      const p = this.birthParticles[i];
+      p.age += dt;
+      const progress = p.age / p.lifetime;
+      if (progress >= 1) {
+        p.el.remove();
+        this.birthParticles.splice(i, 1);
+      } else {
+        // Fade out and float upward
+        const opacity = (1 - progress) * 0.8;
+        const yOffset = progress * -15;
+        p.el.style.opacity = String(opacity);
+        p.el.style.transform = `translateY(${yOffset}px)`;
+      }
+    }
   }
 
   dispose(): void {
@@ -339,5 +450,8 @@ export class EddieGrid {
     this.cells = [];
     this.noteLayers = [];
     this.noteBars.clear();
+    // Clean up birth particles
+    for (const p of this.birthParticles) p.el.remove();
+    this.birthParticles = [];
   }
 }
