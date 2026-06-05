@@ -25,11 +25,16 @@ export class CharacterManager {
   private beatDuration: number;
   private director: InteractionDirector;
 
-  // Scored quarters (with their diamond count + timing) buffered per grid row
-  // until the row finishes.
+  // Scored quarters (with their per-diamond note content + timing) buffered per
+  // grid row until the row finishes.
   private pendingByRow = new Map<
     number,
-    Array<{ measure: number; beat: number; subdiv: number; quality: number }>
+    Array<{
+      measure: number;
+      beat: number;
+      subdiv: number;
+      notes: Array<{ strong: boolean; quality: number }>;
+    }>
   >();
 
   // Listeners
@@ -75,13 +80,13 @@ export class CharacterManager {
 
   /** Grid callback: a quarter's diamonds were drawn. Buffer it by grid row; the
    *  whole row's crowd is released together once the row's final measure
-   *  finishes (see setActiveMeasure). subdiv = number of diamonds (1..4),
-   *  quality = average timing tightness 0..1. */
+   *  finishes (see setActiveMeasure). One `notes` entry per diamond carries that
+   *  note's content (strong = chord tone) and timing tightness. */
   onQuarterDiamonds(info: {
     measure: number;
     beat: number;
     subdiv: number;
-    quality: number;
+    notes: Array<{ strong: boolean; quality: number }>;
   }): void {
     const row = Math.floor(info.measure / 4);
     let list = this.pendingByRow.get(row);
@@ -129,9 +134,10 @@ export class CharacterManager {
     this.pendingByRow.delete(row);
     if (!quarters) return;
 
-    for (const { measure, beat, subdiv, quality } of quarters) {
+    for (const { measure, beat, subdiv, notes } of quarters) {
+      // Size comes from the rhythm (subdivision); tier + quality come from the
+      // note that drew each diamond.
       const size = this.sizeForSubdiv(subdiv);
-      const qualityTier = this.qualityForTiming(quality);
 
       // The quarter occupies column `beat` of the 4-column measure cell; its
       // `subdiv` diamonds span that column. Spawn one character over each.
@@ -142,9 +148,9 @@ export class CharacterManager {
 
       for (let i = 0; i < subdiv; i++) {
         const diamondX = quarterLeft + ((i + 0.5) / subdiv) * quarterW;
-        // Tier (strong/weak) reflects note CONTENT (root/3rd/5th), which the
-        // diamond data doesn't carry yet — still randomized pending that wiring.
-        const tier: CharacterTier = Math.random() > 0.5 ? "strong" : "weak";
+        const note = notes[i] ?? notes[notes.length - 1];
+        const tier: CharacterTier = note?.strong ? "strong" : "weak";
+        const qualityTier = this.qualityForTiming(note?.quality ?? 0);
         this.spawnCharacter(size, tier, qualityTier, diamondX, spawnY);
       }
     }
