@@ -21,41 +21,27 @@ import {
 import type { EddieBeat, EddieBeatVariant } from "../audio/eddie/EddieBeat";
 import type { EddieBass, EddieBassVariant } from "../audio/eddie/EddieBass";
 import type { BasslineNote, EddieConfig, PitchClass } from "../music/eddie/eddieTypes";
-import { keyPitchClasses, type KeyMode } from "../music/keys";
+import type { KeyMode } from "../music/keys";
 import { NOTE_NAMES } from "../audio/midi";
+import { generateBassline } from "../music/eddie/basslineGen";
 
-const BEAT_VARIANTS: EddieBeatVariant[] = ["option-1", "option-2", "option-3"];
-const BASS_VARIANTS: EddieBassVariant[] = ["option-1", "option-2", "option-3"];
+const BEAT_VARIANTS: EddieBeatVariant[] = [
+  "option-1", "option-2", "option-3", "option-4", "option-5", "option-6",
+];
+const BASS_VARIANTS: EddieBassVariant[] = [
+  "option-1", "option-2", "option-3", "option-4", "option-5", "option-6",
+];
+// QWERTY row maps 1:1 to the six beat variants (the number row drives bass).
+const BEAT_KEYS = ["q", "w", "e", "r", "t", "y"];
+const ALL_KEY_ROOTS: PitchClass[] = [...NOTE_NAMES];
 const BENCH_BPM = 120;
 
-// A simple, self-contained I–IV–V–I rock bassline diatonic to the key, so the
-// bench runs before Gameplay's basslineGen exists. Mirrors the eddieTypes §6.2
-// shape (one root note per measure on beat 0, with diatonic-triad chord tones).
-function benchBassline(root: PitchClass, mode: KeyMode): BasslineNote[] {
-  const inKey = [...keyPitchClasses(root, mode)];
-  const rootIdx = NOTE_NAMES.indexOf(root);
-  // Scale degrees I, IV, V, I as semitone offsets for the chosen mode.
-  const degrees = mode === "minor" ? [0, 5, 7, 0] : [0, 5, 7, 0];
-  const triadOffsets = mode === "minor" ? [0, 3, 7] : [0, 4, 7];
-  const out: BasslineNote[] = [];
-  for (let m = 0; m < 4; m++) {
-    const pcIdx = ((rootIdx + degrees[m]) % 12 + 12) % 12;
-    const notePc = NOTE_NAMES[pcIdx];
-    const chordTones = triadOffsets
-      .map((o) => NOTE_NAMES[((pcIdx + o) % 12 + 12) % 12])
-      // keep only in-key tones so the bench bassline stays diatonic
-      .filter((pc) => inKey.includes(pc));
-    out.push({ measure: m, beat: 0, pitchClass: notePc, chordTones });
-  }
-  return out;
-}
-
-function benchConfig(root: PitchClass, mode: KeyMode): EddieConfig {
+function benchConfig(root: PitchClass, mode: KeyMode, bassline: BasslineNote[]): EddieConfig {
   return {
     bpm: BENCH_BPM,
     keyRoot: root,
     keyMode: mode,
-    bassline: benchBassline(root, mode),
+    bassline,
     eighthTagMeasure: 5,
     sixteenthTagMeasure: 10,
   };
@@ -76,6 +62,8 @@ export class EddieSoundDebugState implements GameState {
   private muted = false;
   private keyRoot: PitchClass = "E";
   private keyMode: KeyMode = "minor";
+  // Random diatonic bassline (basslineGen). Rerolled with SPACE / on key change.
+  private bassline: BasslineNote[] = generateBassline(this.keyRoot, this.keyMode);
 
   constructor(hudParent: HTMLElement) {
     this.hudParent = hudParent;
@@ -120,7 +108,7 @@ export class EddieSoundDebugState implements GameState {
     this.conductor = new Conductor({ countInBeats: 16, playMeasures: 16, maxBpm: 200 });
     this.conductor.setBpm(BENCH_BPM);
 
-    const config = benchConfig(this.keyRoot, this.keyMode);
+    const config = benchConfig(this.keyRoot, this.keyMode, this.bassline);
     const pair = createEddieAudioPair(
       BEAT_VARIANTS[this.beatIdx],
       BASS_VARIANTS[this.bassIdx],
@@ -157,21 +145,35 @@ export class EddieSoundDebugState implements GameState {
   }
 
   private onKey = (e: KeyboardEvent) => {
+    const key = e.key.toLowerCase();
     const n = Number(e.key);
-    if (n >= 1 && n <= 3) {
-      this.beatIdx = n - 1;
+    if (n >= 1 && n <= BASS_VARIANTS.length) {
+      // Number row 1..6 → bass variant.
+      this.bassIdx = n - 1;
       void this.reload();
-    } else if (n >= 4 && n <= 6) {
-      this.bassIdx = n - 4;
+    } else if (BEAT_KEYS.includes(key)) {
+      // QWERTY row → beat variant.
+      this.beatIdx = BEAT_KEYS.indexOf(key);
       void this.reload();
-    } else if (e.key.toLowerCase() === "m") {
+    } else if (key === " " || e.code === "Space") {
+      // Reroll the random diatonic bassline (same key).
+      e.preventDefault();
+      this.bassline = generateBassline(this.keyRoot, this.keyMode);
+      void this.reload();
+    } else if (key === "n") {
+      // New random key root (keeps the current major/minor mode).
+      this.keyRoot = ALL_KEY_ROOTS[Math.floor(Math.random() * ALL_KEY_ROOTS.length)];
+      this.bassline = generateBassline(this.keyRoot, this.keyMode);
+      void this.reload();
+    } else if (key === "k") {
+      // Toggle major/minor (regenerates the bassline so the colour actually changes).
+      this.keyMode = this.keyMode === "minor" ? "major" : "minor";
+      this.bassline = generateBassline(this.keyRoot, this.keyMode);
+      void this.reload();
+    } else if (key === "m") {
       this.muted = !this.muted;
       this.rig?.setMuted(this.muted);
       this.renderHud();
-    } else if (e.key.toLowerCase() === "k") {
-      // Cycle major/minor to hear the bassline change key colour.
-      this.keyMode = this.keyMode === "minor" ? "major" : "minor";
-      void this.reload();
     }
   };
 
@@ -179,6 +181,10 @@ export class EddieSoundDebugState implements GameState {
     if (!this.overlay) return;
     const beatV = BEAT_VARIANTS[this.beatIdx];
     const bassV = BASS_VARIANTS[this.bassIdx];
+    // Downbeat root of each of the 4 bassline measures, so a reroll is visible.
+    const roots = [0, 1, 2, 3]
+      .map((m) => this.bassline.find((b) => b.measure === m && b.beat === 0)?.pitchClass ?? "—")
+      .join(" · ");
     this.overlay.innerHTML =
       `<div style="color:#ff2bd6;font-size:18px;letter-spacing:2px;margin-bottom:10px;">` +
       `INFINITE EDDIE — SOUND BENCH</div>` +
@@ -188,10 +194,13 @@ export class EddieSoundDebugState implements GameState {
       `<div style="margin-bottom:8px;">` +
       `BASS <b style="color:#ffd02b;">${bassV}</b><br>` +
       `<span style="color:#9aa;">${this.bass?.rationale ?? ""}</span></div>` +
+      `<div style="margin-bottom:6px;color:#9aa;">` +
+      `key <b style="color:#e8e8f0;">${this.keyRoot} ${this.keyMode}</b> &middot; ` +
+      `bassline <b style="color:#e8e8f0;">${roots}</b></div>` +
       `<div style="margin-bottom:10px;color:#9aa;">` +
-      `key ${this.keyRoot} ${this.keyMode} &middot; ${BENCH_BPM} BPM &middot; ` +
-      `${this.muted ? "<b style='color:#f55;'>MUTED</b>" : "playing"}</div>` +
+      `${BENCH_BPM} BPM &middot; ${this.muted ? "<b style='color:#f55;'>MUTED</b>" : "playing"}</div>` +
       `<div style="color:#7a7a9a;font-size:12px;">` +
-      `1/2/3 beat &middot; 4/5/6 bass &middot; K maj/min &middot; M mute</div>`;
+      `1–6 bass &middot; Q W E R T Y beat &middot; SPACE reroll bassline<br>` +
+      `N new key &middot; K maj/min &middot; M mute</div>`;
   }
 }

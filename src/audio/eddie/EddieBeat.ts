@@ -19,7 +19,13 @@
 import { getAudioContext } from "../AudioContextSingleton";
 import type { Conductor, BeatInfo } from "../Conductor";
 
-export type EddieBeatVariant = "option-1" | "option-2" | "option-3";
+export type EddieBeatVariant =
+  | "option-1"
+  | "option-2"
+  | "option-3"
+  | "option-4"
+  | "option-5"
+  | "option-6";
 
 // ---------------------------------------------------------------------------
 // Drum kit: per-voice synthesis params so each variant reads as a different
@@ -275,10 +281,86 @@ const STYLE_3: BeatStyle = {
   ],
 };
 
+// Option 4 — shuffle. A heavy triplet swing: kick on 1 & 3, snare backbeat on
+// 2 & 4, and a hat on the swung "a" of every beat so the gallop reads as a
+// classic 12/8-ish shuffle. Warm, bouncy, blues-rock pocket.
+const OPEN = (a = 0.5): Step => ({ voices: { openhat: a } });
+const STYLE_4: BeatStyle = {
+  swing: 0.62,
+  rationale:
+    "Shuffle: heavy triplet swing — kick on 1 & 3, snare on 2 & 4, hats on the " +
+    "swung 'a' of each beat for a bouncy 12/8 blues-rock gallop.",
+  kit: {
+    busLowpassHz: 10000,
+    masterGain: 0.58,
+    kick: { startFreq: 135, endFreq: 44, pitchDecay: 0.09, ampDecay: 0.3, gain: 0.92, click: 0.16 },
+    snare: { noiseGain: 0.5, noiseHpHz: 1600, noiseDecay: 0.15, toneFreq: 220, toneGain: 0.32, toneDecay: 0.1 },
+    hat: { hpHz: 7500, gain: 0.24, decay: 0.038, openDecay: 0.14 },
+    clap: { hpHz: 1400, gain: 0.44, decay: 0.14 },
+  },
+  steps: [
+    { voices: { kick: 1, hat: 0.6 } }, REST, REST, HAT(0.45),
+    { voices: { snare: 1, hat: 0.6 } }, REST, REST, HAT(0.45),
+    { voices: { kick: 1, hat: 0.6 } }, REST, REST, HAT(0.45),
+    { voices: { snare: 1, hat: 0.6 } }, REST, REST, HAT(0.45),
+  ],
+};
+
+// Option 5 — disco. Four-on-the-floor kick on every quarter, the signature open
+// "tss" hat on every off-beat 8th, and a clap+snare backbeat on 2 & 4. Bright,
+// straight, dancefloor-forward.
+const STYLE_5: BeatStyle = {
+  swing: 0,
+  rationale:
+    "Disco: four-on-the-floor kick on every quarter, open-hat 'tss' on every " +
+    "off-beat, clap + snare backbeat on 2 & 4. Bright, straight, dancefloor.",
+  kit: {
+    busLowpassHz: 13000,
+    masterGain: 0.58,
+    kick: { startFreq: 140, endFreq: 46, pitchDecay: 0.08, ampDecay: 0.26, gain: 0.95, click: 0.2 },
+    snare: { noiseGain: 0.5, noiseHpHz: 1700, noiseDecay: 0.15, toneFreq: 230, toneGain: 0.3, toneDecay: 0.09 },
+    hat: { hpHz: 8500, gain: 0.26, decay: 0.035, openDecay: 0.18 },
+    clap: { hpHz: 1500, gain: 0.5, decay: 0.14 },
+  },
+  steps: [
+    { voices: { kick: 1, hat: 0.4 } }, REST, OPEN(0.5), REST,
+    { voices: { kick: 1, snare: 0.8, clap: 0.8 } }, REST, OPEN(0.5), REST,
+    { voices: { kick: 1, hat: 0.4 } }, REST, OPEN(0.5), REST,
+    { voices: { kick: 1, snare: 0.8, clap: 0.8 } }, REST, OPEN(0.5), REST,
+  ],
+};
+
+// Option 6 — danceable house. Four-on-the-floor kick, a clap on 2 & 4, busy 16th
+// closed hats with offbeat open hats and a touch of swing. Modern, groovy, the
+// "hands-up" house pocket.
+const STYLE_6: BeatStyle = {
+  swing: 0.15,
+  rationale:
+    "Danceable house: four-on-the-floor kick, clap on 2 & 4, busy swung 16th " +
+    "hats with offbeat open hats. Modern, groovy, hands-up dancefloor.",
+  kit: {
+    busLowpassHz: 12000,
+    masterGain: 0.56,
+    kick: { startFreq: 145, endFreq: 44, pitchDecay: 0.09, ampDecay: 0.3, gain: 0.96, click: 0.14 },
+    snare: { noiseGain: 0.44, noiseHpHz: 1600, noiseDecay: 0.14, toneFreq: 210, toneGain: 0.3, toneDecay: 0.09 },
+    hat: { hpHz: 8000, gain: 0.2, decay: 0.03, openDecay: 0.15 },
+    clap: { hpHz: 1400, gain: 0.5, decay: 0.15 },
+  },
+  steps: [
+    { voices: { kick: 1, hat: 0.5 } }, HAT(0.3), OPEN(0.45), HAT(0.3),
+    { voices: { kick: 1, clap: 0.8, hat: 0.5 } }, HAT(0.3), OPEN(0.45), HAT(0.3),
+    { voices: { kick: 1, hat: 0.5 } }, HAT(0.3), OPEN(0.45), HAT(0.3),
+    { voices: { kick: 1, clap: 0.8, hat: 0.5 } }, HAT(0.3), OPEN(0.45), HAT(0.3),
+  ],
+};
+
 const STYLES: Record<EddieBeatVariant, BeatStyle> = {
   "option-1": STYLE_1,
   "option-2": STYLE_2,
   "option-3": STYLE_3,
+  "option-4": STYLE_4,
+  "option-5": STYLE_5,
+  "option-6": STYLE_6,
 };
 
 // ---------------------------------------------------------------------------
