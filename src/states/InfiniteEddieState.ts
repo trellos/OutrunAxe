@@ -331,6 +331,8 @@ export class InfiniteEddieState implements GameState {
       if (p === "done") this.perfHud?.setPlaying(false); // beats stop normally now
       if (p === "done" && this.finishedAt === 0) {
         this.finishedAt = this.conductor.audioTime + DONE_LINGER_SEC;
+        // Release the final row's characters and let art settle into the finale.
+        this.juice.emit("eddieFinale", { audioTime: this.conductor.audioTime });
       }
     });
 

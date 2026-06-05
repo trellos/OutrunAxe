@@ -148,6 +148,7 @@ class EddieArtRigImpl implements EddieArtRig {
 
   setActiveMeasure(scoredMeasure: number): void {
     this.grid.setActiveMeasure(scoredMeasure);
+    this.characters?.setActiveMeasure(scoredMeasure);
   }
 
   dispose(): void {

@@ -23,8 +23,12 @@ export class CharacterManager {
   private resolveCell: (measure: number) => DOMRect | null;
   private beatDuration: number;
 
+  // Scored quarters buffered per grid row until the row finishes.
+  private pendingByRow = new Map<number, Array<{ measure: number; beat: number }>>();
+
   // Listeners
   private offScored?: () => void;
+  private offFinale?: () => void;
   private offIntensity?: () => void;
 
   constructor(config: CharacterManagerConfig) {
@@ -59,43 +63,58 @@ export class CharacterManager {
 
   /** Mount: subscribe to events. */
   mount(): void {
+    // Buffer scored quarters by grid row; the whole row's crowd is released
+    // together once the row's final measure finishes (see setActiveMeasure).
     this.offScored = this.juice.on("eddieNoteScored", (ev) => {
-      this.onNoteScored(ev);
+      const row = Math.floor(ev.measure / 4);
+      let list = this.pendingByRow.get(row);
+      if (!list) this.pendingByRow.set(row, (list = []));
+      list.push({ measure: ev.measure, beat: ev.beat });
     });
+    // Final row never sees a following row-boundary; the finale releases it.
+    this.offFinale = this.juice.on("eddieFinale", () => this.flushAllRows());
   }
 
-  /** Handle a scored quarter. Spawn character(s). */
-  private onNoteScored(ev: EddieJuiceEvents["eddieNoteScored"]): void {
-    const { measure, beat } = ev;
-
-    // Determine size from beat (placeholder: 0→big, 1→medium, 2→medium, 3→small)
-    let size: CharacterSize;
-    switch (beat) {
-      case 0:
-        size = "big";
-        break;
-      case 1:
-      case 2:
-        size = "medium";
-        break;
-      case 3:
-        size = "small";
-        break;
-      default:
-        size = "big";
+  /** Called as the active measure advances. Releases every row whose final
+   *  measure has now fully elapsed (rows 0..N-2; the last row waits for finale). */
+  setActiveMeasure(measure: number): void {
+    if (measure < 0) return; // intro/count-in rows
+    for (const row of [...this.pendingByRow.keys()].sort((a, b) => a - b)) {
+      if ((row + 1) * 4 <= measure) this.flushRow(row);
     }
+  }
 
-    // Determine tier and quality randomly for now (will improve with better event data)
-    const tier: CharacterTier = Math.random() > 0.5 ? "strong" : "weak";
-    const qualityTier: CharacterQuality = ["loose", "normal", "perfect"][Math.floor(Math.random() * 3)] as CharacterQuality;
+  /** Release all remaining buffered rows (song end). */
+  private flushAllRows(): void {
+    for (const row of [...this.pendingByRow.keys()].sort((a, b) => a - b)) {
+      this.flushRow(row);
+    }
+  }
 
-    // Get diamond position from measure cell
-    const cellRect = this.resolveCell(measure);
-    const startX = cellRect ? cellRect.left + cellRect.width / 2 : 250;
-    const spawnY = cellRect ? cellRect.top + cellRect.height / 2 : 150;
+  /** Spawn the whole buffered row at once; each character gets its own random
+   *  0..4 beat perch so the row falls staggered across four beats. */
+  private flushRow(row: number): void {
+    const quarters = this.pendingByRow.get(row);
+    this.pendingByRow.delete(row);
+    if (!quarters) return;
 
-    // Spawn character
-    this.spawnCharacter(size, tier, qualityTier, startX, spawnY);
+    for (const { measure, beat } of quarters) {
+      // Size from beat (placeholder: 0→big, 1/2→medium, 3→small).
+      const size: CharacterSize =
+        beat === 0 ? "big" : beat === 3 ? "small" : "medium";
+
+      // Tier/quality still randomized (real note-content + timing TBD).
+      const tier: CharacterTier = Math.random() > 0.5 ? "strong" : "weak";
+      const quality: CharacterQuality =
+        (["loose", "normal", "perfect"] as const)[Math.floor(Math.random() * 3)];
+
+      // Diamond position from the measure's grid cell.
+      const cellRect = this.resolveCell(measure);
+      const startX = cellRect ? cellRect.left + cellRect.width / 2 : 250;
+      const spawnY = cellRect ? cellRect.top + cellRect.height / 2 : 150;
+
+      this.spawnCharacter(size, tier, quality, startX, spawnY);
+    }
   }
 
   /** Spawn a single character. */
@@ -150,7 +169,9 @@ export class CharacterManager {
   /** Dispose: unsubscribe and clean up all characters. */
   dispose(): void {
     this.offScored?.();
+    this.offFinale?.();
     this.offIntensity?.();
+    this.pendingByRow.clear();
     for (const char of this.characters.values()) {
       char.dispose();
     }
