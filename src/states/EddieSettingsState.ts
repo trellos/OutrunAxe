@@ -31,15 +31,7 @@ import {
 import { InfiniteEddieState } from "./InfiniteEddieState";
 import { LevelState } from "./LevelState";
 import { PerfHud } from "../hud/PerfHud";
-import {
-  COLOR_CHORD_TINT_DARK,
-  COLOR_CHORD_TINT_MEDIUM,
-  diamondColor,
-  diamondTile,
-  noteColor,
-  subdivisionCount,
-  timingQuality,
-} from "../eddie/art/eddieFeedback";
+import { EddiePitchTimeline } from "../eddie/art/EddiePitchTimeline";
 import "../eddie/art/settings-themes.css";
 
 const PLAY_BUTTON_VARIANT = "option-1" as const;
@@ -68,11 +60,6 @@ const KEY_TO_MIDI: Record<string, number> = {
   KeyG: 54, KeyB: 55, KeyH: 56, KeyN: 57, KeyJ: 58, KeyM: 59,
   Comma: 60, KeyL: 61, Period: 62, Semicolon: 63, Slash: 64,
 };
-
-function laneY(midi: number): number {
-  const lane = ((Math.round(midi) % 12) + 12) % 12;
-  return Math.round(ROW_HEIGHT - LANE_PAD - lane * LANE_PITCH - LANE_PITCH / 2);
-}
 
 export class EddieSettingsState implements GameState {
   readonly name = "eddieSettings";
@@ -117,6 +104,7 @@ export class EddieSettingsState implements GameState {
     { start: number; end: number; ended: boolean; midi: number }
   >();
   private currentMeasureInLoop = 0;
+  private pitchTimeline: EddiePitchTimeline | null = null;
   // --- Latency calibration -------------------------------------------------
   // The browser UNDER-REPORTS real mic latency on Windows (reports ~60ms when
   // the true round-trip is ~190ms — shared-mode WASAPI input buffering it never
@@ -382,14 +370,6 @@ export class EddieSettingsState implements GameState {
     };
   }
 
-  /** Note colour for the timeline (shared rule). The settings audition has no
-   *  out-of-key gate, so every plotted note is treated as in-key. The chord is
-   *  looked up per-measure from the bassline. */
-  private getNoteColorForTimeline(midi: number, inKey: boolean, measureInLoop: number): string {
-    const chord = this.bassline.find((n) => n.measure === measureInLoop && n.beat === 0)?.chordTones ?? null;
-    return noteColor(midi, this.keyRoot, chord, inKey);
-  }
-
   /** Lighten a hex color by a factor (1.0 = no change, > 1.0 = lighter). */
   private lightenColor(hex: string, factor: number): string {
     const rgb = this.hexToRgb(hex);
@@ -412,38 +392,6 @@ export class EddieSettingsState implements GameState {
    *  to vibrant gold (tight). Touching rhombi leave the canvas showing through
    *  between them. Mirrors EddieGrid.addQuarterDiamonds on the canvas via the
    *  shared diamondColor/diamondTile determination. */
-  private drawQuarterDiamondsCanvas(
-    ctx: CanvasRenderingContext2D,
-    x0: number,
-    regionTop: number,
-    regionH: number,
-    subdiv: number,
-    quality: number,
-  ): void {
-    const quarterW = PX_PER_BEAT;
-    const { tileW, tileH } = diamondTile(quarterW, subdiv);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(x0, regionTop, quarterW, regionH); // clip diamonds to the quarter
-    ctx.clip();
-    ctx.fillStyle = diamondColor(quality);
-    const rows = Math.ceil(regionH / tileH) + 1;
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < subdiv; i++) {
-        const cx = x0 + i * tileW + tileW / 2;
-        const cy = regionTop + j * tileH + tileH / 2;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy - tileH / 2);
-        ctx.lineTo(cx + tileW / 2, cy);
-        ctx.lineTo(cx, cy + tileH / 2);
-        ctx.lineTo(cx - tileW / 2, cy);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-    ctx.restore();
-  }
-
   /** Convert hex color to RGB object. */
   private hexToRgb(hex: string): { r: number; g: number; b: number } | null {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -663,6 +611,18 @@ export class EddieSettingsState implements GameState {
     if (this.overlayCtx) this.overlayCtx.imageSmoothingEnabled = false;
 
     parent.appendChild(wrap);
+
+    // Initialize the shared pitch timeline renderer
+    this.pitchTimeline = new EddiePitchTimeline({
+      keyRoot: this.keyRoot,
+      bassline: this.bassline,
+      bpm: this.bpm,
+      pixelsPerBeat: PX_PER_BEAT,
+      laneHeight: LANE_PITCH,
+      lanePadding: LANE_PAD,
+      pitchLanes: LANES,
+    });
+
     this.drawGrid();
   }
 
@@ -797,24 +757,8 @@ export class EddieSettingsState implements GameState {
 
     // --- Chord tone lane tints (darkened backgrounds for root, 3rd, 5th).
     // Always visible as a harmony cue, drawn before diamonds and note bars.
-    const bassNote = this.bassline.find((n) => n.measure === this.currentMeasureInLoop && n.beat === 0);
-    if (bassNote?.chordTones) {
-      for (const chordTone of bassNote.chordTones) {
-        // Map pitch class to a MIDI note in the display range (48-59 = C3-B3).
-        const noteIndex = NOTE_NAMES.indexOf(chordTone);
-        if (noteIndex < 0) continue;
-        const midi = 48 + noteIndex;
-        const y = laneY(midi);
-
-        // Determine color: deep purple for root, lighter purple for 3rd/5th.
-        const isRoot = chordTone === this.keyRoot;
-        const tintColor = isRoot ? COLOR_CHORD_TINT_DARK : COLOR_CHORD_TINT_MEDIUM;
-        const tintAlpha = isRoot ? 0.25 : 0.12;
-        const rgba = this.hexToRgba(tintColor, tintAlpha);
-
-        ctx.fillStyle = rgba;
-        ctx.fillRect(0, y - LANE_PITCH / 2, canvas.width, LANE_PITCH);
-      }
+    if (this.pitchTimeline) {
+      this.pitchTimeline.drawChordTints(ctx, this.currentMeasureInLoop, canvas.width);
     }
 
     const now = this.conductor.audioTime;
@@ -833,15 +777,17 @@ export class EddieSettingsState implements GameState {
       const beatPos = (n.start - this.measureStart) / beatDur;
       if (beatPos < 0 || beatPos >= BEATS) continue;
       const q = Math.floor(beatPos);
-      quarterQualities[q].push(timingQuality(beatPos - q));
+      quarterQualities[q].push(this.pitchTimeline?.getTimingQuality(beatPos) ?? 0);
     }
     for (let q = 0; q < BEATS; q++) {
       const qs = quarterQualities[q];
       if (qs.length === 0) continue;
       if ((q + 1) * beatDur > into) continue; // quarter not complete yet
-      const subdiv = subdivisionCount(qs.length);
+      const subdiv = this.pitchTimeline?.getSubdivisionCount(qs.length) ?? 1;
       const avg = qs.reduce((a, b) => a + b, 0) / qs.length;
-      this.drawQuarterDiamondsCanvas(ctx, q * PX_PER_BEAT, 2, canvas.height - 4, subdiv, avg);
+      if (this.pitchTimeline) {
+        this.pitchTimeline.drawQuarterDiamonds(ctx, q * PX_PER_BEAT, 2, canvas.height - 4, subdiv, avg);
+      }
     }
 
     ctx.shadowColor = "rgba(0,240,255,0.8)";
@@ -860,14 +806,14 @@ export class EddieSettingsState implements GameState {
       const x0 = (Math.max(0, s) / beatDur) * PX_PER_BEAT;
       const x1raw = (Math.min(span, e) / beatDur) * PX_PER_BEAT;
       const x1 = Math.max(x0 + 3, x1raw - NOTE_GAP_PX); // trim tail for the gap
-      const y = laneY(n.midi);
+      const y = this.pitchTimeline?.laneY(n.midi) ?? 0;
       const top = Math.round(y - (BAND_HEIGHT + 2) / 2);
       const w = Math.max(3, Math.round(x1 - x0));
 
       // Note colour by pitch/chord role. The audition has no out-of-key gate, so
       // every plotted note is treated as in-key (true). Chord is looked up for the
       // current measure in the 4-measure loop.
-      const brightColor = this.getNoteColorForTimeline(n.midi, true, this.currentMeasureInLoop);
+      const brightColor = this.pitchTimeline?.getNoteColor(n.midi, this.currentMeasureInLoop, true) ?? "#FFB84D";
       const fadedColor = this.hexToRgba(brightColor, 0.3);
 
       // Bright at the attack (left), fading toward the release (right) so the
