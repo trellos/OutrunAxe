@@ -49,9 +49,9 @@ export class EddiePitchTimeline {
   readonly pitchLanes: number;
   readonly totalHeight: number;
 
-  // Tint opacity: visible but not overwhelming
-  readonly tintOpacityRoot = 0.4;
-  readonly tintOpacityChord = 0.25;
+  // Tint opacity: strong visual contrast
+  readonly tintOpacityRoot = 0.65;
+  readonly tintOpacityChord = 0.45;
 
   constructor(config: EddiePitchTimelineConfig) {
     this.keyRoot = config.keyRoot;

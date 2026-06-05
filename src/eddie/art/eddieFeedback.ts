@@ -11,15 +11,15 @@
 import { NOTE_NAMES } from "../../audio/midi";
 import type { PitchClass } from "../../music/eddie/eddieTypes";
 
-// --- Note-bar palette (GDD §8 warm gold/pink) ------------------------------
-export const COLOR_ROOT = "#FFC837"; // bright gold — key root
-export const COLOR_STRONG = "#FF6B9D"; // hot pink — 3rd/5th of the chord
-export const COLOR_WEAK = "#FFB84D"; // warm orange — other in-key notes
+// --- Note-bar palette (gold/green/red) ----------------------------------------
+export const COLOR_ROOT = "#FFD700"; // bright gold — key root (most intense)
+export const COLOR_STRONG = "#DAA520"; // darker gold — 3rd/5th of the chord
+export const COLOR_WEAK = "#6FD06F"; // green — other in-key notes
 export const COLOR_BOGUS = "#ff5a6e"; // red/pink — out-of-key notes
 
 // --- Chord-tone row tints (always-on harmony cue) --------------------------
-export const COLOR_CHORD_TINT_DARK = "#2D1B3D"; // deep purple — bass (root) row
-export const COLOR_CHORD_TINT_MEDIUM = "#4A2E5A"; // lighter purple — 3rd/5th rows
+export const COLOR_CHORD_TINT_DARK = "#1a472a"; // dark teal/green — bass (root) row
+export const COLOR_CHORD_TINT_MEDIUM = "#2d6a3d"; // medium teal/green — 3rd/5th rows
 
 /** Note-bar colour from pitch + key + chord context. `chordTones` are the pitch
  *  classes that count as the chord's 3rd/5th for the active measure (the root is
