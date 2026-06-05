@@ -41,6 +41,12 @@ const MIN_BPM = 60;
 const MAX_BPM = 200;
 const BPM_STEP = 5;
 
+// Color palette for note timeline
+const COLOR_ROOT = "#FFC837"; // Bright gold
+const COLOR_STRONG = "#FF6B9D"; // Hot pink (3rd/5th)
+const COLOR_WEAK = "#FFB84D"; // Warm orange
+const COLOR_BOGUS = "#ff5a6e"; // Red/pink (out-of-key)
+
 // Initial random key is drawn from this restricted set (GDD §1 / §9).
 const RANDOM_KEY_ROOTS: PitchClass[] = ["E", "A", "G", "C"];
 const RANDOM_KEY_MODES: KeyMode[] = ["major", "minor"];
@@ -370,6 +376,55 @@ export class EddieSettingsState implements GameState {
       eighthTagMeasure,
       sixteenthTagMeasure,
     };
+  }
+
+  /** Get note color based on pitch class, key root, and chord context.
+   *  Used for the settings timeline to match the game grid colors. */
+  private getNoteColorForTimeline(midi: number, inKey: boolean): string {
+    if (!inKey) return COLOR_BOGUS;
+
+    const pitchClass = NOTE_NAMES[((midi % 12) + 12) % 12];
+    if (pitchClass === this.keyRoot) return COLOR_ROOT;
+
+    // Check if it's a chord tone (3rd or 5th) from the current measure's bassline
+    const bassnoteAtBeat0 = this.bassline.find((n) => n.beat === 0);
+    if (bassnoteAtBeat0) {
+      const chordTones = bassnoteAtBeat0.chordTones;
+      if (chordTones.includes(pitchClass)) {
+        return COLOR_STRONG;
+      }
+    }
+
+    return COLOR_WEAK;
+  }
+
+  /** Lighten a hex color by a factor (1.0 = no change, > 1.0 = lighter). */
+  private lightenColor(hex: string, factor: number): string {
+    const rgb = this.hexToRgb(hex);
+    if (!rgb) return hex;
+    const r = Math.min(255, Math.round(rgb.r * factor));
+    const g = Math.min(255, Math.round(rgb.g * factor));
+    const b = Math.min(255, Math.round(rgb.b * factor));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  /** Convert hex color to rgba string with given alpha. */
+  private hexToRgba(hex: string, alpha: number): string {
+    const rgb = this.hexToRgb(hex);
+    if (!rgb) return `rgba(0,0,0,${alpha})`;
+    return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+  }
+
+  /** Convert hex color to RGB object. */
+  private hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result
+      ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16),
+      }
+      : null;
   }
 
   // ------------------------------------------------------------------------
@@ -731,12 +786,20 @@ export class EddieSettingsState implements GameState {
       const y = laneY(n.midi);
       const top = Math.round(y - (BAND_HEIGHT + 2) / 2);
       const w = Math.max(3, Math.round(x1 - x0));
+
+      // Determine note color based on pitch class and key context
+      // For the settings timeline, we assume all notes are "in the audition key" (inKey=true)
+      // The getNoteColorForTimeline will return the appropriate color
+      const noteColor = this.getNoteColorForTimeline(n.midi, true);
+      const brightColor = noteColor;
+      const fadedColor = this.hexToRgba(noteColor, 0.3);
+
       // Bright at the attack (left), fading toward the release (right) so the
       // note's START is the most prominent edge.
       const grad = ctx.createLinearGradient(x0, 0, x0 + w, 0);
-      grad.addColorStop(0, "#cffcff");
-      grad.addColorStop(0.18, "#00f0ff");
-      grad.addColorStop(1, "rgba(0,240,255,0.3)");
+      grad.addColorStop(0, this.lightenColor(brightColor, 1.3));
+      grad.addColorStop(0.18, brightColor);
+      grad.addColorStop(1, fadedColor);
       ctx.fillStyle = grad;
       ctx.fillRect(Math.round(x0), top, w, BAND_HEIGHT + 2);
     }
