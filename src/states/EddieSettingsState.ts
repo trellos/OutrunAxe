@@ -31,6 +31,13 @@ import {
 import { InfiniteEddieState } from "./InfiniteEddieState";
 import { LevelState } from "./LevelState";
 import { PerfHud } from "../hud/PerfHud";
+import {
+  diamondColor,
+  diamondTile,
+  noteColor,
+  subdivisionCount,
+  timingQuality,
+} from "../eddie/art/eddieFeedback";
 import "../eddie/art/settings-themes.css";
 
 const PLAY_BUTTON_VARIANT = "option-1" as const;
@@ -40,12 +47,6 @@ const DEFAULT_BPM = 120;
 const MIN_BPM = 60;
 const MAX_BPM = 200;
 const BPM_STEP = 5;
-
-// Color palette for note timeline
-const COLOR_ROOT = "#FFC837"; // Bright gold
-const COLOR_STRONG = "#FF6B9D"; // Hot pink (3rd/5th)
-const COLOR_WEAK = "#FFB84D"; // Warm orange
-const COLOR_BOGUS = "#ff5a6e"; // Red/pink (out-of-key)
 
 // Initial random key is drawn from this restricted set (GDD §1 / §9).
 const RANDOM_KEY_ROOTS: PitchClass[] = ["E", "A", "G", "C"];
@@ -378,24 +379,12 @@ export class EddieSettingsState implements GameState {
     };
   }
 
-  /** Get note color based on pitch class, key root, and chord context.
-   *  Used for the settings timeline to match the game grid colors. */
+  /** Note colour for the timeline (shared rule). The settings audition has no
+   *  out-of-key gate, so every plotted note is treated as in-key; the chord is
+   *  the current bassline downbeat. */
   private getNoteColorForTimeline(midi: number, inKey: boolean): string {
-    if (!inKey) return COLOR_BOGUS;
-
-    const pitchClass = NOTE_NAMES[((midi % 12) + 12) % 12];
-    if (pitchClass === this.keyRoot) return COLOR_ROOT;
-
-    // Check if it's a chord tone (3rd or 5th) from the current measure's bassline
-    const bassnoteAtBeat0 = this.bassline.find((n) => n.beat === 0);
-    if (bassnoteAtBeat0) {
-      const chordTones = bassnoteAtBeat0.chordTones;
-      if (chordTones.includes(pitchClass)) {
-        return COLOR_STRONG;
-      }
-    }
-
-    return COLOR_WEAK;
+    const chord = this.bassline.find((n) => n.beat === 0)?.chordTones ?? null;
+    return noteColor(midi, this.keyRoot, chord, inKey);
   }
 
   /** Lighten a hex color by a factor (1.0 = no change, > 1.0 = lighter). */
@@ -413,6 +402,43 @@ export class EddieSettingsState implements GameState {
     const rgb = this.hexToRgb(hex);
     if (!rgb) return `rgba(0,0,0,${alpha})`;
     return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+  }
+
+  /** Fill a quarter region of the canvas with a tall argyle diamond pattern:
+   *  `subdiv` diamonds span the region's width, colour grades from muted (loose)
+   *  to vibrant gold (tight). Touching rhombi leave the canvas showing through
+   *  between them. Mirrors EddieGrid.addQuarterDiamonds on the canvas via the
+   *  shared diamondColor/diamondTile determination. */
+  private drawQuarterDiamondsCanvas(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    regionTop: number,
+    regionH: number,
+    subdiv: number,
+    quality: number,
+  ): void {
+    const quarterW = PX_PER_BEAT;
+    const { tileW, tileH } = diamondTile(quarterW, subdiv);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, regionTop, quarterW, regionH); // clip diamonds to the quarter
+    ctx.clip();
+    ctx.fillStyle = diamondColor(quality);
+    const rows = Math.ceil(regionH / tileH) + 1;
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < subdiv; i++) {
+        const cx = x0 + i * tileW + tileW / 2;
+        const cy = regionTop + j * tileH + tileH / 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - tileH / 2);
+        ctx.lineTo(cx + tileW / 2, cy);
+        ctx.lineTo(cx, cy + tileH / 2);
+        ctx.lineTo(cx - tileW / 2, cy);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   /** Convert hex color to RGB object. */
@@ -767,6 +793,31 @@ export class EddieSettingsState implements GameState {
 
     const now = this.conductor.audioTime;
     const outLat = getAudioContext().outputLatency || 0;
+
+    // --- Diamond scoring background (mirrors the in-game grid). For each
+    // COMPLETED quarter in the visible measure that has notes, fill its region
+    // with a timing-graded diamond pattern: the number of diamonds across
+    // reflects the subdivision the player hit (1=quarter, 2=eighths, 3=triplets,
+    // 4=sixteenths) and the colour grades from muted (loose) to vibrant gold
+    // (tight). Drawn before the note bars so the notes render on top. ---
+    const into = now - outLat - this.measureStart;
+    const quarterQualities: number[][] = [[], [], [], []];
+    for (const [, n] of this.timelineNotes) {
+      if (n.midi < 0) continue;
+      const beatPos = (n.start - this.measureStart) / beatDur;
+      if (beatPos < 0 || beatPos >= BEATS) continue;
+      const q = Math.floor(beatPos);
+      quarterQualities[q].push(timingQuality(beatPos - q));
+    }
+    for (let q = 0; q < BEATS; q++) {
+      const qs = quarterQualities[q];
+      if (qs.length === 0) continue;
+      if ((q + 1) * beatDur > into) continue; // quarter not complete yet
+      const subdiv = subdivisionCount(qs.length);
+      const avg = qs.reduce((a, b) => a + b, 0) / qs.length;
+      this.drawQuarterDiamondsCanvas(ctx, q * PX_PER_BEAT, 2, canvas.height - 4, subdiv, avg);
+    }
+
     ctx.shadowColor = "rgba(0,240,255,0.8)";
     ctx.shadowBlur = 6;
     // Gap between a bar's end and the next bar's start so back-to-back notes
@@ -787,12 +838,10 @@ export class EddieSettingsState implements GameState {
       const top = Math.round(y - (BAND_HEIGHT + 2) / 2);
       const w = Math.max(3, Math.round(x1 - x0));
 
-      // Determine note color based on pitch class and key context
-      // For the settings timeline, we assume all notes are "in the audition key" (inKey=true)
-      // The getNoteColorForTimeline will return the appropriate color
-      const noteColor = this.getNoteColorForTimeline(n.midi, true);
-      const brightColor = noteColor;
-      const fadedColor = this.hexToRgba(noteColor, 0.3);
+      // Note colour by pitch/chord role. The audition has no out-of-key gate, so
+      // every plotted note is treated as in-key (true).
+      const brightColor = this.getNoteColorForTimeline(n.midi, true);
+      const fadedColor = this.hexToRgba(brightColor, 0.3);
 
       // Bright at the attack (left), fading toward the release (right) so the
       // note's START is the most prominent edge.
@@ -806,8 +855,7 @@ export class EddieSettingsState implements GameState {
     ctx.shadowBlur = 0;
 
     // Playhead, referenced to AUDIBLE time (what the player hears/plays to).
-    const outLatency = getAudioContext().outputLatency || 0;
-    const into = now - outLatency - this.measureStart;
+    // `into` was computed above against the same audible reference.
     if (into >= 0 && into <= span) {
       const x = (into / beatDur) * PX_PER_BEAT;
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
