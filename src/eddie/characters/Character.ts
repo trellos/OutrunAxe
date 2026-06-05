@@ -183,8 +183,10 @@ export class Character {
 
   /** Update DOM position and background-image offset. */
   private updateDOM(): void {
+    // `y` is the character's FEET baseline; offset by sprite height so figures
+    // of different sizes rest their bottoms on the same ground line.
     this.el.style.left = this.x + "px";
-    this.el.style.top = this.y + "px";
+    this.el.style.top = (this.y - this.getSpriteSize().h) + "px";
 
     if (this.spriteSheet) {
       // Render the selected cell of the sheet — no tiling.

@@ -40,9 +40,16 @@ export class CharacterManager {
     config.hudParent.appendChild(this.container);
   }
 
-  /** Ground line: near the bottom of the play area, derived live so it tracks
-   *  the viewport on any screen instead of a hardcoded pixel. */
+  /** Feet baseline: just below the bottom row of the grid, derived live from the
+   *  grid cells so the crowd hugs the lowest timeline on any screen. The +44
+   *  clears the tallest (big = 32px) figure plus a small gap below the grid. */
   private groundY(): number {
+    let gridBottom = 0;
+    for (let m = 12; m <= 15; m++) {
+      const r = this.resolveCell(m);
+      if (r) gridBottom = Math.max(gridBottom, r.bottom);
+    }
+    if (gridBottom > 0) return gridBottom + 44;
     const h = this.container.clientHeight || window.innerHeight;
     return h - 90;
   }
