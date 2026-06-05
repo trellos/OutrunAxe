@@ -98,6 +98,7 @@ class EddieArtRigImpl implements EddieArtRig {
       juice: ctx.juice,
       hudParent: root,
       resolveCell: (measure) => this.resolveCell(measure),
+      beatDuration: 60 / ctx.config.bpm,
     });
     this.characters.mount();
     this.particles = particlesByIndex(ctx.fxIndex ?? 0).create();

@@ -16,6 +16,7 @@ export interface CharacterConfig {
   startX: number;               // ground position (pixel)
   spawnY: number;               // diamond Y (for jump arc)
   groundY: number;              // landed Y position
+  perchDuration: number;        // seconds to glow+wiggle on the diamond before falling
   spriteSheet: HTMLImageElement | SVGImageElement | null; // loaded sprite (null → box fallback)
 }
 
@@ -27,10 +28,13 @@ export class Character {
 
   // Position & state
   x: number;                    // ground position (horizontal)
-  private y: number;            // current Y (for jumping/interactions)
-  private groundY: number;      // Y when landed on ground
-  private isJumping = true;     // start in jump phase
-  private jumpPhase = 0;        // 0..1 (animation progress)
+  private y: number;            // current feet baseline Y
+  private groundY: number;      // feet Y when landed on ground
+  // Lifecycle: perch on the diamond (glow+wiggle) -> fall -> ground (mill).
+  private phase: "perch" | "fall" | "ground" = "perch";
+  private perchTimer: number;   // seconds remaining on the diamond
+  private perchTime = 0;        // elapsed perch time (drives wiggle/glow)
+  private jumpPhase = 0;        // 0..1 (fall progress)
   private jumpStartY: number;   // diamond Y (arc from here)
 
   // Animation
@@ -59,6 +63,7 @@ export class Character {
     this.jumpStartY = config.spawnY;
     this.groundY = config.groundY;
     this.y = this.jumpStartY;
+    this.perchTimer = config.perchDuration;
     this.spriteSheet = config.spriteSheet;
 
     // Create DOM element
@@ -67,6 +72,8 @@ export class Character {
     this.el.style.position = "absolute";
     this.el.style.width = this.getSpriteSize().w + "px";
     this.el.style.height = this.getSpriteSize().h + "px";
+    // Rotate/scale about the feet so the perch wiggle reads like standing.
+    this.el.style.transformOrigin = "50% 100%";
     this.updateDOM();
   }
 
@@ -84,12 +91,18 @@ export class Character {
 
   /** Update position, animation frame, and render. Called each frame. */
   update(dt: number): void {
-    if (this.isJumping) {
-      // Jump phase: arc Y from the diamond down to the ground.
+    if (this.phase === "perch") {
+      // Sit on the diamond, glowing + wiggling, until the perch timer elapses.
+      this.perchTime += dt;
+      this.perchTimer -= dt;
+      this.setPose("idle");
+      if (this.perchTimer <= 0) this.phase = "fall";
+    } else if (this.phase === "fall") {
+      // Arc Y from the diamond down to the ground.
       this.setPose("jump");
-      this.jumpPhase = Math.min(1, this.jumpPhase + dt / 0.3); // 0.3s jump duration
+      this.jumpPhase = Math.min(1, this.jumpPhase + dt / 0.3); // 0.3s fall duration
       if (this.jumpPhase >= 1) {
-        this.isJumping = false;
+        this.phase = "ground";
         this.y = this.groundY;
         this.setPose("idle");
       } else {
@@ -187,6 +200,20 @@ export class Character {
     // of different sizes rest their bottoms on the same ground line.
     this.el.style.left = this.x + "px";
     this.el.style.top = (this.y - this.getSpriteSize().h) + "px";
+
+    // Perch flourish: glow + wiggle while waiting on the diamond to fall.
+    if (this.phase === "perch") {
+      const wiggle = Math.sin(this.perchTime * 14); // fast side-to-side
+      const pulse = 0.5 + 0.5 * Math.sin(this.perchTime * 6);
+      const glow = this.fallbackColor();
+      const blur = (this.getSpriteSize().w * 0.4) * (0.6 + 0.4 * pulse);
+      this.el.style.transform = `translateY(${(-1.5 * Math.abs(wiggle)).toFixed(2)}px) rotate(${(wiggle * 9).toFixed(2)}deg)`;
+      this.el.style.filter =
+        `drop-shadow(0 0 ${blur.toFixed(1)}px ${glow}) drop-shadow(0 0 ${(blur * 0.5).toFixed(1)}px ${glow})`;
+    } else {
+      this.el.style.transform = "";
+      this.el.style.filter = "";
+    }
 
     if (this.spriteSheet) {
       // Render the selected cell of the sheet — no tiling.

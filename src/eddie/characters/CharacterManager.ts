@@ -12,6 +12,7 @@ interface CharacterManagerConfig {
   juice: EventBus<EddieJuiceEvents>;
   hudParent: HTMLElement;
   resolveCell: (measure: number) => DOMRect | null;
+  beatDuration: number; // seconds per beat (60 / bpm) — drives the perch stagger
 }
 
 export class CharacterManager {
@@ -20,6 +21,7 @@ export class CharacterManager {
   private characters: Map<number, Character> = new Map();
   private nextId = 0;
   private resolveCell: (measure: number) => DOMRect | null;
+  private beatDuration: number;
 
   // Listeners
   private offScored?: () => void;
@@ -28,6 +30,7 @@ export class CharacterManager {
   constructor(config: CharacterManagerConfig) {
     this.juice = config.juice;
     this.resolveCell = config.resolveCell;
+    this.beatDuration = config.beatDuration;
 
     // Create container
     this.container = document.createElement("div");
@@ -115,6 +118,10 @@ export class CharacterManager {
       return null;
     });
 
+    // Random perch of 0..4 beats so the row's characters wiggle on their
+    // diamonds and then fall at staggered times over four beats.
+    const perchDuration = Math.random() * 4 * this.beatDuration;
+
     // Create character
     const char = new Character({
       id: this.nextId++,
@@ -124,6 +131,7 @@ export class CharacterManager {
       startX: landX,
       spawnY,
       groundY: this.groundY(),
+      perchDuration,
       spriteSheet,
     });
 
