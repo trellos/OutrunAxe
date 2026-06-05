@@ -20,6 +20,7 @@ import { backgroundByIndex } from "./backgrounds/registry";
 import { particlesByIndex } from "./particles/registry";
 import type { EddieBackgroundVariant } from "./backgrounds/types";
 import type { EddieParticlesVariant } from "./particles/types";
+import { CharacterManager } from "../characters/CharacterManager";
 
 export interface EddieArtRig {
   /** Build DOM/scene objects. `hudParent` is the HUD div; `scene` is the
@@ -50,6 +51,7 @@ class EddieArtRigImpl implements EddieArtRig {
   private fire = new EddieFire();
   private background: EddieBackgroundVariant | null = null;
   private particles: EddieParticlesVariant | null = null;
+  private characters: CharacterManager | null = null;
 
   private hudRoot: HTMLDivElement | null = null;
   private scoreValueEl: HTMLDivElement | null = null;
@@ -92,6 +94,12 @@ class EddieArtRigImpl implements EddieArtRig {
       juice: ctx.juice,
       resolveCell: (measure) => this.resolveCell(measure),
     });
+    this.characters = new CharacterManager({
+      juice: ctx.juice,
+      hudParent: root,
+      resolveCell: (measure) => this.resolveCell(measure),
+    });
+    this.characters.mount();
     this.particles = particlesByIndex(ctx.fxIndex ?? 0).create();
     this.particles.mount({
       hudParent: root,
@@ -133,6 +141,7 @@ class EddieArtRigImpl implements EddieArtRig {
     this.background?.update(dt, audioTime);
     this.grid.update(dt);
     this.fire.update(dt);
+    this.characters?.update(dt);
     this.particles?.update(dt);
   }
 
@@ -144,10 +153,12 @@ class EddieArtRigImpl implements EddieArtRig {
     this.offScorePop?.();
     this.offScorePop = undefined;
     this.particles?.dispose();
+    this.characters?.dispose();
     this.fire.dispose();
     this.grid.dispose();
     this.background?.dispose();
     this.particles = null;
+    this.characters = null;
     this.background = null;
     this.scoreValueEl = null;
     this.hudRoot?.remove();
