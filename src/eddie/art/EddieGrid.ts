@@ -219,7 +219,7 @@ export class EddieGrid {
       const width = isQuarter ? 2 : 1;
       line.style.cssText =
         `position:absolute;top:6%;bottom:6%;left:${((i / subdivision) * 100).toFixed(2)}%;` +
-        `width:${width}px;margin-left:${-width / 2}px;background:${color};`;
+        `width:${width}px;margin-left:${-width / 2}px;background:${color};z-index:2;`;
       layer.appendChild(line);
     }
   }
@@ -273,12 +273,14 @@ export class EddieGrid {
     bar.className = "eddie-note" + (n.inKey ? "" : " eddie-note-off");
     bar.style.cssText =
       `position:absolute;left:${(x * 100).toFixed(2)}%;top:${(y * 84 + 8).toFixed(1)}%;` +
-      "height:5px;margin-top:-2.5px;min-width:4px;width:4px;border-radius:3px;" +
+      "height:5px;margin-top:-2.5px;min-width:4px;width:4px;border-radius:3px;z-index:3;" +
       `background:${color};box-shadow:0 0 7px ${color},0 0 2px #fff;` +
       "opacity:0;transition:opacity .12s ease,width .08s linear;";
     // Tag the quarter (0..3) this note lands in, so a later score event can turn
-    // the scoring quarter's bars green.
+    // the scoring quarter's bars green. Also store the in-measure position so the
+    // scoring overlay can grade this note's timing against the subdivision grid.
     bar.dataset.beat = String(Math.min(3, Math.floor(x * 4)));
+    bar.dataset.bf = String(x);
     layer.appendChild(bar);
     if (n.onsetId >= 0) this.noteBars.set(n.onsetId, { el: bar, startFrac: x });
 
@@ -346,43 +348,124 @@ export class EddieGrid {
   }
 
   /** A quarter scored — turn its IN-KEY note bars green (out-of-key bars, which
-   *  earned nothing, stay red) and add a diamond pattern overlay based on timing
-   *  quality. Works off the DOM so it catches bars whose eddieNoteEnd already
-   *  fired (and were removed from noteBars). */
+   *  earned nothing, stay red) and lay a DIAMOND background across the whole
+   *  quarter-note region (one of the cell's four columns). The number of diamonds
+   *  spanning the region reflects the subdivision the player hit (1 = quarter,
+   *  2 = eighths, 3 = triplets, 4 = sixteenths) and the colour reflects how
+   *  tightly the notes landed on the grid. Works off the DOM so it catches bars
+   *  whose eddieNoteEnd already fired (and were removed from noteBars). */
   private greenQuarter(measure: number, beat: number): void {
     const idx = this.indexFor(measure);
     const layer = idx >= 0 ? this.noteLayers[idx] : null;
     if (!layer) return;
     const want = String(beat);
+
+    // Collect the in-key bars that landed in this quarter — they both drive the
+    // subdivision count and the average timing quality.
+    const bars: HTMLElement[] = [];
     for (const child of Array.from(layer.children)) {
       const el = child as HTMLElement;
       if (el.dataset.beat !== want) continue;
       if (el.classList.contains("eddie-note-off")) continue; // out-of-key: no score
+      bars.push(el);
+    }
+    if (bars.length === 0) return;
+
+    // Recolour the scored bars green (existing feedback).
+    for (const el of bars) {
       el.classList.add("eddie-note-scored");
       el.style.background = "#39ff7a";
       el.style.boxShadow = "0 0 8px #39ff7a,0 0 2px #fff";
-
-      // Add diamond pattern overlay for timing feedback
-      // Calculate timing quality from bar width (tighter timing = more intensity)
-      const widthStr = el.style.width;
-      let widthPct = 4; // default for very short notes
-      if (widthStr && widthStr.includes("%")) {
-        widthPct = parseFloat(widthStr);
-      }
-      // Timing quality: perfect (wide bar) = 1, narrow = 0
-      const timingQuality = Math.min(1, widthPct / 30);
-      // Diamond opacity/saturation based on timing quality
-      const diamondOpacity = 0.3 + timingQuality * 0.5;
-      const successColor = `rgba(255, 215, 0, ${diamondOpacity})`;
-
-      // Create diamond pattern overlay as a striped background
-      const overlay = document.createElement("div");
-      overlay.style.cssText =
-        `position:absolute;left:0;top:0;right:0;bottom:0;` +
-        `pointer-events:none;background:repeating-linear-gradient(45deg,` +
-        `transparent,transparent 4px,${successColor} 4px,${successColor} 8px);`;
-      el.appendChild(overlay);
     }
+
+    // One diamond region per quarter — skip if this quarter was already decorated.
+    if (layer.querySelector(`.eddie-quarter-diamond[data-beat="${beat}"]`)) return;
+
+    // Subdivision = how many notes were played in the quarter (clamped to the
+    // sixteenth ceiling). Average timing quality drives the colour saturation.
+    const subdiv = Math.max(1, Math.min(4, bars.length));
+    let q = 0;
+    for (const el of bars) q += this.timingQuality(parseFloat(el.dataset.bf ?? "0"));
+    q /= bars.length;
+
+    this.addQuarterDiamonds(layer, beat, subdiv, q);
+  }
+
+  /** Grade a note's timing: how close its in-measure position lands to the
+   *  nearest musical subdivision point (eighth, sixteenth, or triplet) WITHIN its
+   *  quarter. Returns 0 (loose) .. 1 (dead on the grid). */
+  private timingQuality(beatFraction: number): number {
+    // Position inside the quarter the note belongs to (0..1).
+    const inQuarter = ((beatFraction * 4) % 1 + 1) % 1;
+    // Ideal subdivision points a player might be aiming for, within one quarter.
+    const targets = [
+      0, 1, // quarter boundaries
+      0.5, // eighth
+      0.25, 0.75, // sixteenths
+      1 / 3, 2 / 3, // triplets
+    ];
+    let best = 1;
+    for (const t of targets) best = Math.min(best, Math.abs(inQuarter - t));
+    // Worst-case nearest distance between the densest grid points is ~0.125.
+    const maxErr = 0.125;
+    return Math.max(0, Math.min(1, 1 - best / maxErr));
+  }
+
+  /** Fill a quarter-note region with a tall argyle diamond pattern. `subdiv`
+   *  diamonds span the region's width; the colour interpolates from muted (loose
+   *  timing) to vibrant gold (tight timing). Each tile is a single rhombus, so
+   *  tiling yields touching diamonds alternating the success colour with the
+   *  cell showing through between them (Bavarian argyle). */
+  private addQuarterDiamonds(
+    layer: HTMLDivElement,
+    beat: number,
+    subdiv: number,
+    quality: number,
+  ): void {
+    // Interpolate the success colour from muted (loose) to vibrant gold (tight).
+    const r = Math.round(150 + (255 - 150) * quality);
+    const g = Math.round(135 + (215 - 135) * quality);
+    const b = Math.round(70 + (0 - 70) * quality);
+    const a = 0.5 + 0.4 * quality;
+    const color = `rgba(${r},${g},${b},${a})`;
+
+    // Geometry in pixels: the quarter is one of the cell's four columns.
+    const cellW = layer.clientWidth;
+    const cellH = layer.clientHeight;
+    const quarterW = cellW / 4;
+    const left = beat * quarterW;
+    const insetY = cellH * 0.06;
+    const regionH = cellH - insetY * 2;
+
+    // `subdiv` diamonds across the quarter; tall (taller than wide) like argyle.
+    const tileW = quarterW / subdiv;
+    const tileH = Math.max(tileW * 1.7, 16);
+
+    // One rhombus per tile, drawn as an inline SVG so tall diamonds tile exactly
+    // (CSS-gradient diamonds only tile cleanly when square). The negative space
+    // between rhombi forms the alternating transparent diamonds.
+    const svg =
+      `<svg xmlns='http://www.w3.org/2000/svg' width='${tileW.toFixed(2)}' height='${tileH.toFixed(2)}'>` +
+      `<polygon points='${(tileW / 2).toFixed(2)},0 ${tileW.toFixed(2)},${(tileH / 2).toFixed(2)} ` +
+      `${(tileW / 2).toFixed(2)},${tileH.toFixed(2)} 0,${(tileH / 2).toFixed(2)}' fill='${color}'/></svg>`;
+    const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+
+    const diamond = document.createElement("div");
+    diamond.className = "eddie-quarter-diamond";
+    diamond.dataset.beat = String(beat);
+    diamond.style.cssText =
+      `position:absolute;left:${left}px;width:${quarterW}px;` +
+      `top:${insetY}px;height:${regionH}px;` +
+      `z-index:1;pointer-events:none;overflow:hidden;` +
+      `opacity:0;transition:opacity .12s ease;` +
+      `background-image:${url};background-repeat:repeat;` +
+      `background-size:${tileW.toFixed(2)}px ${tileH.toFixed(2)}px;background-position:center top;`;
+    // Insert at the front so it renders behind the note bars (z-index also
+    // enforces this), but above the chord-tone tints (z-index 0).
+    layer.insertBefore(diamond, layer.firstChild);
+    requestAnimationFrame(() => {
+      diamond.style.opacity = "1";
+    });
   }
 
   /** scoredMeasure: 0..15 = a scored cell (rows 1-4); negative = intro row 0,
