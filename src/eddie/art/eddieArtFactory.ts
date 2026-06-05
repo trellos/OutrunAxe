@@ -40,6 +40,11 @@ export interface EddieArtRig {
   }): void;
   update(dt: number, audioTime: number): void;
   setActiveMeasure(scoredMeasure: number): void;
+  /** Screen-space origin for score particles: the centre of the just-played note
+   *  bars in the scored quarter (measure 0..15, beat 0..3), so particles fly out
+   *  of the notes that earned the points. Null if it can't be resolved (the play
+   *  state then falls back to a default). */
+  resolveNoteOrigin(measure: number, beat: number): { x: number; y: number } | null;
   dispose(): void;
 }
 
@@ -113,6 +118,30 @@ class EddieArtRigImpl implements EddieArtRig {
     const col = measure % 4;
     const idx = row * 4 + col;
     return cells[idx]?.getBoundingClientRect() ?? null;
+  }
+
+  resolveNoteOrigin(measure: number, beat: number): { x: number; y: number } | null {
+    if (!this.hudRoot || measure < 0 || measure > 15) return null;
+    const cells = this.hudRoot.querySelectorAll<HTMLDivElement>(".eddie-cell");
+    if (cells.length < 20) return null;
+    const row = Math.floor(measure / 4) + 1;
+    const col = measure % 4;
+    const cell = cells[row * 4 + col];
+    if (!cell) return null;
+    // Average the centres of the in-key note bars the player played in this
+    // quarter (out-of-key bars earned nothing, so they don't emit particles).
+    let sx = 0, sy = 0, n = 0;
+    cell.querySelectorAll<HTMLElement>(`.eddie-note[data-beat="${beat}"]`).forEach((bar) => {
+      if (bar.classList.contains("eddie-note-off")) return;
+      const r = bar.getBoundingClientRect();
+      sx += r.left + r.width / 2;
+      sy += r.top + r.height / 2;
+      n++;
+    });
+    if (n > 0) return { x: sx / n, y: sy / n };
+    // Fallback: the centre of the scored quarter's column within the cell.
+    const cr = cell.getBoundingClientRect();
+    return { x: cr.left + cr.width * ((beat + 0.5) / 4), y: cr.top + cr.height / 2 };
   }
 
   private resolveScore(): { x: number; y: number } {

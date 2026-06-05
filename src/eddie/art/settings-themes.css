@@ -52,6 +52,30 @@
  */
 
 /* ======================================================================= */
+/* STABLE FRAME — applies to every theme                                   */
+/* The settings panel is a fixed-width window so its size never jumps as    */
+/* content changes (random sound names, hidden calibration rows, varying    */
+/* bass roots). Content that would exceed the frame wraps/clips instead of  */
+/* stretching it, keeping the window centered and steady.                   */
+/* ======================================================================= */
+.outrun-levelselect.eddie-settings .levelselect-inner {
+  width: 680px;
+  max-width: 94vw;
+  box-sizing: border-box;
+}
+/* The chosen-sound indicator: a single stable line that never widens the
+   frame — its text is centered and ellipsised if it ever runs long. */
+.outrun-levelselect.eddie-settings .eddie-sound-window {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.outrun-levelselect.eddie-settings .eddie-sound-tag b { font-weight: 700; }
+
+/* ======================================================================= */
 /* THEME 1 — SYSTEM 7 PLATINUM                                             */
 /* ======================================================================= */
 
