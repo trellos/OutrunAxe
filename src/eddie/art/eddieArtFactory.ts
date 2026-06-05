@@ -88,7 +88,12 @@ class EddieArtRigImpl implements EddieArtRig {
 
     this.background = backgroundByIndex(ctx.bgIndex ?? 0).create();
     this.background.mount({ scene: ctx.scene, camera: ctx.camera, juice: ctx.juice });
-    this.grid.mount({ hudParent: root, config: ctx.config, juice: ctx.juice });
+    this.grid.mount({
+      hudParent: root,
+      config: ctx.config,
+      juice: ctx.juice,
+      onQuarterDiamonds: (info) => this.characters?.onQuarterDiamonds(info),
+    });
     this.fire.mount({
       hudParent: root,
       juice: ctx.juice,

@@ -23,11 +23,14 @@ export class CharacterManager {
   private resolveCell: (measure: number) => DOMRect | null;
   private beatDuration: number;
 
-  // Scored quarters buffered per grid row until the row finishes.
-  private pendingByRow = new Map<number, Array<{ measure: number; beat: number }>>();
+  // Scored quarters (with their diamond count + timing) buffered per grid row
+  // until the row finishes.
+  private pendingByRow = new Map<
+    number,
+    Array<{ measure: number; beat: number; subdiv: number; quality: number }>
+  >();
 
   // Listeners
-  private offScored?: () => void;
   private offFinale?: () => void;
   private offIntensity?: () => void;
 
@@ -63,16 +66,24 @@ export class CharacterManager {
 
   /** Mount: subscribe to events. */
   mount(): void {
-    // Buffer scored quarters by grid row; the whole row's crowd is released
-    // together once the row's final measure finishes (see setActiveMeasure).
-    this.offScored = this.juice.on("eddieNoteScored", (ev) => {
-      const row = Math.floor(ev.measure / 4);
-      let list = this.pendingByRow.get(row);
-      if (!list) this.pendingByRow.set(row, (list = []));
-      list.push({ measure: ev.measure, beat: ev.beat });
-    });
     // Final row never sees a following row-boundary; the finale releases it.
     this.offFinale = this.juice.on("eddieFinale", () => this.flushAllRows());
+  }
+
+  /** Grid callback: a quarter's diamonds were drawn. Buffer it by grid row; the
+   *  whole row's crowd is released together once the row's final measure
+   *  finishes (see setActiveMeasure). subdiv = number of diamonds (1..4),
+   *  quality = average timing tightness 0..1. */
+  onQuarterDiamonds(info: {
+    measure: number;
+    beat: number;
+    subdiv: number;
+    quality: number;
+  }): void {
+    const row = Math.floor(info.measure / 4);
+    let list = this.pendingByRow.get(row);
+    if (!list) this.pendingByRow.set(row, (list = []));
+    list.push(info);
   }
 
   /** Called as the active measure advances. Releases every row whose final
@@ -91,29 +102,48 @@ export class CharacterManager {
     }
   }
 
-  /** Spawn the whole buffered row at once; each character gets its own random
-   *  0..4 beat perch so the row falls staggered across four beats. */
+  /** Map a quarter's subdivision (1..4 diamonds) to character size.
+   *  quarter/eighth → big, triplet → medium, sixteenth → small. */
+  private sizeForSubdiv(subdiv: number): CharacterSize {
+    if (subdiv >= 4) return "small";
+    if (subdiv === 3) return "medium";
+    return "big";
+  }
+
+  /** Map timing tightness (0 loose .. 1 dead-on) to a quality tier. Perfect is
+   *  deliberately tight so it stays a visible cut above. */
+  private qualityForTiming(q: number): CharacterQuality {
+    if (q >= 0.8) return "perfect";
+    if (q >= 0.45) return "normal";
+    return "loose";
+  }
+
+  /** Spawn the whole buffered row at once — ONE character per diamond. Each
+   *  character gets its own random 0..4 beat perch so the row falls staggered
+   *  across four beats. */
   private flushRow(row: number): void {
     const quarters = this.pendingByRow.get(row);
     this.pendingByRow.delete(row);
     if (!quarters) return;
 
-    for (const { measure, beat } of quarters) {
-      // Size from beat (placeholder: 0→big, 1/2→medium, 3→small).
-      const size: CharacterSize =
-        beat === 0 ? "big" : beat === 3 ? "small" : "medium";
+    for (const { measure, beat, subdiv, quality } of quarters) {
+      const size = this.sizeForSubdiv(subdiv);
+      const qualityTier = this.qualityForTiming(quality);
 
-      // Tier/quality still randomized (real note-content + timing TBD).
-      const tier: CharacterTier = Math.random() > 0.5 ? "strong" : "weak";
-      const quality: CharacterQuality =
-        (["loose", "normal", "perfect"] as const)[Math.floor(Math.random() * 3)];
-
-      // Diamond position from the measure's grid cell.
+      // The quarter occupies column `beat` of the 4-column measure cell; its
+      // `subdiv` diamonds span that column. Spawn one character over each.
       const cellRect = this.resolveCell(measure);
-      const startX = cellRect ? cellRect.left + cellRect.width / 2 : 250;
+      const quarterW = cellRect ? cellRect.width / 4 : 60;
+      const quarterLeft = cellRect ? cellRect.left + beat * quarterW : 250;
       const spawnY = cellRect ? cellRect.top + cellRect.height / 2 : 150;
 
-      this.spawnCharacter(size, tier, quality, startX, spawnY);
+      for (let i = 0; i < subdiv; i++) {
+        const diamondX = quarterLeft + ((i + 0.5) / subdiv) * quarterW;
+        // Tier (strong/weak) reflects note CONTENT (root/3rd/5th), which the
+        // diamond data doesn't carry yet — still randomized pending that wiring.
+        const tier: CharacterTier = Math.random() > 0.5 ? "strong" : "weak";
+        this.spawnCharacter(size, tier, qualityTier, diamondX, spawnY);
+      }
     }
   }
 
@@ -125,9 +155,9 @@ export class CharacterManager {
     startX: number,
     spawnY: number,
   ): Promise<void> {
-    // Land somewhere along the ground near the diamond's column so a crowd
-    // reads instead of every character stacking on one pixel.
-    const landX = startX + (Math.random() - 0.5) * 80;
+    // Small jitter so neighbours don't perfectly overlap, but each still lands
+    // under its own diamond.
+    const landX = startX + (Math.random() - 0.5) * 14;
 
     // Load sprite sheet. On failure the character still spawns and renders its
     // solid colored-box fallback — so a missing/404 asset never hides the crowd.
@@ -168,7 +198,6 @@ export class CharacterManager {
 
   /** Dispose: unsubscribe and clean up all characters. */
   dispose(): void {
-    this.offScored?.();
     this.offFinale?.();
     this.offIntensity?.();
     this.pendingByRow.clear();

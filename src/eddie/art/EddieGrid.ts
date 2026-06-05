@@ -66,11 +66,28 @@ export class EddieGrid {
   private chordToneLanesByMeasure = new Map<number, number[]>();
   private chordTonePcsByMeasure = new Map<number, PitchClass[]>();
 
+  // Notifies a consumer (the character rig) of each quarter's diamonds as they
+  // are drawn, so it can spawn one character per diamond with the matching
+  // subdivision size and timing-quality tier.
+  private onQuarterDiamonds?: (info: {
+    measure: number;
+    beat: number;
+    subdiv: number;
+    quality: number;
+  }) => void;
+
   mount(ctx: {
     hudParent: HTMLElement;
     config: EddieConfig;
     juice: EventBus<EddieJuiceEvents>;
+    onQuarterDiamonds?: (info: {
+      measure: number;
+      beat: number;
+      subdiv: number;
+      quality: number;
+    }) => void;
   }): void {
+    this.onQuarterDiamonds = ctx.onQuarterDiamonds;
     const root = document.createElement("div");
     root.className = "eddie-grid";
 
@@ -383,6 +400,9 @@ export class EddieGrid {
     q /= bars.length;
 
     this.addQuarterDiamonds(layer, beat, subdiv, q);
+    // Tell the character rig how many diamonds this quarter has, and how tight,
+    // so it can spawn one correctly-sized, correctly-graded character per diamond.
+    this.onQuarterDiamonds?.({ measure, beat, subdiv, quality: q });
   }
 
   /** Fill a quarter-note region with a tall argyle diamond pattern. `subdiv`
