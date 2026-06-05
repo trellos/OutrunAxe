@@ -522,11 +522,37 @@ export class EddieSettingsState implements GameState {
     const roots: string[] = [];
     for (let m = 0; m < 4; m++) {
       const dn = this.bassline.find((n) => n.measure === m && n.beat === 0);
-      roots.push(dn ? dn.pitchClass : "—");
+      if (dn) {
+        const quality = this.getChordQuality(dn.pitchClass, dn.chordTones);
+        roots.push(dn.pitchClass + quality);
+      } else {
+        roots.push("—");
+      }
     }
     return roots
       .map((r, i) => `<span class="eddie-bass-note" data-bass="${i}">${r}</span>`)
       .join('<span class="eddie-bass-sep">·</span>');
+  }
+
+  /** Determine chord quality suffix from root + chord tones (e.g. "", "m", "dim"). */
+  private getChordQuality(root: PitchClass, chordTones: PitchClass[]): string {
+    if (chordTones.length < 3) return "";
+
+    const rootIdx = NOTE_NAMES.indexOf(root);
+    const thirdIdx = NOTE_NAMES.indexOf(chordTones[1]);
+    const fifthIdx = NOTE_NAMES.indexOf(chordTones[2]);
+
+    // Calculate intervals from the root (0-11 semitones)
+    const thirdInterval = (thirdIdx - rootIdx + 12) % 12;
+    const fifthInterval = (fifthIdx - rootIdx + 12) % 12;
+
+    // Determine quality based on intervals
+    if (thirdInterval === 4 && fifthInterval === 7) return ""; // major (no suffix)
+    if (thirdInterval === 3 && fifthInterval === 7) return "m"; // minor
+    if (thirdInterval === 3 && fifthInterval === 6) return "dim"; // diminished
+    if (thirdInterval === 4 && fifthInterval === 8) return "aug"; // augmented
+
+    return "";
   }
 
   /** Light up the bass chip for the measure whose downbeat is now sounding. */
