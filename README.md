@@ -1,4 +1,4 @@
-# OutrunAxe
+# Infinite Eddie
 
 A 3D on-rails rhythm-combat game. You walk a rail through a neon city with a
 guitar; note-tagged enemies fly in; you destroy them by playing notes that
