@@ -45,10 +45,17 @@ export class Character {
   private frameCounts = { idle: 4, walk: 4, jump: 4, interact: 4 }; // frames per pose (one sheet column each)
   private frameRate = 8;        // fps for animation
 
-  // Wander/milling (basic life until interaction AI lands in Phase 3)
+  // Wander/milling (basic life until claimed by an interaction)
   private homeX: number;        // anchor to mill around
   private wanderTarget: number | null = null;
   private wanderTimer = 0;      // idle pause countdown between strolls
+
+  // Interaction control: when an activity claims this character, `busy` stops
+  // its self-driven wander and the director sets pose/position directly.
+  busy = false;
+  glow = false;                 // pulsing aura while performing
+  private elevation = 0;        // raised above the ground line (pyramid stacking)
+  private clock = 0;            // ever-advancing time for glow pulsing
 
   // DOM
   el: HTMLDivElement;
@@ -89,8 +96,33 @@ export class Character {
     }
   }
 
+  /** True once the character has landed and is free to interact. */
+  get grounded(): boolean {
+    return this.phase === "ground";
+  }
+
+  /** Walk toward a target X this frame; returns true once arrived. Used by the
+   *  interaction director while `busy`. */
+  walkToward(targetX: number, dt: number, speed = 30): boolean {
+    const step = speed * dt;
+    if (Math.abs(targetX - this.x) <= step) {
+      this.x = targetX;
+      this.setPose("idle");
+      return true;
+    }
+    this.x += Math.sign(targetX - this.x) * step;
+    this.setPose("walk");
+    return false;
+  }
+
+  /** Raise the character above the ground line (for pyramid tiers). */
+  setElevation(px: number): void {
+    this.elevation = px;
+  }
+
   /** Update position, animation frame, and render. Called each frame. */
   update(dt: number): void {
+    this.clock += dt;
     if (this.phase === "perch") {
       // Sit on the diamond, glowing + wiggling, until the perch timer elapses.
       this.perchTime += dt;
@@ -109,8 +141,9 @@ export class Character {
         const arc = Math.sin(this.jumpPhase * Math.PI) * 50; // max arc height
         this.y = this.jumpStartY + (this.groundY - this.jumpStartY) * this.jumpPhase - arc;
       }
-    } else {
-      // Landed: mill around home so the crowd feels alive.
+    } else if (!this.busy) {
+      // Landed and unclaimed: mill around home so the crowd feels alive. While
+      // `busy`, the interaction director drives pose/position instead.
       this.wander(dt);
     }
 
@@ -197,12 +230,13 @@ export class Character {
   /** Update DOM position and background-image offset. */
   private updateDOM(): void {
     // `y` is the character's FEET baseline; offset by sprite height so figures
-    // of different sizes rest their bottoms on the same ground line.
+    // of different sizes rest their bottoms on the same ground line. `elevation`
+    // raises the figure for pyramid tiers.
     this.el.style.left = this.x + "px";
-    this.el.style.top = (this.y - this.getSpriteSize().h) + "px";
+    this.el.style.top = (this.y - this.elevation - this.getSpriteSize().h) + "px";
 
-    // Perch flourish: glow + wiggle while waiting on the diamond to fall.
     if (this.phase === "perch") {
+      // Perch flourish: glow + wiggle while waiting on the diamond to fall.
       const wiggle = Math.sin(this.perchTime * 14); // fast side-to-side
       const pulse = 0.5 + 0.5 * Math.sin(this.perchTime * 6);
       const glow = this.fallbackColor();
@@ -210,6 +244,13 @@ export class Character {
       this.el.style.transform = `translateY(${(-1.5 * Math.abs(wiggle)).toFixed(2)}px) rotate(${(wiggle * 9).toFixed(2)}deg)`;
       this.el.style.filter =
         `drop-shadow(0 0 ${blur.toFixed(1)}px ${glow}) drop-shadow(0 0 ${(blur * 0.5).toFixed(1)}px ${glow})`;
+    } else if (this.glow) {
+      // Performing an activity: steady pulsing aura, no wiggle.
+      const pulse = 0.5 + 0.5 * Math.sin(this.clock * 8);
+      const glow = this.fallbackColor();
+      const blur = (this.getSpriteSize().w * 0.5) * (0.6 + 0.4 * pulse);
+      this.el.style.transform = "";
+      this.el.style.filter = `drop-shadow(0 0 ${blur.toFixed(1)}px ${glow})`;
     } else {
       this.el.style.transform = "";
       this.el.style.filter = "";

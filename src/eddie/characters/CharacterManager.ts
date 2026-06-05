@@ -7,6 +7,7 @@ import type { EventBus } from "../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../music/eddie/eddieTypes";
 import { Character, type CharacterSize, type CharacterTier, type CharacterQuality } from "./Character";
 import { loadSpriteSheet, type SpriteSheetId } from "./SpriteLoader";
+import { InteractionDirector } from "./InteractionDirector";
 
 interface CharacterManagerConfig {
   juice: EventBus<EddieJuiceEvents>;
@@ -22,6 +23,7 @@ export class CharacterManager {
   private nextId = 0;
   private resolveCell: (measure: number) => DOMRect | null;
   private beatDuration: number;
+  private director: InteractionDirector;
 
   // Scored quarters (with their diamond count + timing) buffered per grid row
   // until the row finishes.
@@ -38,6 +40,7 @@ export class CharacterManager {
     this.juice = config.juice;
     this.resolveCell = config.resolveCell;
     this.beatDuration = config.beatDuration;
+    this.director = new InteractionDirector(() => this.characters.values());
 
     // Create container
     this.container = document.createElement("div");
@@ -191,6 +194,9 @@ export class CharacterManager {
 
   /** Update all characters. Called each frame from art rig. */
   update(dt: number): void {
+    // Director first so it can claim/release characters, then each character
+    // animates (busy ones are driven by the director, the rest wander).
+    this.director.update(dt);
     for (const char of this.characters.values()) {
       char.update(dt);
     }
