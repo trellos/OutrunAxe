@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 /**
  * Generate placeholder pixel-art stick-figure spritesheets.
- * Creates SVG files (easy to edit/paint over, then export to PNG).
  *
- * Structure:
- * - big-{tier}.svg   (8th notes) — 4 columns × 4 rows (idle, walk, jump, interact)
- * - medium-{tier}.svg (triplets) — 4 columns × 4 rows
- * - small-{tier}.svg (16th notes) — 4 columns × 4 rows
+ * Layout (so animation actually plays):
+ *   - Columns = animation FRAMES (4 per pose)
+ *   - Rows    = POSES (idle, walk, jump, interact)
+ * So a sheet is (4*w) wide by (4*h) tall. The renderer picks a cell by
+ * (frameNum, poseIndex).
  *
- * Tiers: loose, normal, perfect
- * Animations: idle, walk, jump, high-five
+ * The figures are drawn on a TRANSPARENT background with a dark outline under a
+ * bright body so they read on any background — no grid, no text labels (those
+ * were what made the old sheets look like white boxes).
+ *
+ * Files: {big,medium,small}-{loose,normal,perfect}.svg
+ * Paint over these, export to PNG (same name), and the loader prefers the PNG.
  */
 
 import fs from "fs";
@@ -17,145 +21,129 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const ASSETS_DIR = path.join(__dirname, "public/assets");
+
 const SIZES = [
-  { name: "big", w: 32, h: 32, scale: 4 },      // 8th notes
-  { name: "medium", w: 24, h: 24, scale: 3 },   // triplets
-  { name: "small", w: 16, h: 16, scale: 2 },    // 16th notes
+  { name: "big", w: 32, h: 32 },
+  { name: "medium", w: 24, h: 24 },
+  { name: "small", w: 16, h: 16 },
 ];
 
 const TIERS = [
-  { name: "loose", color: "#888", desc: "Loose timing" },
-  { name: "normal", color: "#0f0", desc: "Normal timing" },
-  { name: "perfect", color: "#0ff", desc: "Perfect timing" },
+  { name: "loose", color: "#cfd2da" },   // dim grey-white
+  { name: "normal", color: "#7CFF4F" },  // lime
+  { name: "perfect", color: "#33F0FF" }, // cyan
 ];
 
-const ANIMATIONS = [
-  { name: "idle", desc: "Standing still" },
-  { name: "walk", desc: "Walking/moving" },
-  { name: "jump", desc: "Jumping/celebrating" },
-  { name: "interact", desc: "High-five/interaction" },
-];
+// Row order MUST match Character.getSpriteFrame()'s pose index order.
+const POSES = ["idle", "walk", "jump", "interact"];
+const FRAMES = 4;
+
+const TAU = Math.PI * 2;
 
 /**
- * Draw a simple stick figure at (x, y) in a (w, h) cell.
- * Returns SVG group element as string.
+ * Limb endpoints for a pose at frame f (0..FRAMES-1), in unit space centered
+ * on (0,0), scaled later. Returns body/head/arm/leg offsets.
  */
-function drawStickFigure(x, y, w, h, color, pose) {
-  const cx = x + w / 2;
-  const cy = y + h / 2;
-  const scale = w / 16; // Normalize to 16-unit grid
+function pose(poseName, f) {
+  const t = f / FRAMES;            // 0..1 around the loop
+  const swing = Math.sin(t * TAU); // -1..1
 
-  let svg = `<g data-pose="${pose}">`;
+  let bob = 0;                     // vertical body offset
+  let headY = -4.5;
+  let armL, armR, legL, legR;
 
-  // Head: circle at top
-  svg += `<circle cx="${cx}" cy="${cy - 4 * scale}" r="${2 * scale}" fill="${color}" stroke="${color}" stroke-width="${0.5 * scale}"/>`;
-
-  // Body: vertical line
-  svg += `<line x1="${cx}" y1="${cy - 2 * scale}" x2="${cx}" y2="${cy + 2 * scale}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-
-  // Arms: horizontal line (vary by pose)
-  const armY = cy - 0.5 * scale;
-  if (pose === "idle") {
-    svg += `<line x1="${cx - 3 * scale}" y1="${armY}" x2="${cx + 3 * scale}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-  } else if (pose === "walk") {
-    // One arm up, one down (walking pose)
-    svg += `<line x1="${cx - 3 * scale}" y1="${armY - 2 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-    svg += `<line x1="${cx + 3 * scale}" y1="${armY + 2 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-  } else if (pose === "jump") {
-    // Both arms up
-    svg += `<line x1="${cx - 3 * scale}" y1="${armY - 3 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-    svg += `<line x1="${cx + 3 * scale}" y1="${armY - 3 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-  } else if (pose === "interact") {
-    // One arm up (high-five), one down
-    svg += `<line x1="${cx - 3 * scale}" y1="${armY - 2 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-    svg += `<line x1="${cx + 3 * scale}" y1="${armY + 1 * scale}" x2="${cx}" y2="${armY}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
+  if (poseName === "idle") {
+    bob = Math.abs(swing) * 0.4;   // gentle breathing
+    armL = { dx: -3, dy: 1 + swing * 0.3 };
+    armR = { dx: 3, dy: 1 - swing * 0.3 };
+    legL = { dx: -1.6, dy: 4 };
+    legR = { dx: 1.6, dy: 4 };
+  } else if (poseName === "walk") {
+    armL = { dx: -2.5, dy: 0.5 + swing * 1.6 };
+    armR = { dx: 2.5, dy: 0.5 - swing * 1.6 };
+    legL = { dx: -1.4 - swing * 1.4, dy: 4 };
+    legR = { dx: 1.4 + swing * 1.4, dy: 4 };
+  } else if (poseName === "jump") {
+    bob = -Math.abs(swing) * 0.8;  // little lift
+    armL = { dx: -3, dy: -3.2 };   // both arms up
+    armR = { dx: 3, dy: -3.2 };
+    legL = { dx: -2 - Math.abs(swing) * 0.6, dy: 3.4 };
+    legR = { dx: 2 + Math.abs(swing) * 0.6, dy: 3.4 };
+  } else {
+    // interact: one arm raised, waving
+    const wave = Math.sin(t * TAU);
+    armL = { dx: -2.5, dy: 1 };
+    armR = { dx: 3 + wave * 0.6, dy: -3.5 }; // waving arm up
+    legL = { dx: -1.6, dy: 4 };
+    legR = { dx: 1.6, dy: 4 };
   }
 
-  // Legs: two short lines from base
-  const legY = cy + 2 * scale;
-  svg += `<line x1="${cx - 1.5 * scale}" y1="${legY}" x2="${cx - 1.5 * scale}" y2="${legY + 2 * scale}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
-  svg += `<line x1="${cx + 1.5 * scale}" y1="${legY}" x2="${cx + 1.5 * scale}" y2="${legY + 2 * scale}" stroke="${color}" stroke-width="${1 * scale}" stroke-linecap="round"/>`;
+  return { bob, headY: headY + bob, armL, armR, legL, legR };
+}
 
+/** Draw one figure into a cell at (ox, oy) of size (w,h). */
+function drawFigure(ox, oy, w, h, color, poseName, f) {
+  const s = w / 16;                 // unit -> px scale
+  const cx = ox + w / 2;
+  const cy = oy + h / 2;
+  const p = pose(poseName, f);
+
+  const bodyTopY = cy + (-2.5 + p.bob) * s;
+  const bodyBotY = cy + (2 + p.bob) * s;
+  const shoulderY = cy + (-1.5 + p.bob) * s;
+  const hipY = cy + (2 + p.bob) * s;
+
+  const head = { x: cx, y: cy + p.headY * s, r: 2.3 * s };
+
+  const seg = (x1, y1, x2, y2) => ({ x1, y1, x2, y2 });
+  const limbs = [
+    seg(cx, bodyTopY, cx, bodyBotY),                                   // spine
+    seg(cx, shoulderY, cx + p.armL.dx * s, shoulderY + p.armL.dy * s), // L arm
+    seg(cx, shoulderY, cx + p.armR.dx * s, shoulderY + p.armR.dy * s), // R arm
+    seg(cx, hipY, cx + p.legL.dx * s, hipY + p.legL.dy * s),           // L leg
+    seg(cx, hipY, cx + p.legR.dx * s, hipY + p.legR.dy * s),           // R leg
+  ];
+
+  const outlineW = 2.4 * s;
+  const bodyW = 1.3 * s;
+  let svg = `<g>`;
+  // dark outline pass (readable on light backgrounds)
+  svg += `<circle cx="${head.x.toFixed(1)}" cy="${head.y.toFixed(1)}" r="${(head.r + 0.6 * s).toFixed(1)}" fill="#101018"/>`;
+  for (const l of limbs) {
+    svg += `<line x1="${l.x1.toFixed(1)}" y1="${l.y1.toFixed(1)}" x2="${l.x2.toFixed(1)}" y2="${l.y2.toFixed(1)}" stroke="#101018" stroke-width="${outlineW.toFixed(2)}" stroke-linecap="round"/>`;
+  }
+  // bright body pass
+  svg += `<circle cx="${head.x.toFixed(1)}" cy="${head.y.toFixed(1)}" r="${head.r.toFixed(1)}" fill="${color}"/>`;
+  for (const l of limbs) {
+    svg += `<line x1="${l.x1.toFixed(1)}" y1="${l.y1.toFixed(1)}" x2="${l.x2.toFixed(1)}" y2="${l.y2.toFixed(1)}" stroke="${color}" stroke-width="${bodyW.toFixed(2)}" stroke-linecap="round"/>`;
+  }
   svg += `</g>`;
   return svg;
 }
 
-/**
- * Generate a spritesheet: 4 columns × 4 rows (4 animations × various counts).
- * Returns SVG string.
- */
-function generateSpritesheet(sizeName, w, h, color, tierId) {
-  const cols = ANIMATIONS.length; // 4 animations
-  const rows = 1; // 1 row per tier (can expand for variations)
-
-  const sheetW = cols * w;
-  const sheetH = rows * h;
-
-  let svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${sheetW}" height="${sheetH}" viewBox="0 0 ${sheetW} ${sheetH}">
-  <defs>
-    <style>
-      text { font-family: monospace; font-size: 10px; fill: #666; }
-      .grid-line { stroke: #ddd; stroke-width: 0.5; }
-    </style>
-  </defs>
-  <!-- Background grid -->
-  <rect width="${sheetW}" height="${sheetH}" fill="#f5f5f5"/>`;
-
-  // Draw grid lines
-  for (let x = 0; x <= cols; x++) {
-    svg += `<line class="grid-line" x1="${x * w}" y1="0" x2="${x * w}" y2="${sheetH}"/>`;
-  }
-  for (let y = 0; y <= rows; y++) {
-    svg += `<line class="grid-line" x1="0" y1="${y * h}" x2="${sheetW}" y2="${y * h}"/>`;
-  }
-
-  // Draw cells
-  for (let col = 0; col < cols; col++) {
-    for (let row = 0; row < rows; row++) {
-      const x = col * w;
-      const y = row * h;
-      const anim = ANIMATIONS[col];
-
-      // Cell background
-      svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="white" stroke="#ccc" stroke-width="0.5"/>`;
-
-      // Draw stick figure
-      svg += drawStickFigure(x, y, w, h, color, anim.name);
-
-      // Label
-      svg += `<text x="${x + 2}" y="${y + h - 2}">${anim.name}</text>`;
+function generateSheet(w, h, color) {
+  const sheetW = FRAMES * w;
+  const sheetH = POSES.length * h;
+  let svg = `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetW}" height="${sheetH}" viewBox="0 0 ${sheetW} ${sheetH}">\n`;
+  for (let row = 0; row < POSES.length; row++) {
+    for (let col = 0; col < FRAMES; col++) {
+      svg += drawFigure(col * w, row * h, w, h, color, POSES[row], col);
     }
   }
-
-  svg += `\n</svg>`;
+  svg += `\n</svg>\n`;
   return svg;
 }
 
-// Create public/assets directory if needed
-if (!fs.existsSync(ASSETS_DIR)) {
-  fs.mkdirSync(ASSETS_DIR, { recursive: true });
-}
+if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
 
-// Generate all spritesheets
-console.log("Generating placeholder pixel-art spritesheets...\n");
-
+console.log("Generating placeholder stick-figure spritesheets...\n");
 for (const size of SIZES) {
   for (const tier of TIERS) {
-    const filename = `${size.name}-${tier.name}.svg`;
-    const filepath = path.join(ASSETS_DIR, filename);
-    const svg = generateSpritesheet(size.name, size.w, size.h, tier.color, tier.name);
-
-    fs.writeFileSync(filepath, svg, "utf-8");
-    console.log(`✓ ${filename} (${size.w}×${size.h}px, ${tier.desc})`);
+    const file = `${size.name}-${tier.name}.svg`;
+    fs.writeFileSync(path.join(ASSETS_DIR, file), generateSheet(size.w, size.h, tier.color), "utf-8");
+    console.log(`  ${file}  (${FRAMES * size.w}x${POSES.length * size.h})`);
   }
 }
-
-console.log("\n✅ Spritesheets generated in public/assets/");
-console.log("\nNext steps:");
-console.log("1. Open each .svg file in Inkscape, Illustrator, or a browser");
-console.log("2. Paint over the stick figures with your character art");
-console.log("3. Export each as PNG (same filename, .png extension)");
-console.log("4. Code will load the PNG versions automatically\n");
+console.log("\nDone. Rows = poses (idle/walk/jump/interact), cols = 4 frames.");

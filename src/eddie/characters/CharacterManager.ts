@@ -20,7 +20,6 @@ export class CharacterManager {
   private characters: Map<number, Character> = new Map();
   private nextId = 0;
   private resolveCell: (measure: number) => DOMRect | null;
-  private groundY: number = 0;
 
   // Listeners
   private offScored?: () => void;
@@ -39,10 +38,13 @@ export class CharacterManager {
     this.container.style.zIndex = "6";
     this.container.style.overflow = "hidden";
     config.hudParent.appendChild(this.container);
+  }
 
-    // Estimate ground Y (below grid, or in grid footer area)
-    // For now, a fixed reasonable value; could be tuned later
-    this.groundY = 500;
+  /** Ground line: near the bottom of the play area, derived live so it tracks
+   *  the viewport on any screen instead of a hardcoded pixel. */
+  private groundY(): number {
+    const h = this.container.clientHeight || window.innerHeight;
+    return h - 90;
   }
 
   /** Mount: subscribe to events. */
@@ -94,14 +96,17 @@ export class CharacterManager {
     startX: number,
     spawnY: number,
   ): Promise<void> {
-    // Load sprite sheet
+    // Land somewhere along the ground near the diamond's column so a crowd
+    // reads instead of every character stacking on one pixel.
+    const landX = startX + (Math.random() - 0.5) * 80;
+
+    // Load sprite sheet. On failure the character still spawns and renders its
+    // solid colored-box fallback — so a missing/404 asset never hides the crowd.
     const spriteId: SpriteSheetId = `${size}-${quality}`;
     const spriteSheet = await loadSpriteSheet(spriteId).catch((err) => {
-      console.warn(err);
+      console.warn(`[characters] sprite "${spriteId}" failed to load, using box fallback:`, err);
       return null;
     });
-
-    if (!spriteSheet) return; // Failed to load sprite
 
     // Create character
     const char = new Character({
@@ -109,9 +114,9 @@ export class CharacterManager {
       size,
       tier,
       quality,
-      startX,
+      startX: landX,
       spawnY,
-      groundY: this.groundY,
+      groundY: this.groundY(),
       spriteSheet,
     });
 
