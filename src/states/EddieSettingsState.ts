@@ -50,8 +50,8 @@ const BASS_VARIANTS: EddieBassVariant[] = [
 
 // Short, human-readable names for the chosen-sound indicator window.
 const BEAT_NAMES: Record<EddieBeatVariant, string> = {
-  "option-1": "LinnDrum",
-  "option-2": "Swing DMX",
+  "option-1": "80s R&B",
+  "option-2": "Boogie",
   "option-3": "808 Boom-bap",
   "option-4": "Shuffle",
   "option-5": "Disco",
@@ -108,7 +108,8 @@ export class EddieSettingsState implements GameState {
   private bpmValueEl: HTMLElement | null = null;
   private bassValueEl: HTMLElement | null = null;
   private bassNoteEls: HTMLElement[] = [];
-  private soundValueEl: HTMLElement | null = null;
+  private drumsValueEl: HTMLElement | null = null;
+  private bassVoiceValueEl: HTMLElement | null = null;
   private playMount: HTMLDivElement | null = null;
 
   // Audio + signal chain (one Conductor parked in preroll).
@@ -521,13 +522,18 @@ export class EddieSettingsState implements GameState {
           <label class="eddie-settings-radio"><input type="radio" name="eddie-mode" value="minor"${this.keyMode === "minor" ? " checked" : ""}><span>Minor</span></label>
         </div>
         <div class="eddie-settings-row eddie-hide-on-gate">
-          <span class="eddie-settings-label">BASS</span>
+          <span class="eddie-settings-label">CHORDS</span>
           <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
         </div>
         <div class="eddie-settings-row eddie-hide-on-gate">
-          <span class="eddie-settings-label">SOUND</span>
-          <span class="eddie-settings-value eddie-sound-window" data-field="sound" title="Randomly chosen drum kit + bass voice">${this.soundIndicatorHtml()}</span>
-          <button class="eddie-settings-btn eddie-reroll-btn" data-act="reroll" type="button" title="Reroll drums + bass">&#8635;</button>
+          <span class="eddie-settings-label">DRUMS</span>
+          <span class="eddie-settings-value eddie-sound-window" data-field="drums">${BEAT_NAMES[this.beatVariant]}</span>
+          <button class="eddie-settings-btn eddie-reroll-btn" data-act="reroll-drums" type="button" title="Reroll drums">&#8635;</button>
+        </div>
+        <div class="eddie-settings-row eddie-hide-on-gate">
+          <span class="eddie-settings-label">BASS</span>
+          <span class="eddie-settings-value eddie-sound-window" data-field="bassvoice">${BASS_NAMES[this.bassVariant]}</span>
+          <button class="eddie-settings-btn eddie-reroll-btn" data-act="reroll-bass" type="button" title="Reroll bass">&#8635;</button>
         </div>
         <div class="eddie-settings-row eddie-sync-row eddie-hide-on-gate">
           <button class="eddie-sync-btn" type="button">RESYNC</button>
@@ -547,7 +553,8 @@ export class EddieSettingsState implements GameState {
     this.bpmValueEl = overlay.querySelector('[data-field="bpm"]');
     this.bassValueEl = overlay.querySelector('[data-field="bass"]');
     this.bassNoteEls = [...overlay.querySelectorAll<HTMLElement>(".eddie-bass-note")];
-    this.soundValueEl = overlay.querySelector('[data-field="sound"]');
+    this.drumsValueEl = overlay.querySelector('[data-field="drums"]');
+    this.bassVoiceValueEl = overlay.querySelector('[data-field="bassvoice"]');
 
     overlay.querySelectorAll<HTMLButtonElement>(".eddie-settings-btn").forEach((btn) => {
       btn.addEventListener("click", () => this.onAction(btn.getAttribute("data-act")));
@@ -618,14 +625,6 @@ export class EddieSettingsState implements GameState {
     ).join("");
   }
 
-  /** Chosen-sound indicator: the randomly selected drum kit + bass voice. */
-  private soundIndicatorHtml(): string {
-    return (
-      `<span class="eddie-sound-tag">DRUMS <b>${BEAT_NAMES[this.beatVariant]}</b></span>` +
-      `<span class="eddie-bass-sep">·</span>` +
-      `<span class="eddie-sound-tag">BASS <b>${BASS_NAMES[this.bassVariant]}</b></span>`
-    );
-  }
 
   /** Bass window: one chip per measure downbeat root, highlightable in time. */
   private bassWindowHtml(): string {
@@ -680,11 +679,19 @@ export class EddieSettingsState implements GameState {
       case "bpm-up":
         this.bpm = Math.min(MAX_BPM, this.bpm + BPM_STEP);
         break;
-      case "reroll":
-        // Re-randomize the drum + bass voices (and the bassline), keeping the
-        // current key + tempo, and rebuild the live audition. Same path as a key
-        // selection, minus the key change.
-        this.onKeySelected();
+      case "reroll-drums":
+        // Re-randomize only the drum voice; keep the bass voice, bassline, key
+        // and tempo, and rebuild the live audition.
+        this.beatVariant = BEAT_VARIANTS[Math.floor(Math.random() * BEAT_VARIANTS.length)];
+        this.rebuildAudio();
+        this.refreshLabels();
+        return;
+      case "reroll-bass":
+        // Re-randomize only the bass voice; keep the drum voice, bassline, key
+        // and tempo.
+        this.bassVariant = BASS_VARIANTS[Math.floor(Math.random() * BASS_VARIANTS.length)];
+        this.rebuildAudio();
+        this.refreshLabels();
         return;
       default:
         return;
@@ -714,7 +721,8 @@ export class EddieSettingsState implements GameState {
       this.bassNoteEls = [...this.bassValueEl.querySelectorAll<HTMLElement>(".eddie-bass-note")];
     }
     // Refresh the chosen-sound indicator (drum kit + bass voice).
-    if (this.soundValueEl) this.soundValueEl.innerHTML = this.soundIndicatorHtml();
+    if (this.drumsValueEl) this.drumsValueEl.textContent = BEAT_NAMES[this.beatVariant];
+    if (this.bassVoiceValueEl) this.bassVoiceValueEl.textContent = BASS_NAMES[this.bassVariant];
   }
 
   // ------------------------------------------------------------------------
