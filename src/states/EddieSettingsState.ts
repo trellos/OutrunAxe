@@ -176,12 +176,24 @@ export class EddieSettingsState implements GameState {
     this.overlay?.classList.add("eddie-cal-gate");
     this.setCalPrompt("Play quarter notes when you're ready");
     this.setCalFill(0);
+    this.applyAudioRouting();
   }
 
   /** Leave the gate and reveal the full settings UI. */
   private exitGate() {
     this.calGate = false;
     this.overlay?.classList.remove("eddie-cal-gate");
+    this.applyAudioRouting();
+  }
+
+  /** Route audio for the current phase of the screen:
+   *  - Calibration gate: play ONLY the Conductor's plain metronome (a clear
+   *    quarter pulse to tap against) and mute the random audition groove.
+   *  - Normal audition: mute the Conductor's combat drums (they would double the
+   *    EddieBeat) and play the EddieAudioRig. */
+  private applyAudioRouting() {
+    this.conductor?.setMuted(!this.calGate);
+    this.audio?.setMuted(this.calGate);
   }
 
   /** A real onset during the gate — extend the quarter-note run; once N
@@ -329,9 +341,6 @@ export class EddieSettingsState implements GameState {
     // loops the beat + 4-measure bass like a metronome.
     this.conductor = new Conductor({ maxBpm: MAX_BPM });
     this.conductor.setBpm(this.bpm);
-    // Silence the Conductor's own combat drum pattern (the preroll menu-pulse
-    // metronome) — Eddie's beat comes from EddieBeat, so the two would double up.
-    this.conductor.setMuted(true);
 
     // DEBUG (?replay): render a recorded notes.json through the REAL plotPitch
     // onto the timeline, statically, so the exact rendering can be inspected
@@ -348,6 +357,7 @@ export class EddieSettingsState implements GameState {
       this.beatVariant, this.bassVariant, this.conductor, this.currentConfig(),
     ).rig;
     this.audio.start();
+    this.applyAudioRouting();
 
     void this.startSignalChain();
 
@@ -422,6 +432,7 @@ export class EddieSettingsState implements GameState {
       this.beatVariant, this.bassVariant, this.conductor, this.currentConfig(),
     ).rig;
     this.audio.start();
+    this.applyAudioRouting();
   }
 
   private currentConfig(): EddieConfig {
@@ -512,6 +523,9 @@ export class EddieSettingsState implements GameState {
         <div class="eddie-settings-row eddie-hide-on-gate">
           <span class="eddie-settings-label">BASS</span>
           <span class="eddie-settings-value eddie-bass-window" data-field="bass">${this.bassWindowHtml()}</span>
+        </div>
+        <div class="eddie-settings-row eddie-hide-on-gate">
+          <span class="eddie-settings-label">SOUND</span>
           <span class="eddie-settings-value eddie-sound-window" data-field="sound" title="Randomly chosen drum kit + bass voice">${this.soundIndicatorHtml()}</span>
           <button class="eddie-settings-btn eddie-reroll-btn" data-act="reroll" type="button" title="Reroll drums + bass">&#8635;</button>
         </div>
