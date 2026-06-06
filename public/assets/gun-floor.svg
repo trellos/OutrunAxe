@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16" viewBox="0 0 32 16">
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c3cad6"/>
+      <stop offset="0.55" stop-color="#7d8696"/>
+      <stop offset="1" stop-color="#3a4150"/>
+    </linearGradient>
+    <radialGradient id="muzzle" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff2c2"/>
+      <stop offset="0.45" stop-color="#ff8a1e"/>
+      <stop offset="1" stop-color="#ff3b2f" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- soft muzzle glow halo (behind everything, signals laser) -->
+  <circle cx="26.5" cy="6.1" r="5.2" fill="url(#muzzle)" opacity="0.85"/>
+
+  <!-- DARK OUTLINE pass: same shapes, drawn fat first so a chunky black edge
+       wraps the whole gun and it reads on any background. -->
+  <g fill="none" stroke="#05060a" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M7 7.2 L13 7.2 L11.5 13.5 L7.5 13.8 L6 8 Z"/>
+    <path d="M6 6 L23 5 L26 5.4 L26 7.2 L23 7.6 L15 7.6 L15 9 L13 9 L12.5 7.6 L6 7.8 Z"/>
+  </g>
+  <path d="M12.8 8 Q12.4 11.2 9.4 11" fill="none" stroke="#05060a" stroke-width="2.6" stroke-linecap="round"/>
+
+  <!-- BODY pass: metallic fill on top of the outline. -->
+  <path d="M7 7.2 L13 7.2 L11.5 13.5 L7.5 13.8 L6 8 Z" fill="#3a4150"/>
+  <path d="M6 6 L23 5 L26 5.4 L26 7.2 L23 7.6 L15 7.6 L15 9 L13 9 L12.5 7.6 L6 7.8 Z" fill="url(#metal)"/>
+  <!-- trigger-guard inner fill (re-stroke thinner in metal so it stays a loop) -->
+  <path d="M12.8 8 Q12.4 11.2 9.4 11" fill="none" stroke="#7d8696" stroke-width="1.1" stroke-linecap="round"/>
+
+  <!-- top highlight strip along the barrel/receiver -->
+  <path d="M7 5.6 L24 4.9 L26 5.3" fill="none" stroke="#c3cad6" stroke-width="1" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- grip checkering hint: two short dark ribs -->
+  <path d="M9 9 L8.4 12.2 M11 9 L10.4 12.4" stroke="#05060a" stroke-width="0.8" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- cyan energy cell accent on the receiver -->
+  <rect x="16.2" y="5.4" width="3.2" height="1.7" rx="0.5" fill="#19e0ff"/>
+  <rect x="16.2" y="5.4" width="3.2" height="1.7" rx="0.5" fill="none" stroke="#05060a" stroke-width="0.5"/>
+
+  <!-- glowing muzzle tip core -->
+  <circle cx="26" cy="6.1" r="1.9" fill="#ff3b2f"/>
+  <circle cx="26" cy="6.1" r="1.25" fill="#ff8a1e"/>
+  <circle cx="26" cy="6.1" r="0.6" fill="#fff2c2"/>
+</svg>

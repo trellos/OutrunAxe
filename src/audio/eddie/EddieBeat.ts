@@ -155,20 +155,27 @@ class DrumKit {
 
   clap(time: number, accent = 1) {
     const c = this.p.clap;
-    // Classic 80s clap = three quick noise bursts + a tail.
+    // Classic 80s clap = several quick noise bursts + a tail. BAND-passed around
+    // a low-mid centre (not high-passed) so it reads as a hand "pap" with body,
+    // rather than the bright top-end hiss that made it sound like a hi-hat.
     const offsets = [0, 0.01, 0.02, 0.035];
     for (let i = 0; i < offsets.length; i++) {
       const last = i === offsets.length - 1;
       const t = time + offsets[i];
       const dur = last ? c.decay : 0.02;
       const noise = this.noise(dur + 0.02);
-      const hp = this.ctx.createBiquadFilter();
-      hp.type = "highpass";
-      hp.frequency.value = c.hpHz;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = c.hpHz; // band centre (low-mid → clappy body)
+      bp.Q.value = 1.0;
+      // Tame any residual fizz above the band so it never reads as a hat.
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = Math.max(2200, c.hpHz * 2.2);
       const ng = this.ctx.createGain();
       ng.gain.setValueAtTime(c.gain * accent * (last ? 1 : 0.7), t);
       ng.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      noise.connect(hp).connect(ng).connect(this.out);
+      noise.connect(bp).connect(lp).connect(ng).connect(this.out);
       noise.start(t);
       noise.stop(t + dur + 0.02);
       this.track(noise);
@@ -320,7 +327,9 @@ const STYLE_5: BeatStyle = {
     kick: { startFreq: 140, endFreq: 46, pitchDecay: 0.08, ampDecay: 0.26, gain: 0.95, click: 0.2 },
     snare: { noiseGain: 0.5, noiseHpHz: 1700, noiseDecay: 0.15, toneFreq: 230, toneGain: 0.3, toneDecay: 0.09 },
     hat: { hpHz: 8500, gain: 0.26, decay: 0.035, openDecay: 0.18 },
-    clap: { hpHz: 1500, gain: 0.5, decay: 0.14 },
+    // Disco clap: lower band centre + a touch more body/tail so it reads as a
+    // clap, clearly distinct from the open-hat "tss".
+    clap: { hpHz: 1000, gain: 0.6, decay: 0.18 },
   },
   steps: [
     { voices: { kick: 1, hat: 0.4 } }, REST, OPEN(0.5), REST,

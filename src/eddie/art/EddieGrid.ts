@@ -66,11 +66,29 @@ export class EddieGrid {
   private chordToneLanesByMeasure = new Map<number, number[]>();
   private chordTonePcsByMeasure = new Map<number, PitchClass[]>();
 
+  // Notifies a consumer (the character rig) of each quarter's diamonds as they
+  // are drawn. One entry per diamond: `strong` is the note content (root/3rd/5th
+  // = strong focal point, other in-key = weak) and `quality` is that note's
+  // timing tightness 0..1. `subdiv` (= notes.length) sets the character size.
+  private onQuarterDiamonds?: (info: {
+    measure: number;
+    beat: number;
+    subdiv: number;
+    notes: Array<{ strong: boolean; quality: number }>;
+  }) => void;
+
   mount(ctx: {
     hudParent: HTMLElement;
     config: EddieConfig;
     juice: EventBus<EddieJuiceEvents>;
+    onQuarterDiamonds?: (info: {
+      measure: number;
+      beat: number;
+      subdiv: number;
+      notes: Array<{ strong: boolean; quality: number }>;
+    }) => void;
   }): void {
+    this.onQuarterDiamonds = ctx.onQuarterDiamonds;
     const root = document.createElement("div");
     root.className = "eddie-grid";
 
@@ -272,6 +290,7 @@ export class EddieGrid {
         bar.style.background = color;
         bar.style.boxShadow = `0 0 7px ${color},0 0 2px #fff`;
         bar.classList.toggle("eddie-note-off", !n.inKey);
+        bar.dataset.pc = pitchClass; // pitch may have resolved/changed
       }
       return;
     }
@@ -289,6 +308,7 @@ export class EddieGrid {
     // scoring overlay can grade this note's timing against the subdivision grid.
     bar.dataset.beat = String(Math.min(3, Math.floor(x * 4)));
     bar.dataset.bf = String(x);
+    bar.dataset.pc = pitchClass; // for the character rig's strong/weak grading
     layer.appendChild(bar);
     if (n.onsetId >= 0) this.noteBars.set(n.onsetId, { el: bar, startFrac: x });
 
@@ -383,6 +403,16 @@ export class EddieGrid {
     q /= bars.length;
 
     this.addQuarterDiamonds(layer, beat, subdiv, q);
+
+    // Per-diamond character data: each note's content (chord tone => strong) and
+    // its own timing tightness. One note per diamond (left→right ≈ play order).
+    const chordPcs = this.chordTonePcsByMeasure.get(measure) ?? [];
+    const notes = bars.slice(0, subdiv).map((el) => {
+      const pc = (el.dataset.pc ?? "") as PitchClass;
+      const bf = parseFloat(el.dataset.bf ?? "0");
+      return { strong: chordPcs.includes(pc), quality: timingQuality((bf * 4) % 1) };
+    });
+    this.onQuarterDiamonds?.({ measure, beat, subdiv, notes });
   }
 
   /** Fill a quarter-note region with a tall argyle diamond pattern. `subdiv`

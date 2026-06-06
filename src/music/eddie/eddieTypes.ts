@@ -157,4 +157,7 @@ export type EddieJuiceEvents = {
   /** A quarter scored — the grid turns the (in-key) note bars in that quarter
    *  green to show they earned points. measure: scored 0..15; beat: quarter 0..3. */
   eddieNoteScored: { measure: number; beat: number };
+  /** The performance reached its end (Conductor phase -> "done"). Lets art flush
+   *  the final row of characters and settle into the finale. */
+  eddieFinale: { audioTime: number };
 };
