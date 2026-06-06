@@ -646,12 +646,12 @@ export class InfiniteEddieState implements GameState {
     const row = document.createElement("div");
     row.className = "eddie-endrow";
 
-    // INFINITE EDDIE — play another round (if the launcher supports it).
+    // SCORE RUN — play another round (if the launcher supports it).
     if (this.onReplay) {
       const again = document.createElement("button");
       again.className = "eddie-title-btn eddie-again-btn";
       again.type = "button";
-      again.textContent = "INFINITE EDDIE";
+      again.textContent = "SCORE RUN";
       again.addEventListener("click", () => this.onReplay?.());
       row.appendChild(again);
     }
@@ -815,10 +815,15 @@ export class InfiniteEddieState implements GameState {
       magnitude: ev.multiplier * SHAKE_PER_MULTIPLIER,
       audioTime: ev.audioTime,
     });
+    // Particles fly OUT of the note bars that earned the points: resolve their
+    // on-screen centre from the grid for this scored quarter. Fall back to the
+    // scorer's hint, then screen-centre, if the grid can't resolve it.
+    const origin =
+      (ev.measure >= 0 ? this.art?.resolveNoteOrigin(ev.measure, ev.beat) : null) ??
+      ev.originHint ??
+      { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     this.juice.emit("eddieParticles", {
-      // Art may recompute from (measure,beat); originHint is a convenience and
-      // is null here, so let Art resolve the grid cell itself.
-      from: ev.originHint ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+      from: origin,
       count: Math.max(1, Math.round(ev.multiplier * PARTICLES_PER_MULTIPLIER)),
       color: PARTICLE_COLOR,
       audioTime: ev.audioTime,

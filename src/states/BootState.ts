@@ -70,8 +70,7 @@ export class BootState implements GameState {
     this.overlay.className = "outrun-boot";
     this.overlay.innerHTML = `
       <div class="boot-card">
-        <div class="boot-title">OUTRUN AXE</div>
-        <div class="boot-tag">guitar solo &middot; for your life</div>
+        <div class="boot-title">INFINITE EDDIE</div>
         <ul class="boot-help">
           <li>Allow the mic when prompted &mdash; or use keyboard piano (Z S X D C V G B H N J M)</li>
           <li>Pick your outfit and guitar in the next screen.</li>
@@ -83,7 +82,7 @@ export class BootState implements GameState {
           ${bestRows}
         </div>
         <div class="boot-modes">
-          <button class="boot-play boot-play-eddie" data-mode="eddie">INFINITE EDDIE</button>
+          <button class="boot-play boot-play-eddie" data-mode="eddie">SCORE RUN</button>
           <button class="boot-play boot-play-outrun" data-mode="outrun">OUTRUN</button>
         </div>
       </div>

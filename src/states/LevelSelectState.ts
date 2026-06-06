@@ -113,7 +113,7 @@ export class LevelSelectState implements GameState {
       '<div class="levelselect-cards">' +
       cardsHtml +
       "</div>" +
-      '<button class="levelselect-eddie" data-eddie="1">INFINITE EDDIE</button>' +
+      '<button class="levelselect-eddie" data-eddie="1">SCORE RUN</button>' +
       "</div>";
 
     this.hudParent.appendChild(this.overlay);
