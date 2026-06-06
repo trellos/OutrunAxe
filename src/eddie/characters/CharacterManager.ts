@@ -1,12 +1,21 @@
-// CharacterManager — spawn, update, and render characters.
+// CharacterManager — spawn, update, and render the Infinite Eddie crowd.
 //
-// Subscribes to juice events (eddieNoteScored), spawns characters,
-// manages animation and AI, renders to a container div.
+// Each scored quarter's diamonds spawn entities (one per diamond), chosen by the
+// quarter's rhythmic SUBDIVISION and sized by each note's ACCURACY:
+//   quarter / 8th (subdiv 1-2) -> dudes
+//   triplet      (subdiv 3)    -> guns   (dudes bump into them and pick them up)
+//   16th         (subdiv 4)    -> rockets (dudes bump them; they fire skyward)
+//
+// The manager owns every pool, runs the dude<->gun and dude<->rocket collisions,
+// and routes gun/rocket fire at a TargetProvider (today the sky; later: enemies).
 
 import type { EventBus } from "../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../music/eddie/eddieTypes";
 import { Character, type CharacterSize, type CharacterTier, type CharacterQuality } from "./Character";
-import { loadSpriteSheet, type SpriteSheetId } from "./SpriteLoader";
+import { Gun } from "./Gun";
+import { Rocket } from "./Rocket";
+import { Beam, Spark, Explosion, type Effect } from "./effects";
+import { TargetProvider } from "./TargetProvider";
 import { InteractionDirector } from "./InteractionDirector";
 
 interface CharacterManagerConfig {
@@ -16,18 +25,25 @@ interface CharacterManagerConfig {
   beatDuration: number; // seconds per beat (60 / bpm) — drives the perch stagger
 }
 
+const PICKUP_RANGE = 16; // px between a dude and a floor gun to pick it up
+const TRIGGER_RANGE = 20; // px between a dude and a grounded rocket to set it off
+
 export class CharacterManager {
   private juice: EventBus<EddieJuiceEvents>;
   private container: HTMLDivElement;
   private characters: Map<number, Character> = new Map();
+  private guns: Gun[] = [];
+  private rockets: Rocket[] = [];
+  private effects: Effect[] = [];
   private nextId = 0;
   private resolveCell: (measure: number) => DOMRect | null;
   private beatDuration: number;
   private director: InteractionDirector;
+  private targets: TargetProvider;
 
   // Scored quarters (with their per-diamond note content + timing) buffered per
-  // grid row until the row finishes.
-  private pendingByRow = new Map<
+  // MEASURE until that measure finishes, so the crowd spawns every measure.
+  private pendingByMeasure = new Map<
     number,
     Array<{
       measure: number;
@@ -46,6 +62,7 @@ export class CharacterManager {
     this.resolveCell = config.resolveCell;
     this.beatDuration = config.beatDuration;
     this.director = new InteractionDirector(() => this.characters.values());
+    this.targets = new TargetProvider(config.resolveCell);
 
     // Create container
     this.container = document.createElement("div");
@@ -59,63 +76,63 @@ export class CharacterManager {
   }
 
   /** Feet baseline: just below the bottom row of the grid, derived live from the
-   *  grid cells so the crowd hugs the lowest timeline on any screen. The +44
-   *  clears the tallest (big = 32px) figure plus a small gap below the grid. */
+   *  grid cells so the crowd hugs the lowest timeline on any screen. The +76
+   *  clears the tallest dude (big = 64px) plus a small gap below the grid. */
   private groundY(): number {
     let gridBottom = 0;
     for (let m = 12; m <= 15; m++) {
       const r = this.resolveCell(m);
       if (r) gridBottom = Math.max(gridBottom, r.bottom);
     }
-    if (gridBottom > 0) return gridBottom + 44;
+    if (gridBottom > 0) return gridBottom + 76;
     const h = this.container.clientHeight || window.innerHeight;
     return h - 90;
   }
 
   /** Mount: subscribe to events. */
   mount(): void {
-    // Final row never sees a following row-boundary; the finale releases it.
-    this.offFinale = this.juice.on("eddieFinale", () => this.flushAllRows());
+    // The final measure never sees a following measure-boundary; finale releases it.
+    this.offFinale = this.juice.on("eddieFinale", () => this.flushAll());
   }
 
-  /** Grid callback: a quarter's diamonds were drawn. Buffer it by grid row; the
-   *  whole row's crowd is released together once the row's final measure
-   *  finishes (see setActiveMeasure). One `notes` entry per diamond carries that
-   *  note's content (strong = chord tone) and timing tightness. */
+  /** Grid callback: a quarter's diamonds were drawn. Buffer it by measure; the
+   *  measure's crowd is released once that measure finishes (see
+   *  setActiveMeasure). One `notes` entry per diamond carries that note's
+   *  content (strong = chord tone) and timing tightness. */
   onQuarterDiamonds(info: {
     measure: number;
     beat: number;
     subdiv: number;
     notes: Array<{ strong: boolean; quality: number }>;
   }): void {
-    const row = Math.floor(info.measure / 4);
-    let list = this.pendingByRow.get(row);
-    if (!list) this.pendingByRow.set(row, (list = []));
+    let list = this.pendingByMeasure.get(info.measure);
+    if (!list) this.pendingByMeasure.set(info.measure, (list = []));
     list.push(info);
   }
 
-  /** Called as the active measure advances. Releases every row whose final
-   *  measure has now fully elapsed (rows 0..N-2; the last row waits for finale). */
+  /** Called as the active measure advances. Releases every measure that has now
+   *  fully elapsed (the active measure moved past it); the last measure waits
+   *  for the finale. */
   setActiveMeasure(measure: number): void {
     if (measure < 0) return; // intro/count-in rows
-    for (const row of [...this.pendingByRow.keys()].sort((a, b) => a - b)) {
-      if ((row + 1) * 4 <= measure) this.flushRow(row);
+    for (const m of [...this.pendingByMeasure.keys()].sort((a, b) => a - b)) {
+      if (m < measure) this.flushMeasure(m);
     }
   }
 
-  /** Release all remaining buffered rows (song end). */
-  private flushAllRows(): void {
-    for (const row of [...this.pendingByRow.keys()].sort((a, b) => a - b)) {
-      this.flushRow(row);
+  /** Release all remaining buffered measures (song end). */
+  private flushAll(): void {
+    for (const m of [...this.pendingByMeasure.keys()].sort((a, b) => a - b)) {
+      this.flushMeasure(m);
     }
   }
 
-  /** Map a quarter's subdivision (1..4 diamonds) to character size.
-   *  quarter/eighth → big, triplet → medium, sixteenth → small. */
-  private sizeForSubdiv(subdiv: number): CharacterSize {
-    if (subdiv >= 4) return "small";
-    if (subdiv === 3) return "medium";
-    return "big";
+  /** Map note ACCURACY (timing tier) to figure size. Better timing → bigger.
+   *  perfect → big, normal → medium, loose → small. */
+  private sizeForAccuracy(quality: CharacterQuality): CharacterSize {
+    if (quality === "perfect") return "big";
+    if (quality === "normal") return "medium";
+    return "small";
   }
 
   /** Map timing tightness (0 loose .. 1 dead-on) to a quality tier. Perfect is
@@ -126,21 +143,17 @@ export class CharacterManager {
     return "loose";
   }
 
-  /** Spawn the whole buffered row at once — ONE character per diamond. Each
-   *  character gets its own random 0..4 beat perch so the row falls staggered
-   *  across four beats. */
-  private flushRow(row: number): void {
-    const quarters = this.pendingByRow.get(row);
-    this.pendingByRow.delete(row);
+  /** Spawn a whole buffered measure at once — ONE entity per diamond. The
+   *  quarter's subdivision picks WHAT spawns; each note's accuracy picks its
+   *  size. Each gets its own random perch so the measure falls staggered. */
+  private flushMeasure(measure: number): void {
+    const quarters = this.pendingByMeasure.get(measure);
+    this.pendingByMeasure.delete(measure);
     if (!quarters) return;
 
     for (const { measure, beat, subdiv, notes } of quarters) {
-      // Size comes from the rhythm (subdivision); tier + quality come from the
-      // note that drew each diamond.
-      const size = this.sizeForSubdiv(subdiv);
-
       // The quarter occupies column `beat` of the 4-column measure cell; its
-      // `subdiv` diamonds span that column. Spawn one character over each.
+      // `subdiv` diamonds span that column. Spawn one entity over each.
       const cellRect = this.resolveCell(measure);
       const quarterW = cellRect ? cellRect.width / 4 : 60;
       const quarterLeft = cellRect ? cellRect.left + beat * quarterW : 250;
@@ -149,74 +162,157 @@ export class CharacterManager {
       for (let i = 0; i < subdiv; i++) {
         const diamondX = quarterLeft + ((i + 0.5) / subdiv) * quarterW;
         const note = notes[i] ?? notes[notes.length - 1];
+        const quality = this.qualityForTiming(note?.quality ?? 0);
+        const size = this.sizeForAccuracy(quality);
         const tier: CharacterTier = note?.strong ? "strong" : "weak";
-        const qualityTier = this.qualityForTiming(note?.quality ?? 0);
-        this.spawnCharacter(size, tier, qualityTier, diamondX, spawnY);
+
+        if (subdiv <= 2) this.spawnDude(size, tier, quality, diamondX, spawnY);
+        else if (subdiv === 3) this.spawnGun(quality, diamondX, spawnY);
+        else this.spawnRocket(quality, diamondX, spawnY);
       }
     }
   }
 
-  /** Spawn a single character. */
-  private async spawnCharacter(
+  /** Small landing jitter so neighbours don't perfectly overlap. */
+  private jitterX(x: number): number {
+    return x + (Math.random() - 0.5) * 14;
+  }
+
+  /** Random perch of 0..2 beats so a measure's entities wiggle then fall
+   *  staggered (kept short now that a whole measure spawns at once). */
+  private randomPerch(): number {
+    return Math.random() * 2 * this.beatDuration;
+  }
+
+  /** Spawn a dude (quarter/8th). */
+  private spawnDude(
     size: CharacterSize,
     tier: CharacterTier,
     quality: CharacterQuality,
     startX: number,
     spawnY: number,
-  ): Promise<void> {
-    // Small jitter so neighbours don't perfectly overlap, but each still lands
-    // under its own diamond.
-    const landX = startX + (Math.random() - 0.5) * 14;
-
-    // Load sprite sheet. On failure the character still spawns and renders its
-    // solid colored-box fallback — so a missing/404 asset never hides the crowd.
-    const spriteId: SpriteSheetId = `${size}-${quality}`;
-    const spriteSheet = await loadSpriteSheet(spriteId).catch((err) => {
-      console.warn(`[characters] sprite "${spriteId}" failed to load, using box fallback:`, err);
-      return null;
-    });
-
-    // Random perch of 0..4 beats so the row's characters wiggle on their
-    // diamonds and then fall at staggered times over four beats.
-    const perchDuration = Math.random() * 4 * this.beatDuration;
-
-    // Create character
+  ): void {
     const char = new Character({
       id: this.nextId++,
       size,
       tier,
       quality,
-      startX: landX,
+      startX: this.jitterX(startX),
       spawnY,
       groundY: this.groundY(),
-      perchDuration,
-      spriteSheet,
+      perchDuration: this.randomPerch(),
+      spriteBaseId: `${size}-${quality}`,
+      onFire: (origin) => this.fireLaser(origin),
     });
-
-    // Add to DOM and tracking
     this.container.appendChild(char.el);
     this.characters.set(char.id, char);
   }
 
-  /** Update all characters. Called each frame from art rig. */
+  /** Spawn a floor gun (triplet). */
+  private spawnGun(quality: CharacterQuality, startX: number, spawnY: number): void {
+    const gun = new Gun({
+      id: this.nextId++,
+      quality,
+      startX: this.jitterX(startX),
+      spawnY,
+      groundY: this.groundY(),
+      perchDuration: this.randomPerch(),
+    });
+    this.container.appendChild(gun.el);
+    this.guns.push(gun);
+  }
+
+  /** Spawn a rocket (16th). */
+  private spawnRocket(quality: CharacterQuality, startX: number, spawnY: number): void {
+    const variant = (1 + Math.floor(Math.random() * 3)) as 1 | 2 | 3;
+    const rocket = new Rocket({
+      id: this.nextId++,
+      quality,
+      variant,
+      startX: this.jitterX(startX),
+      spawnY,
+      groundY: this.groundY(),
+      perchDuration: this.randomPerch(),
+      onEmit: (x, y) => this.effects.push(new Spark(this.container, x, y)),
+      onExplode: (x, y, scale) => this.effects.push(new Explosion(this.container, x, y, scale)),
+    });
+    this.container.appendChild(rocket.el);
+    this.rockets.push(rocket);
+  }
+
+  /** A dude fired a held gun: shoot a laser from its hand to a sky target. */
+  private fireLaser(origin: { x: number; y: number }): void {
+    this.effects.push(new Beam(this.container, origin, this.targets.random()));
+  }
+
+  /** Update all entities + effects, then resolve pickups/triggers. */
   update(dt: number): void {
-    // Director first so it can claim/release characters, then each character
-    // animates (busy ones are driven by the director, the rest wander).
+    // Director first so it can claim/release characters (parties = idle layer),
+    // then each entity animates.
     this.director.update(dt);
-    for (const char of this.characters.values()) {
-      char.update(dt);
+    for (const char of this.characters.values()) char.update(dt);
+    for (const gun of this.guns) gun.update(dt);
+    for (const rocket of this.rockets) rocket.update(dt);
+
+    this.handleCollisions();
+
+    // Reap finished rockets.
+    for (let i = this.rockets.length - 1; i >= 0; i--) {
+      if (this.rockets[i].isDone) {
+        this.rockets[i].dispose();
+        this.rockets.splice(i, 1);
+      }
+    }
+    // Tick effects; each removes its own DOM when it returns done.
+    for (let i = this.effects.length - 1; i >= 0; i--) {
+      if (this.effects[i].update(dt)) this.effects.splice(i, 1);
     }
   }
 
-  /** Dispose: unsubscribe and clean up all characters. */
+  /** Dudes incidentally bump guns (pick up) and rockets (set off). Dudes never
+   *  aim for them — these only fire when a random wander happens to collide. */
+  private handleCollisions(): void {
+    // Gun pickups.
+    for (let gi = this.guns.length - 1; gi >= 0; gi--) {
+      const gun = this.guns[gi];
+      if (!gun.available) continue;
+      for (const c of this.characters.values()) {
+        if (!c.grounded || c.gunsHeld >= 2) continue;
+        if (Math.abs(c.x - gun.x) <= PICKUP_RANGE && c.pickupGun()) {
+          gun.markPickedUp();
+          gun.dispose();
+          this.guns.splice(gi, 1);
+          break;
+        }
+      }
+    }
+
+    // Rocket triggers.
+    for (const r of this.rockets) {
+      if (!r.armed) continue;
+      for (const c of this.characters.values()) {
+        if (!c.grounded) continue;
+        if (Math.abs(c.x - r.x) <= TRIGGER_RANGE) {
+          r.trigger(this.targets.random());
+          break;
+        }
+      }
+    }
+  }
+
+  /** Dispose: unsubscribe and clean up everything. */
   dispose(): void {
     this.offFinale?.();
     this.offIntensity?.();
-    this.pendingByRow.clear();
-    for (const char of this.characters.values()) {
-      char.dispose();
-    }
+    this.pendingByMeasure.clear();
+    for (const char of this.characters.values()) char.dispose();
     this.characters.clear();
+    for (const gun of this.guns) gun.dispose();
+    this.guns = [];
+    for (const rocket of this.rockets) rocket.dispose();
+    this.rockets = [];
+    for (const fx of this.effects) fx.dispose();
+    this.effects = [];
     this.container.remove();
   }
 }

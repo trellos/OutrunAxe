@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="36" viewBox="0 0 80 36" shape-rendering="geometricPrecision">
+    <g>
+      <path d="M 6.8 28.5 Q 10 35.5 13.2 28.5 Z" fill="#ff9326"/>
+      <path d="M 8.24 28.5 Q 10 33.5 11.76 28.5 Z" fill="#fff3b0"/>
+      <path d="M 4.8 23 L 1.6 32 L 4.8 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 15.2 23 L 18.4 32 L 15.2 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 10 2 Q 15.7 8 15.2 9 L 15.2 27 Q 10 30 4.8 27 L 4.8 9 Q 4.3 8 10 2 Z" fill="#f3f4f6" stroke="#27184a" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M 10 2 Q 15.7 8 15.2 9 L 4.8 9 Q 4.3 8 10 2 Z" fill="#e3342f"/>
+      <rect x="7.66 " y="10" width="1.82" height="16" rx="0.8" fill="#ffffff" opacity="0.5"/>
+      <circle cx="10" cy="16.2" r="2.8" fill="#27184a"/>
+      <circle cx="10" cy="16.2" r="2.1" fill="#3bc9ff"/>
+      <circle cx="9.37" cy="15.57" r="0.74" fill="#ffffff" opacity="0.85"/>
+    </g>
+    <g>
+      <path d="M 25.8 28.5 Q 30 38.5 34.2 28.5 Z" fill="#ff9326"/>
+      <path d="M 27.69 28.5 Q 30 36.5 32.31 28.5 Z" fill="#fff3b0"/>
+      <path d="M 24.8 23 L 21.6 32 L 24.8 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 35.2 23 L 38.4 32 L 35.2 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 30 2 Q 35.7 8 35.2 9 L 35.2 27 Q 30 30 24.8 27 L 24.8 9 Q 24.3 8 30 2 Z" fill="#f3f4f6" stroke="#27184a" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M 30 2 Q 35.7 8 35.2 9 L 24.8 9 Q 24.3 8 30 2 Z" fill="#e3342f"/>
+      <rect x="27.66 " y="10" width="1.82" height="16" rx="0.8" fill="#ffffff" opacity="0.5"/>
+      <circle cx="30" cy="16.2" r="2.8" fill="#27184a"/>
+      <circle cx="30" cy="16.2" r="2.1" fill="#3bc9ff"/>
+      <circle cx="29.37" cy="15.57" r="0.74" fill="#ffffff" opacity="0.85"/>
+    </g>
+    <g>
+      <path d="M 47.4 28.5 Q 50 34.5 52.6 28.5 Z" fill="#ff9326"/>
+      <path d="M 48.57 28.5 Q 50 32.5 51.43 28.5 Z" fill="#fff3b0"/>
+      <path d="M 44.8 23 L 41.6 32 L 44.8 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 55.2 23 L 58.4 32 L 55.2 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 50 2 Q 55.7 8 55.2 9 L 55.2 27 Q 50 30 44.8 27 L 44.8 9 Q 44.3 8 50 2 Z" fill="#f3f4f6" stroke="#27184a" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M 50 2 Q 55.7 8 55.2 9 L 44.8 9 Q 44.3 8 50 2 Z" fill="#e3342f"/>
+      <rect x="47.66 " y="10" width="1.82" height="16" rx="0.8" fill="#ffffff" opacity="0.5"/>
+      <circle cx="50" cy="16.2" r="2.8" fill="#27184a"/>
+      <circle cx="50" cy="16.2" r="2.1" fill="#3bc9ff"/>
+      <circle cx="49.37" cy="15.57" r="0.74" fill="#ffffff" opacity="0.85"/>
+    </g>
+    <g>
+      <path d="M 66.2 28.5 Q 70 37.5 73.8 28.5 Z" fill="#ff9326"/>
+      <path d="M 67.91 28.5 Q 70 35.5 72.09 28.5 Z" fill="#fff3b0"/>
+      <path d="M 64.8 23 L 61.6 32 L 64.8 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 75.2 23 L 78.4 32 L 75.2 27 Z" fill="#f6ad2b" stroke="#27184a" stroke-width="0.8" stroke-linejoin="round"/>
+      <path d="M 70 2 Q 75.7 8 75.2 9 L 75.2 27 Q 70 30 64.8 27 L 64.8 9 Q 64.3 8 70 2 Z" fill="#f3f4f6" stroke="#27184a" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M 70 2 Q 75.7 8 75.2 9 L 64.8 9 Q 64.3 8 70 2 Z" fill="#e3342f"/>
+      <rect x="67.66 " y="10" width="1.82" height="16" rx="0.8" fill="#ffffff" opacity="0.5"/>
+      <circle cx="70" cy="16.2" r="2.8" fill="#27184a"/>
+      <circle cx="70" cy="16.2" r="2.1" fill="#3bc9ff"/>
+      <circle cx="69.37" cy="15.57" r="0.74" fill="#ffffff" opacity="0.85"/>
+    </g>
+</svg>

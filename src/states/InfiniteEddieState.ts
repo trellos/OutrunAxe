@@ -47,8 +47,9 @@ const AUDIO_VARIANT = "option-1" as const;
 // "Phosphor Comets" = index 4; fire default is option-3 (set in EddieFire).
 const FX_INDEX = 4;
 
-// Conductor sizing for Eddie (GDD §3): 4-measure intro + 16 scored measures.
-const COUNT_IN_BEATS = 16;
+// Conductor sizing for Eddie (GDD §3): 1-measure count-in + 16 scored measures.
+const COUNT_IN_BEATS = 4;
+const INTRO_MEASURES = COUNT_IN_BEATS / 4; // count-in measures (intro rows)
 const PLAY_MEASURES = 16;
 const MAX_BPM = 200;
 
@@ -455,7 +456,7 @@ export class InfiniteEddieState implements GameState {
     }
     if (this.conductor.currentPhase === "countIn" && this.introStart >= 0) {
       const introMeasure = Math.floor((time - this.introStart) / dur);
-      if (introMeasure < 0 || introMeasure > 3) return null;
+      if (introMeasure < 0 || introMeasure >= INTRO_MEASURES) return null;
       return { measure: -(introMeasure + 1), start: this.introStart + introMeasure * dur };
     }
     return null;

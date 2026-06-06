@@ -1,23 +1,30 @@
-// Character — a party character spawned from diamonds.
+// Character — a party character (a "dude") spawned from quarter/8th diamonds.
 //
 // Represents a single animated character on the ground plane. Handles state,
-// animation frame management, movement, and rendering via DOM.
+// animation frame management, movement, AI, and rendering via DOM. Dudes can
+// pick up guns (one per hand) and occasionally fire a laser into the sky.
+
+import { loadSpriteSheet } from "./SpriteLoader";
 
 export type CharacterSize = "big" | "medium" | "small";
 export type CharacterTier = "strong" | "weak";
 export type CharacterQuality = "loose" | "normal" | "perfect";
 export type CharacterPose = "idle" | "walk" | "jump" | "interact";
 
+/** Which gun-variant sheet matches the current hands. */
+type GunVariant = "" | "-gunL" | "-gunR" | "-gunLR";
+
 export interface CharacterConfig {
   id: number;
-  size: CharacterSize;          // big (8th), medium (triplet), small (16th)
+  size: CharacterSize;          // big (perfect), medium (normal), small (loose)
   tier: CharacterTier;          // strong (root/3/5) or weak (other)
   quality: CharacterQuality;    // loose, normal, perfect (timing)
   startX: number;               // ground position (pixel)
   spawnY: number;               // diamond Y (for jump arc)
   groundY: number;              // landed Y position
   perchDuration: number;        // seconds to glow+wiggle on the diamond before falling
-  spriteSheet: HTMLImageElement | SVGImageElement | null; // loaded sprite (null → box fallback)
+  spriteBaseId: string;         // e.g. "big-perfect"; gun variants append a suffix
+  onFire?: (origin: { x: number; y: number }) => void; // request a laser shot
 }
 
 export class Character {
@@ -41,9 +48,19 @@ export class Character {
   private pose: CharacterPose = "idle";
   private frameNum = 0;
   private poseTime = 0;         // elapsed time in current pose
-  private spriteSheet: HTMLImageElement | SVGImageElement | null;
   private frameCounts = { idle: 4, walk: 4, jump: 4, interact: 4 }; // frames per pose (one sheet column each)
   private frameRate = 8;        // fps for animation
+
+  // Sprite sheets, keyed by gun variant; loaded lazily and hot-swapped when a
+  // gun is picked up. A missing/failed sheet falls back to a colored box.
+  private spriteBaseId: string;
+  private sheets = new Map<GunVariant, HTMLImageElement | SVGImageElement | null>();
+  private pending = new Set<GunVariant>();
+
+  // Guns: one per hand, max two. `hands` tracks which hands are armed.
+  private hands = { left: false, right: false };
+  private fireCooldown: number;
+  private onFire?: (origin: { x: number; y: number }) => void;
 
   // Wander/milling (basic life until claimed by an interaction)
   private homeX: number;        // anchor to mill around
@@ -71,7 +88,9 @@ export class Character {
     this.groundY = config.groundY;
     this.y = this.jumpStartY;
     this.perchTimer = config.perchDuration;
-    this.spriteSheet = config.spriteSheet;
+    this.spriteBaseId = config.spriteBaseId;
+    this.onFire = config.onFire;
+    this.fireCooldown = this.randomFireDelay();
 
     // Create DOM element
     this.el = document.createElement("div");
@@ -81,18 +100,68 @@ export class Character {
     this.el.style.height = this.getSpriteSize().h + "px";
     // Rotate/scale about the feet so the perch wiggle reads like standing.
     this.el.style.transformOrigin = "50% 100%";
+
+    this.ensureSheet(""); // load the gunless base sheet
     this.updateDOM();
+  }
+
+  /** Lazily load the sheet for a gun variant and cache it (null on failure). */
+  private ensureSheet(variant: GunVariant): void {
+    if (this.sheets.has(variant) || this.pending.has(variant)) return;
+    this.pending.add(variant);
+    loadSpriteSheet(`${this.spriteBaseId}${variant}`)
+      .then((img) => this.sheets.set(variant, img))
+      .catch(() => this.sheets.set(variant, null))
+      .finally(() => this.pending.delete(variant));
+  }
+
+  /** The gun variant matching the current hands. */
+  private gunVariant(): GunVariant {
+    if (this.hands.left && this.hands.right) return "-gunLR";
+    if (this.hands.left) return "-gunL";
+    if (this.hands.right) return "-gunR";
+    return "";
+  }
+
+  private currentSheet(): HTMLImageElement | SVGImageElement | null {
+    return this.sheets.get(this.gunVariant()) ?? null;
+  }
+
+  /** Number of guns currently held (0..2). */
+  get gunsHeld(): number {
+    return (this.hands.left ? 1 : 0) + (this.hands.right ? 1 : 0);
+  }
+
+  /** Try to take a gun into a free hand. First gun goes to a random hand, the
+   *  second fills the other. Returns true if it was taken. */
+  pickupGun(): boolean {
+    if (this.gunsHeld >= 2) return false;
+    if (!this.hands.left && !this.hands.right) {
+      // First gun: random hand.
+      if (Math.random() < 0.5) this.hands.left = true;
+      else this.hands.right = true;
+    } else if (!this.hands.left) {
+      this.hands.left = true;
+    } else {
+      this.hands.right = true;
+    }
+    this.ensureSheet(this.gunVariant()); // preload the armed sheet
+    return true;
+  }
+
+  private randomFireDelay(): number {
+    return 1.5 + Math.random() * 3;
   }
 
   /** Size in pixels for this character. */
   getSpriteSize(): { w: number; h: number } {
     switch (this.size) {
       case "big":
-        return { w: 32, h: 32 };
+        return { w: 64, h: 64 };
       case "medium":
-        return { w: 24, h: 24 };
+        return { w: 48, h: 48 };
       case "small":
-        return { w: 16, h: 16 };
+        return { w: 32, h: 32 };
     }
   }
 
@@ -147,6 +216,15 @@ export class Character {
       this.wander(dt);
     }
 
+    // Occasionally fire a held gun into the sky (even mid-party).
+    if (this.phase === "ground" && this.gunsHeld > 0 && this.onFire) {
+      this.fireCooldown -= dt;
+      if (this.fireCooldown <= 0) {
+        this.fireCooldown = this.randomFireDelay();
+        this.onFire(this.gunHandOrigin());
+      }
+    }
+
     // Animation frame cycling
     this.poseTime += dt;
     const frameDuration = 1 / this.frameRate;
@@ -159,27 +237,51 @@ export class Character {
     this.updateDOM();
   }
 
-  /** Basic wander: stroll to a nearby spot, pause, repeat. Perfect-tier moves
-   *  faster. Replaced by goal-driven interaction AI in a later phase. */
+  /** World position of a gun-holding hand (for the laser origin). Prefers a
+   *  random armed hand. */
+  private gunHandOrigin(): { x: number; y: number } {
+    const { w, h } = this.getSpriteSize();
+    // Choose an armed hand.
+    let right: boolean;
+    if (this.hands.left && this.hands.right) right = Math.random() < 0.5;
+    else right = this.hands.right;
+    const hx = this.x + (right ? 1 : -1) * w * 0.3;
+    const hy = this.y - this.elevation - h * 0.55; // ~chest height
+    return { x: hx, y: hy };
+  }
+
+  /** Continuous wander: stroll to a nearby spot, then almost always pick a fresh
+   *  spot immediately so dudes keep moving and never park (e.g. on top of a gun).
+   *  Only occasionally take a short breather. Perfect-tier moves faster. Dudes
+   *  wander randomly — they do NOT seek out, target, or stop for guns/rockets;
+   *  picking a gun up happens in passing and never touches this movement state. */
   private wander(dt: number): void {
     const speed = this.quality === "perfect" ? 34 : this.quality === "normal" ? 26 : 20;
     if (this.wanderTarget === null) {
+      // Resting (rare): count down a short breather, then roam again.
       this.wanderTimer -= dt;
       this.setPose("idle");
       if (this.wanderTimer <= 0) {
-        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 120;
+        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 160;
       }
-    } else {
-      const step = speed * dt;
-      if (Math.abs(this.wanderTarget - this.x) <= step) {
-        this.x = this.wanderTarget;
+      return;
+    }
+    const step = speed * dt;
+    if (Math.abs(this.wanderTarget - this.x) <= step) {
+      this.x = this.wanderTarget;
+      // Keep moving: 85% of the time head straight for a new spot (no halt);
+      // 15% take a brief rest.
+      if (Math.random() < 0.15) {
         this.wanderTarget = null;
-        this.wanderTimer = 0.6 + Math.random() * 1.4; // pause before next stroll
+        this.wanderTimer = 0.3 + Math.random() * 0.5;
         this.setPose("idle");
       } else {
-        this.x += Math.sign(this.wanderTarget - this.x) * step;
+        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 160;
         this.setPose("walk");
       }
+    } else {
+      this.x += Math.sign(this.wanderTarget - this.x) * step;
+      this.setPose("walk");
     }
   }
 
@@ -256,11 +358,12 @@ export class Character {
       this.el.style.filter = "";
     }
 
-    if (this.spriteSheet) {
+    const sheet = this.currentSheet();
+    if (sheet) {
       // Render the selected cell of the sheet — no tiling.
       const frame = this.getSpriteFrame();
       this.el.style.backgroundColor = "transparent";
-      this.el.style.backgroundImage = `url(${(this.spriteSheet as any).src})`;
+      this.el.style.backgroundImage = `url(${(sheet as HTMLImageElement).src})`;
       this.el.style.backgroundRepeat = "no-repeat";
       this.el.style.backgroundPosition = `-${frame.x}px -${frame.y}px`;
       this.el.style.backgroundSize = "auto";

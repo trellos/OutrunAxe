@@ -5,10 +5,11 @@
 
 const CACHE = new Map<string, Promise<HTMLImageElement | SVGImageElement>>();
 
-/** Sprite sheet ID: e.g., "big-perfect", "medium-normal", "small-loose". */
-export type SpriteSheetId = "big-loose" | "big-normal" | "big-perfect" |
-                             "medium-loose" | "medium-normal" | "medium-perfect" |
-                             "small-loose" | "small-normal" | "small-perfect";
+/** Sprite sheet ID. Dudes are `${size}-${quality}` with an optional gun-variant
+ *  suffix (`-gunL`/`-gunR`/`-gunLR`); props/FX are named directly
+ *  (`gun-floor`, `rocket-1..3`, `rocket-flame`, `explosion`). Kept as a string
+ *  so the dude × gun-variant matrix doesn't need an exhaustive union. */
+export type SpriteSheetId = string;
 
 /**
  * Load a spritesheet. Returns a promise resolving to an image element

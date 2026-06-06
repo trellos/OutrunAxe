@@ -171,13 +171,26 @@ class Bg06 implements EddieBackgroundVariant {
     this.skyTex.magFilter = THREE.LinearFilter;
     this.skyTex.minFilter = THREE.LinearFilter;
     this.skyTex.generateMipmaps = false;
+    // Pin the gradient to a fixed world band and CLAMP beyond it. The sky plane
+    // is oversized (below) so its edges never sit inside the frustum; clamping
+    // makes the area above the gradient read as flat sky-top colour and below as
+    // flat horizon colour, instead of revealing scene.background at the edges.
+    // repeat/offset map gradient texCoord 0..1 onto world y -78..242 for a plane
+    // of height 1000 centred at y=82: v' = uv.v*3.125 - 1.0625.
+    this.skyTex.wrapS = THREE.ClampToEdgeWrapping;
+    this.skyTex.wrapT = THREE.ClampToEdgeWrapping;
+    this.skyTex.repeat.set(1, 3.125);
+    this.skyTex.offset.set(0, -1.0625);
     this.skyMat = new THREE.MeshBasicMaterial({
       map: this.skyTex,
       depthWrite: false,
       depthTest: false,
       fog: false,
     });
-    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(760, 320), this.skyMat);
+    // Oversized so the plane's edges always fall outside the camera frustum.
+    // The gradient still occupies world y -78..242 (via the texture clamp above);
+    // everything beyond is flat sky/horizon colour, so no background shows.
+    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(2600, 1000), this.skyMat);
     this.skyMesh.position.set(0, 82, -300);
     this.skyMesh.renderOrder = -30;
     this.skyMesh.frustumCulled = false;
