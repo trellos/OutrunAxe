@@ -1,122 +1,129 @@
 #!/usr/bin/env node
 /**
- * gun.mjs — placeholder sprite generator for the "Infinite Eddie" laser pistol.
+ * gun.mjs — pixel-art sprite generator for the "Infinite Eddie" laser pistol.
  *
- * Emits a SINGLE-FRAME image of a laser pistol lying FLAT on the ground
- * (horizontal, side profile), barrel pointing right, grip angled down.
+ * Emits a SINGLE-FRAME PNG of a laser pistol lying FLAT on the ground
+ * (horizontal side profile, barrel pointing right), drawn as chunky blocky
+ * pixel-art in the spirit of the monochrome pixel-humanoid reference art:
+ * a near-black silhouette built from big square pixels, no gradients, no
+ * anti-aliasing. One glowing muzzle pixel signals "laser".
  *
- *   gun-floor.svg   viewBox 0 0 32 16  (~2:1, wider than tall)
+ *   gun-floor.png   32x16  (~2:1, wider than tall)
  *
- * Design notes for small-size readability (must read at ~14x7 px):
- *   - Chunky, high-contrast silhouette with a single dark outline drawn UNDER
- *     a metallic gunmetal body, so it reads on any background.
- *   - A glowing red/orange muzzle tip signals "laser".
- *   - A small cyan energy-cell glow accent in the body.
- *   - Fully deterministic (no randomness).
+ * The sheet keeps the SAME 32x16 intrinsic dimensions the game expects
+ * (Gun.ts sizes the DOM box at a 2:1 aspect and SpriteLoader loads
+ * /assets/gun-floor.png). We draw on a 16x8 logical "design" grid and
+ * nearest-neighbour upscale by 2 so each design pixel becomes a clean
+ * 2x2 block — the chunky pixel-art read.
+ *
+ * Fully deterministic (no randomness).
  *
  * Run directly to write into <repoRoot>/public/assets:
  *   node scripts/sprites/gun.mjs
  * Or import { generate } and call generate(assetsDir).
  */
 
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { PixelCanvas, encodePNG, writePNG } from "./png.mjs";
 
-// ---- palette -------------------------------------------------------------
-const OUTLINE = "#05060a"; // near-black silhouette
-const METAL_DARK = "#3a4150"; // gunmetal shadow
-const METAL = "#7d8696"; // gunmetal mid
-const METAL_LITE = "#c3cad6"; // gunmetal highlight
-const ACCENT = "#19e0ff"; // cyan energy cell
-const MUZZLE_CORE = "#fff2c2"; // hot white-yellow core
-const MUZZLE_MID = "#ff8a1e"; // orange
-const MUZZLE_GLOW = "#ff3b2f"; // red glow halo
+// ---- sheet geometry ------------------------------------------------------
+const DESIGN_W = 16; // logical design grid width
+const DESIGN_H = 8; // logical design grid height
+const SCALE = 2; // nearest-neighbour upscale -> 32x16 output
+const SHEET_W = DESIGN_W * SCALE; // 32
+const SHEET_H = DESIGN_H * SCALE; // 16
+
+// ---- palette (monochrome silhouette + one glowing muzzle pixel) ----------
+const BODY = "#0a0c12"; // near-black gun silhouette (matches reference)
+const RIM = "#39414f"; // faint lighter rim for readability on dark ocean
+const MUZZLE_GLOW = "#ff6a1e"; // outer hot muzzle pixel
+const MUZZLE_CORE = "#fff0b0"; // white-hot muzzle core pixel
 
 /**
- * Build the laser-pistol SVG. The drawing strategy is the project convention:
- * draw a fat dark outline path first, then the lighter body on top, then
- * highlights and the glowing muzzle. Coordinates are tuned for viewBox 32x16
- * with the gun lying along the bottom-ish centerline.
+ * Paint the laser pistol onto a 16x8 PixelCanvas in design pixels.
+ *
+ * Silhouette map (design coords, x→ right, y→ down), barrel along the top
+ * band, grip dropping down-left, single trigger nub:
+ *
+ *   y0:  . . . . . . . . . . . . . . . .
+ *   y1:  . . # # # . . . . . . . . . . .   <- top of receiver / rear sight
+ *   y2:  . . # # # # # # # # # # # # M .   <- slide / barrel, muzzle (M) at tip
+ *   y3:  . . # # # # # # # # # # # # # .   <- barrel underside (thin band)
+ *   y4:  . . # # # # . . . . . . . . . .   <- receiver base + trigger guard top
+ *   y5:  . . # # # . . . . . . . . . . .   <- grip top
+ *   y6:  . # # # # . . . . . . . . . . .   <- grip (flares forward slightly)
+ *   y7:  . # # # . . . . . . . . . . . .   <- grip heel
  */
-function gunFloorSvg() {
-  // Outline body = receiver block + barrel + grip, fattened. We render the
-  // body as a single chunky polygon (the outline version is the same polygon
-  // expanded via a thick stroke), keeping the silhouette solid at tiny sizes.
-  //
-  // Body polygon (the receiver + barrel), pointing right:
-  const body =
-    "M6 6 L23 5 L26 5.4 L26 7.2 L23 7.6 L15 7.6 L15 9 L13 9 L12.5 7.6 L6 7.8 Z";
-  // Grip polygon, angled down-left from the receiver:
-  const grip = "M7 7.2 L13 7.2 L11.5 13.5 L7.5 13.8 L6 8 Z";
-  // Trigger guard: an arc-ish loop hinted as a stroked path under the receiver.
-  const guard = "M12.8 8 Q12.4 11.2 9.4 11";
+function paintGun(c) {
+  // Solid silhouette, row by row [x0, x1] inclusive on the design grid.
+  // Barrel/slide is a THIN band so the pistol reads (not a brick); the
+  // receiver block sits at the rear with the grip dropping below it.
+  const rows = [
+    [2, 4], // y1  rear sight / receiver top
+    [2, 13], // y2  slide + barrel (muzzle pixel at x14 added separately)
+    [2, 13], // y3  barrel underside
+    [2, 5], // y4  receiver base
+    [2, 4], // y5  grip top
+    [1, 4], // y6  grip
+    [1, 3], // y7  grip heel
+  ];
+  rows.forEach(([x0, x1], i) => {
+    const y = i + 1;
+    for (let x = x0; x <= x1; x++) c.set(x, y, BODY);
+  });
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16" viewBox="0 0 32 16">
-  <defs>
-    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="${METAL_LITE}"/>
-      <stop offset="0.55" stop-color="${METAL}"/>
-      <stop offset="1" stop-color="${METAL_DARK}"/>
-    </linearGradient>
-    <radialGradient id="muzzle" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="${MUZZLE_CORE}"/>
-      <stop offset="0.45" stop-color="${MUZZLE_MID}"/>
-      <stop offset="1" stop-color="${MUZZLE_GLOW}" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
+  // Trigger nub poking down just ahead of the grip.
+  c.set(5, 5, BODY);
 
-  <!-- soft muzzle glow halo (behind everything, signals laser) -->
-  <circle cx="26.5" cy="6.1" r="5.2" fill="url(#muzzle)" opacity="0.85"/>
+  // ----- faint 1px lighter rim around the silhouette for dark-bg read -----
+  // Compute rim only where a transparent design pixel touches a BODY pixel
+  // (4-neighbour), so the outline stays crisp and blocky.
+  const isBody = (x, y) => {
+    if (x < 0 || y < 0 || x >= DESIGN_W || y >= DESIGN_H) return false;
+    const i = (y * DESIGN_W + x) * 4;
+    return c.data[i + 3] !== 0;
+  };
+  const rimPixels = [];
+  for (let y = 0; y < DESIGN_H; y++) {
+    for (let x = 0; x < DESIGN_W; x++) {
+      if (isBody(x, y)) continue;
+      if (isBody(x - 1, y) || isBody(x + 1, y) || isBody(x, y - 1) || isBody(x, y + 1)) {
+        rimPixels.push([x, y]);
+      }
+    }
+  }
+  for (const [x, y] of rimPixels) c.set(x, y, RIM);
 
-  <!-- DARK OUTLINE pass: same shapes, drawn fat first so a chunky black edge
-       wraps the whole gun and it reads on any background. -->
-  <g fill="none" stroke="${OUTLINE}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-    <path d="${grip}"/>
-    <path d="${body}"/>
-  </g>
-  <path d="${guard}" fill="none" stroke="${OUTLINE}" stroke-width="2.6" stroke-linecap="round"/>
-
-  <!-- BODY pass: metallic fill on top of the outline. -->
-  <path d="${grip}" fill="${METAL_DARK}"/>
-  <path d="${body}" fill="url(#metal)"/>
-  <!-- trigger-guard inner fill (re-stroke thinner in metal so it stays a loop) -->
-  <path d="${guard}" fill="none" stroke="${METAL}" stroke-width="1.1" stroke-linecap="round"/>
-
-  <!-- top highlight strip along the barrel/receiver -->
-  <path d="M7 5.6 L24 4.9 L26 5.3" fill="none" stroke="${METAL_LITE}" stroke-width="1" stroke-linecap="round" opacity="0.9"/>
-
-  <!-- grip checkering hint: two short dark ribs -->
-  <path d="M9 9 L8.4 12.2 M11 9 L10.4 12.4" stroke="${OUTLINE}" stroke-width="0.8" stroke-linecap="round" opacity="0.7"/>
-
-  <!-- cyan energy cell accent on the receiver -->
-  <rect x="16.2" y="5.4" width="3.2" height="1.7" rx="0.5" fill="${ACCENT}"/>
-  <rect x="16.2" y="5.4" width="3.2" height="1.7" rx="0.5" fill="none" stroke="${OUTLINE}" stroke-width="0.5"/>
-
-  <!-- glowing muzzle tip core -->
-  <circle cx="26" cy="6.1" r="1.9" fill="${MUZZLE_GLOW}"/>
-  <circle cx="26" cy="6.1" r="1.25" fill="${MUZZLE_MID}"/>
-  <circle cx="26" cy="6.1" r="0.6" fill="${MUZZLE_CORE}"/>
-</svg>
-`;
+  // ----- glowing muzzle: signals "laser" at the barrel tip (right edge) ---
+  c.set(14, 2, MUZZLE_GLOW); // outer glow pixel beyond the barrel
+  c.set(13, 2, MUZZLE_CORE); // hot core at the very mouth of the barrel
 }
 
 /**
- * Write the gun sprite(s) into assetsDir. Creates the directory if needed.
+ * Render the 32x16 gun-floor sheet as a PNG buffer.
+ * @returns {Buffer}
+ */
+function gunFloorPng() {
+  const target = new Uint8Array(SHEET_W * SHEET_H * 4); // transparent
+  const cell = new PixelCanvas(DESIGN_W, DESIGN_H);
+  paintGun(cell);
+  cell.blitInto(target, SHEET_W, 0, 0, SCALE);
+  return encodePNG(SHEET_W, SHEET_H, target);
+}
+
+/**
+ * Write the gun sprite into assetsDir. Creates the directory if needed.
  * @param {string} assetsDir absolute path to the assets output directory
  * @returns {string[]} paths written
  */
 export function generate(assetsDir) {
-  fs.mkdirSync(assetsDir, { recursive: true });
-  const out = path.join(assetsDir, "gun-floor.svg");
-  fs.writeFileSync(out, gunFloorSvg());
+  const out = path.join(assetsDir, "gun-floor.png");
+  writePNG(out, gunFloorPng());
   return [out];
 }
 
 // Run directly: node scripts/sprites/gun.mjs
-// This file lives at <repoRoot>/scripts/sprites/gun.mjs, so repo root is two
-// levels up from here.
 const __filename = fileURLToPath(import.meta.url);
 const isMain =
   process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);

@@ -14,7 +14,8 @@ import type { EddieJuiceEvents } from "../../music/eddie/eddieTypes";
 import { Character, type CharacterSize, type CharacterTier, type CharacterQuality } from "./Character";
 import { Gun } from "./Gun";
 import { Rocket } from "./Rocket";
-import { Beam, Spark, Explosion, type Effect } from "./effects";
+import { Beam, Spark, Explosion, Blood, Bonk, type Effect } from "./effects";
+import { Shark } from "./Shark";
 import { TargetProvider } from "./TargetProvider";
 import { InteractionDirector } from "./InteractionDirector";
 
@@ -23,7 +24,22 @@ interface CharacterManagerConfig {
   hudParent: HTMLElement;
   resolveCell: (measure: number) => DOMRect | null;
   beatDuration: number; // seconds per beat (60 / bpm) — drives the perch stagger
+  /** Battle mode: the crowd is in the water fighting sharks. Enables shark spawns
+   *  (1 per measure), windsurf/boomerang shark kills, and the eat interaction. */
+  battle?: boolean;
+  /** Battle: the people line, as a fraction of viewport height (≈0.8 = near the
+   *  bottom of the water). Overrides the default below-the-grid placement. */
+  groundFraction?: number;
+  /** Battle scorekeeping callbacks. */
+  onSharkKilled?: () => void;
+  onDudeEaten?: () => void;
 }
+
+// Battle tuning.
+const SHARK_DESCEND_MEASURES = 8;    // measures to swim from horizon to the line
+const SHARK_KILL_RANGE = 30;         // px proximity for shark↔person/board/boomerang
+const SUN_HALF_FRAC = 0.12;          // half-width of the central sun, as frac of W
+const HORIZON_FRAC = 0.30;           // shark spawn y, as fraction of viewport height
 
 const PICKUP_RANGE = 16; // px between a dude and a floor gun to pick it up
 const TRIGGER_RANGE = 20; // px between a dude and a grounded rocket to set it off
@@ -34,12 +50,19 @@ export class CharacterManager {
   private characters: Map<number, Character> = new Map();
   private guns: Gun[] = [];
   private rockets: Rocket[] = [];
+  private sharks: Shark[] = [];
   private effects: Effect[] = [];
   private nextId = 0;
   private resolveCell: (measure: number) => DOMRect | null;
   private beatDuration: number;
   private director: InteractionDirector;
   private targets: TargetProvider;
+
+  // Battle state.
+  private battle: boolean;
+  private groundFraction?: number;
+  private onSharkKilled?: () => void;
+  private onDudeEaten?: () => void;
 
   // Scored quarters (with their per-diamond note content + timing) buffered per
   // MEASURE until that measure finishes, so the crowd spawns every measure.
@@ -61,6 +84,10 @@ export class CharacterManager {
     this.juice = config.juice;
     this.resolveCell = config.resolveCell;
     this.beatDuration = config.beatDuration;
+    this.battle = config.battle ?? false;
+    this.groundFraction = config.groundFraction;
+    this.onSharkKilled = config.onSharkKilled;
+    this.onDudeEaten = config.onDudeEaten;
     this.director = new InteractionDirector(() => this.characters.values());
     this.targets = new TargetProvider(config.resolveCell);
 
@@ -79,14 +106,70 @@ export class CharacterManager {
    *  grid cells so the crowd hugs the lowest timeline on any screen. The +76
    *  clears the tallest dude (big = 64px) plus a small gap below the grid. */
   private groundY(): number {
+    // Battle: line the people up at a fixed fraction down the water (≈80%).
+    if (this.battle && this.groundFraction !== undefined) {
+      return (this.container.clientHeight || window.innerHeight) * this.groundFraction;
+    }
     let gridBottom = 0;
     for (let m = 12; m <= 15; m++) {
       const r = this.resolveCell(m);
       if (r) gridBottom = Math.max(gridBottom, r.bottom);
     }
-    if (gridBottom > 0) return gridBottom + 76;
+    if (gridBottom > 0) return gridBottom + 152; // twice as far below the timelines
     const h = this.container.clientHeight || window.innerHeight;
     return h - 90;
+  }
+
+  private viewW(): number {
+    return this.container.clientWidth || window.innerWidth;
+  }
+
+  private viewH(): number {
+    return this.container.clientHeight || window.innerHeight;
+  }
+
+  /** Spawn one shark from the horizon, in an outer band on one side of the sun.
+   *  Music-locked: called once per measure from setActiveMeasure in battle. */
+  private spawnShark(): void {
+    const W = this.viewW();
+    const cx = W / 2;
+    const sunHalf = W * SUN_HALF_FRAC;
+    // Band on each side: from the midpoint of (sun edge → screen edge) to the edge.
+    const rightBand = { lo: (cx + sunHalf + W) / 2, hi: W * 0.97 };
+    const leftBand = { lo: W * 0.03, hi: (cx - sunHalf) / 2 };
+    const right = Math.random() < 0.5;
+    const band = right ? rightBand : leftBand;
+    const startX = band.lo + Math.random() * Math.max(1, band.hi - band.lo);
+    const shark = new Shark({
+      id: this.nextId++,
+      startX,
+      startY: this.viewH() * HORIZON_FRAC,
+      groundY: this.groundY(),
+      descendSeconds: SHARK_DESCEND_MEASURES * 4 * this.beatDuration,
+      screenW: W,
+    });
+    this.container.appendChild(shark.el);
+    this.sharks.push(shark);
+  }
+
+  /** Nearest live shark to a point, or null. Used to aim boomerangs. */
+  private nearestShark(x: number, y: number): Shark | null {
+    let best: Shark | null = null;
+    let bestD = Infinity;
+    for (const s of this.sharks) {
+      if (!s.alive) continue;
+      const d = Math.hypot(s.x - x, s.y - y);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    return best;
+  }
+
+  /** Kill a shark: blood splash at it, score it, remove it. */
+  private killShark(s: Shark): void {
+    if (!s.alive) return;
+    this.effects.push(new Blood(this.container, s.x, s.y, 1));
+    s.kill();
+    this.onSharkKilled?.();
   }
 
   /** Mount: subscribe to events. */
@@ -118,6 +201,12 @@ export class CharacterManager {
     for (const m of [...this.pendingByMeasure.keys()].sort((a, b) => a - b)) {
       if (m < measure) this.flushMeasure(m);
     }
+  }
+
+  /** Battle: spawn one shark — called once per BEAT from BattleState so sharks
+   *  pour in fast. No-op outside battle. */
+  battleBeat(): void {
+    if (this.battle) this.spawnShark();
   }
 
   /** Release all remaining buffered measures (song end). */
@@ -201,8 +290,10 @@ export class CharacterManager {
       spawnY,
       groundY: this.groundY(),
       perchDuration: this.randomPerch(),
-      spriteBaseId: `${size}-${quality}`,
-      onFire: (origin) => this.fireLaser(origin),
+      // Battle dudes swim in the water (separate sheets, no held guns/lasers).
+      spriteBaseId: this.battle ? `swim-${size}` : `${size}-${quality}`,
+      battle: this.battle,
+      onFire: this.battle ? undefined : (origin) => this.fireLaser(origin),
     });
     this.container.appendChild(char.el);
     this.characters.set(char.id, char);
@@ -217,6 +308,7 @@ export class CharacterManager {
       spawnY,
       groundY: this.groundY(),
       perchDuration: this.randomPerch(),
+      battle: this.battle, // windsurf board in battle
     });
     this.container.appendChild(gun.el);
     this.guns.push(gun);
@@ -233,8 +325,15 @@ export class CharacterManager {
       spawnY,
       groundY: this.groundY(),
       perchDuration: this.randomPerch(),
+      battle: this.battle, // boomerang in battle
       onEmit: (x, y) => this.effects.push(new Spark(this.container, x, y)),
-      onExplode: (x, y, scale) => this.effects.push(new Explosion(this.container, x, y, scale)),
+      // Battle: the boomerang reaching its target without a mid-flight hit just
+      // splashes (kills are resolved by proximity in handleCollisions). Score Run:
+      // a real explosion.
+      onExplode: (x, y, scale) =>
+        this.effects.push(
+          this.battle ? new Spark(this.container, x, y) : new Explosion(this.container, x, y, scale),
+        ),
     });
     this.container.appendChild(rocket.el);
     this.rockets.push(rocket);
@@ -249,10 +348,13 @@ export class CharacterManager {
   update(dt: number): void {
     // Director first so it can claim/release characters (parties = idle layer),
     // then each entity animates.
-    this.director.update(dt);
+    // In battle the crowd is fighting, not partying — skip the idle director so
+    // dudes keep swimming/sailing freely.
+    if (!this.battle) this.director.update(dt);
     for (const char of this.characters.values()) char.update(dt);
     for (const gun of this.guns) gun.update(dt);
     for (const rocket of this.rockets) rocket.update(dt);
+    for (const shark of this.sharks) shark.update(dt);
 
     this.handleCollisions();
 
@@ -263,6 +365,13 @@ export class CharacterManager {
         this.rockets.splice(i, 1);
       }
     }
+    // Reap finished sharks (swam off, or killed).
+    for (let i = this.sharks.length - 1; i >= 0; i--) {
+      if (this.sharks[i].isDone) {
+        this.sharks[i].dispose();
+        this.sharks.splice(i, 1);
+      }
+    }
     // Tick effects; each removes its own DOM when it returns done.
     for (let i = this.effects.length - 1; i >= 0; i--) {
       if (this.effects[i].update(dt)) this.effects.splice(i, 1);
@@ -271,7 +380,87 @@ export class CharacterManager {
 
   /** Dudes incidentally bump guns (pick up) and rockets (set off). Dudes never
    *  aim for them — these only fire when a random wander happens to collide. */
+  /** A shark reached a person: blood splash + the dude is removed (eaten). */
+  private eatDude(c: Character): void {
+    this.effects.push(new Blood(this.container, c.x, this.groundY() - 18, 0.9));
+    this.characters.delete(c.id);
+    c.dispose();
+    this.onDudeEaten?.();
+  }
+
+  /** Battle interactions: board mounts, boomerang launches/strikes, and sharks
+   *  eating people / being killed by windsurfers + boomerangs. */
+  private handleBattleCollisions(): void {
+    const line = this.groundY();
+
+    // Windsurf board pickups → the dude mounts and starts sailing.
+    for (let gi = this.guns.length - 1; gi >= 0; gi--) {
+      const board = this.guns[gi];
+      if (!board.available) continue;
+      for (const c of this.characters.values()) {
+        if (!c.grounded || c.isWindsurfing) continue;
+        if (Math.abs(c.x - board.x) <= PICKUP_RANGE) {
+          c.mountBoard();
+          board.markPickedUp();
+          board.dispose();
+          this.guns.splice(gi, 1);
+          break;
+        }
+      }
+    }
+
+    // Boomerang launches: a grounded dude bumps a grounded boomerang → it flies
+    // at the nearest shark (or off toward the horizon if none).
+    for (const r of this.rockets) {
+      if (!r.armed) continue;
+      for (const c of this.characters.values()) {
+        if (!c.grounded) continue;
+        if (Math.abs(c.x - r.x) <= TRIGGER_RANGE) {
+          const s = this.nearestShark(r.x, line);
+          r.trigger(s ? { x: s.x, y: s.y } : { x: r.x, y: this.viewH() * HORIZON_FRAC });
+          break;
+        }
+      }
+    }
+
+    // A boomerang in flight strikes a shark → bonk + blood + kill.
+    for (const r of this.rockets) {
+      if (!r.flying) continue;
+      for (const s of this.sharks) {
+        if (!s.alive) continue;
+        if (Math.hypot(s.x - r.cx, s.y - r.cy) <= SHARK_KILL_RANGE) {
+          this.effects.push(new Bonk(this.container, s.x, s.y));
+          this.killShark(s);
+          r.endFlight();
+          break;
+        }
+      }
+    }
+
+    // Sharks meeting people at the line: a windsurfer kills the shark (board
+    // destroyed); a plain dude gets eaten.
+    for (const s of this.sharks) {
+      if (!s.alive) continue;
+      if (Math.abs(s.y - line) > 70) continue; // only interact near the line
+      for (const c of this.characters.values()) {
+        if (!c.grounded) continue;
+        if (Math.abs(c.x - s.x) > SHARK_KILL_RANGE) continue;
+        if (c.isWindsurfing) {
+          this.killShark(s);
+          c.dismountBoard();
+        } else {
+          this.eatDude(c);
+        }
+        break; // one interaction per shark per frame
+      }
+    }
+  }
+
   private handleCollisions(): void {
+    if (this.battle) {
+      this.handleBattleCollisions();
+      return;
+    }
     // Gun pickups.
     for (let gi = this.guns.length - 1; gi >= 0; gi--) {
       const gun = this.guns[gi];
@@ -311,6 +500,8 @@ export class CharacterManager {
     this.guns = [];
     for (const rocket of this.rockets) rocket.dispose();
     this.rockets = [];
+    for (const shark of this.sharks) shark.dispose();
+    this.sharks = [];
     for (const fx of this.effects) fx.dispose();
     this.effects = [];
     this.container.remove();

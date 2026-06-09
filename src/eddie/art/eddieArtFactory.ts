@@ -38,9 +38,25 @@ export interface EddieArtRig {
     bgIndex?: number;
     /** 0-based registry index for the particles variant (default 0; ?fx=N). */
     fxIndex?: number;
+    /** Scored measures the grid shows. Default 16 (Score Run); Battle passes 4
+     *  for a single rolling row. Drives the grid layout AND the measure→cell
+     *  resolution used for fire/particle/crowd placement. */
+    gridMeasures?: number;
+    /** Draw the count-in/warm-up intro row? Default true (Score Run); Battle
+     *  passes false. Affects cell-index math here too. */
+    gridIntroRow?: boolean;
+    /** Battle mode for the crowd: sharks spawn and the dudes fight in the water. */
+    crowdBattle?: boolean;
+    /** Battle: the people line as a fraction of viewport height (≈0.8). */
+    crowdGroundFraction?: number;
+    /** Battle scorekeeping. */
+    onSharkKilled?: () => void;
+    onDudeEaten?: () => void;
   }): void;
   update(dt: number, audioTime: number): void;
   setActiveMeasure(scoredMeasure: number): void;
+  /** Battle: advance one beat (spawns a shark). No-op outside battle. */
+  battleBeat(): void;
   /** Screen-space origin for score particles: the centre of the just-played note
    *  bars in the scored quarter (measure 0..15, beat 0..3), so particles fly out
    *  of the notes that earned the points. Null if it can't be resolved (the play
@@ -57,6 +73,11 @@ class EddieArtRigImpl implements EddieArtRig {
   private background: EddieBackgroundVariant | null = null;
   private particles: EddieParticlesVariant | null = null;
   private characters: CharacterManager | null = null;
+  /** Scored measures shown (16 Score Run; 4 Battle). Used to fold absolute
+   *  measures into the rolling cell window in resolveCell/resolveNoteOrigin. */
+  private gridMeasures = 16;
+  /** Whether the grid has a top intro row (shifts scored cells down one row). */
+  private gridIntroRow = true;
 
   private hudRoot: HTMLDivElement | null = null;
   private scoreValueEl: HTMLDivElement | null = null;
@@ -70,7 +91,15 @@ class EddieArtRigImpl implements EddieArtRig {
     camera?: THREE.PerspectiveCamera;
     bgIndex?: number;
     fxIndex?: number;
+    gridMeasures?: number;
+    gridIntroRow?: boolean;
+    crowdBattle?: boolean;
+    crowdGroundFraction?: number;
+    onSharkKilled?: () => void;
+    onDudeEaten?: () => void;
   }): void {
+    this.gridMeasures = Math.max(4, ctx.gridMeasures ?? 16);
+    this.gridIntroRow = ctx.gridIntroRow ?? true;
     // A single scoped root so dispose() can guarantee zero leaked DOM and the
     // CSS custom properties (--eddie-*) cascade to every child.
     const root = document.createElement("div");
@@ -97,6 +126,8 @@ class EddieArtRigImpl implements EddieArtRig {
       hudParent: root,
       config: ctx.config,
       juice: ctx.juice,
+      scoredMeasures: this.gridMeasures,
+      introRow: this.gridIntroRow,
       onQuarterDiamonds: (info) => this.characters?.onQuarterDiamonds(info),
     });
     this.fire.mount({
@@ -109,6 +140,10 @@ class EddieArtRigImpl implements EddieArtRig {
       hudParent: root,
       resolveCell: (measure) => this.resolveCell(measure),
       beatDuration: 60 / ctx.config.bpm,
+      battle: ctx.crowdBattle,
+      groundFraction: ctx.crowdGroundFraction,
+      onSharkKilled: ctx.onSharkKilled,
+      onDudeEaten: ctx.onDudeEaten,
     });
     this.characters.mount();
     this.particles = particlesByIndex(ctx.fxIndex ?? 0).create();
@@ -121,26 +156,31 @@ class EddieArtRigImpl implements EddieArtRig {
     this.offScorePop = ctx.juice.on("eddieScorePop", (e) => this.onScorePop(e.total));
   }
 
+  /** Cell count for the configured grid: (intro row?) + ceil(gridMeasures/4). */
+  private cellCount(): number {
+    return (Math.ceil(this.gridMeasures / 4) + (this.gridIntroRow ? 1 : 0)) * 4;
+  }
+
+  /** Row-major cell index for an ABSOLUTE measure, folded into the rolling
+   *  window (identity for Score Run). Scored measure s lives at row
+   *  floor(s/4)+introOffset. */
+  private cellIndexFor(measure: number): number {
+    const s = ((measure % this.gridMeasures) + this.gridMeasures) % this.gridMeasures;
+    return (Math.floor(s / 4) + (this.gridIntroRow ? 1 : 0)) * 4 + (s % 4);
+  }
+
   private resolveCell(measure: number): DOMRect | null {
-    // Grid renders one DOM cell per measure; find it by the scored index. The
-    // grid's cells are row-major; scored measure m lives at row floor(m/4)+1.
-    if (!this.hudRoot) return null;
+    if (!this.hudRoot || measure < 0) return null;
     const cells = this.hudRoot.querySelectorAll<HTMLDivElement>(".eddie-cell");
-    if (cells.length < 20) return null;
-    if (measure < 0 || measure > 15) return null;
-    const row = Math.floor(measure / 4) + 1;
-    const col = measure % 4;
-    const idx = row * 4 + col;
-    return cells[idx]?.getBoundingClientRect() ?? null;
+    if (cells.length < this.cellCount()) return null;
+    return cells[this.cellIndexFor(measure)]?.getBoundingClientRect() ?? null;
   }
 
   resolveNoteOrigin(measure: number, beat: number): { x: number; y: number } | null {
-    if (!this.hudRoot || measure < 0 || measure > 15) return null;
+    if (!this.hudRoot || measure < 0) return null;
     const cells = this.hudRoot.querySelectorAll<HTMLDivElement>(".eddie-cell");
-    if (cells.length < 20) return null;
-    const row = Math.floor(measure / 4) + 1;
-    const col = measure % 4;
-    const cell = cells[row * 4 + col];
+    if (cells.length < this.cellCount()) return null;
+    const cell = cells[this.cellIndexFor(measure)];
     if (!cell) return null;
     // Average the centres of the in-key note bars the player played in this
     // quarter (out-of-key bars earned nothing, so they don't emit particles).
@@ -183,6 +223,10 @@ class EddieArtRigImpl implements EddieArtRig {
   setActiveMeasure(scoredMeasure: number): void {
     this.grid.setActiveMeasure(scoredMeasure);
     this.characters?.setActiveMeasure(scoredMeasure);
+  }
+
+  battleBeat(): void {
+    this.characters?.battleBeat();
   }
 
   dispose(): void {

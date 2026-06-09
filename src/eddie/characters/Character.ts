@@ -25,6 +25,10 @@ export interface CharacterConfig {
   perchDuration: number;        // seconds to glow+wiggle on the diamond before falling
   spriteBaseId: string;         // e.g. "big-perfect"; gun variants append a suffix
   onFire?: (origin: { x: number; y: number }) => void; // request a laser shot
+  /** Battle mode: the dude is in the water. It swims left/right; if it mounts a
+   *  windsurf board it sails faster + wider and kills sharks on contact. No
+   *  held-gun sheets are used (windsurf is a pose row on the base sheet). */
+  battle?: boolean;
 }
 
 export class Character {
@@ -74,6 +78,12 @@ export class Character {
   private elevation = 0;        // raised above the ground line (pyramid stacking)
   private clock = 0;            // ever-advancing time for glow pulsing
 
+  // Battle mode (water). `windsurfing` = riding a board (faster/wider, kills
+  // sharks on contact, board consumed on first kill). `facing` flips the sprite.
+  private battle: boolean;
+  private windsurfing = false;
+  private facing = 1;           // +1 faces right, -1 faces left
+
   // DOM
   el: HTMLDivElement;
 
@@ -90,6 +100,7 @@ export class Character {
     this.perchTimer = config.perchDuration;
     this.spriteBaseId = config.spriteBaseId;
     this.onFire = config.onFire;
+    this.battle = config.battle ?? false;
     this.fireCooldown = this.randomFireDelay();
 
     // Create DOM element
@@ -115,12 +126,31 @@ export class Character {
       .finally(() => this.pending.delete(variant));
   }
 
-  /** The gun variant matching the current hands. */
+  /** The gun variant matching the current hands. Battle has no held-gun sheets
+   *  (windsurfing is a pose on the base sheet), so it always uses the base. */
   private gunVariant(): GunVariant {
+    if (this.battle) return "";
     if (this.hands.left && this.hands.right) return "-gunLR";
     if (this.hands.left) return "-gunL";
     if (this.hands.right) return "-gunR";
     return "";
+  }
+
+  /** Battle: mount a windsurf board — sail faster/wider and kill sharks on
+   *  contact until the board is destroyed. */
+  mountBoard(): void {
+    this.windsurfing = true;
+    this.wanderTarget = null;
+    this.wanderTimer = 0;
+  }
+
+  /** Battle: the board was destroyed (after a shark kill). Back to swimming. */
+  dismountBoard(): void {
+    this.windsurfing = false;
+  }
+
+  get isWindsurfing(): boolean {
+    return this.windsurfing;
   }
 
   private currentSheet(): HTMLImageElement | SVGImageElement | null {
@@ -256,32 +286,45 @@ export class Character {
    *  wander randomly — they do NOT seek out, target, or stop for guns/rockets;
    *  picking a gun up happens in passing and never touches this movement state. */
   private wander(dt: number): void {
-    const speed = this.quality === "perfect" ? 34 : this.quality === "normal" ? 26 : 20;
+    // Battle: a windsurfing dude sails fast across a wide stretch of water (and
+    // never rests); a plain dude swims back and forth in a modest range. The
+    // "walk" pose row is the swim/sail animation; "jump" row is the windsurf one.
+    const windsurf = this.battle && this.windsurfing;
+    const range = windsurf ? 360 : this.battle ? 140 : 160;
+    const speed = windsurf
+      ? 95
+      : this.quality === "perfect" ? 34 : this.quality === "normal" ? 26 : 20;
+    const movePose: CharacterPose = windsurf ? "jump" : "walk";
+
     if (this.wanderTarget === null) {
-      // Resting (rare): count down a short breather, then roam again.
+      // Windsurfers don't rest — pick a new far spot immediately.
+      if (windsurf) {
+        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 2 * range;
+        return;
+      }
       this.wanderTimer -= dt;
       this.setPose("idle");
       if (this.wanderTimer <= 0) {
-        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 160;
+        this.wanderTarget = this.homeX + (Math.random() - 0.5) * range;
       }
       return;
     }
     const step = speed * dt;
     if (Math.abs(this.wanderTarget - this.x) <= step) {
       this.x = this.wanderTarget;
-      // Keep moving: 85% of the time head straight for a new spot (no halt);
-      // 15% take a brief rest.
-      if (Math.random() < 0.15) {
+      if (!windsurf && Math.random() < 0.15) {
         this.wanderTarget = null;
         this.wanderTimer = 0.3 + Math.random() * 0.5;
         this.setPose("idle");
       } else {
-        this.wanderTarget = this.homeX + (Math.random() - 0.5) * 160;
-        this.setPose("walk");
+        this.wanderTarget = this.homeX + (Math.random() - 0.5) * range;
+        this.setPose(movePose);
       }
     } else {
-      this.x += Math.sign(this.wanderTarget - this.x) * step;
-      this.setPose("walk");
+      const dir = Math.sign(this.wanderTarget - this.x);
+      this.facing = dir || this.facing;
+      this.x += dir * step;
+      this.setPose(movePose);
     }
   }
 
@@ -291,18 +334,6 @@ export class Character {
       this.pose = pose;
       this.frameNum = 0;
       this.poseTime = 0;
-    }
-  }
-
-  /** Move toward a target X position. */
-  moveTo(targetX: number, speed: number = 20): void {
-    const movePerFrame = speed / 60; // assume 60fps
-    if (Math.abs(targetX - this.x) < movePerFrame) {
-      this.x = targetX;
-      this.setPose("idle");
-    } else {
-      this.x += (targetX > this.x ? 1 : -1) * movePerFrame;
-      this.setPose("walk");
     }
   }
 
@@ -317,6 +348,11 @@ export class Character {
       w: size.w,
       h: size.h,
     };
+  }
+
+  /** Battle: flip the sprite to face the travel direction. No-op on land. */
+  private facingFlip(): string {
+    return this.battle && this.facing < 0 ? "scaleX(-1)" : "";
   }
 
   /** Tier/quality fallback color — visible even if no sprite loads. */
@@ -351,10 +387,10 @@ export class Character {
       const pulse = 0.5 + 0.5 * Math.sin(this.clock * 8);
       const glow = this.fallbackColor();
       const blur = (this.getSpriteSize().w * 0.5) * (0.6 + 0.4 * pulse);
-      this.el.style.transform = "";
+      this.el.style.transform = this.facingFlip();
       this.el.style.filter = `drop-shadow(0 0 ${blur.toFixed(1)}px ${glow})`;
     } else {
-      this.el.style.transform = "";
+      this.el.style.transform = this.facingFlip();
       this.el.style.filter = "";
     }
 
@@ -363,6 +399,10 @@ export class Character {
       // Render the selected cell of the sheet — no tiling.
       const frame = this.getSpriteFrame();
       this.el.style.backgroundColor = "transparent";
+      // Clear the fallback box styling (set before the sheet loaded) so no
+      // rounded glowing rectangle lingers behind the transparent sprite.
+      this.el.style.borderRadius = "0";
+      this.el.style.boxShadow = "none";
       this.el.style.backgroundImage = `url(${(sheet as HTMLImageElement).src})`;
       this.el.style.backgroundRepeat = "no-repeat";
       this.el.style.backgroundPosition = `-${frame.x}px -${frame.y}px`;

@@ -1,309 +1,306 @@
-// Sprite-art generator for "Infinite Eddie".
-// Produces readable placeholder SVG spritesheets for rockets + effects.
+// Sprite-art generator for "Infinite Eddie" — rockets + effects.
 //
-//   generate(assetsDir)  -> writes rocket-1.svg, rocket-2.svg, rocket-3.svg,
-//                           explosion.svg, rocket-flame.svg into assetsDir.
+//   generate(assetsDir)  -> writes rocket-1.png, rocket-2.png, rocket-3.png,
+//                           explosion.png, rocket-flame.png into assetsDir.
 //
 // Run directly:  node scripts/sprites/rocket.mjs   (writes into public/assets)
 //
-// Fully deterministic: no Math.random. A tiny seeded PRNG drives the spark
-// scatter in the explosion so frames look organic but are reproducible.
+// Style: chunky monochrome pixel-art matching .art-ref/reference.jpg — crisp
+// square blocks, near-black figures on a transparent background, a thin lighter
+// rim for readability on the dark ocean, and a single tier-colored accent pixel.
+// Fully DETERMINISTIC: every bit of motion is derived from the frame index.
 
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PixelCanvas, encodePNG, writePNG } from "./png.mjs";
 
 // ---------------------------------------------------------------------------
-// tiny helpers
+// shared palette — monochrome pixel-art
 // ---------------------------------------------------------------------------
 
-/** Deterministic mulberry32 PRNG. */
-function makeRng(seed) {
-  let a = seed >>> 0;
-  return function rng() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const DARK = "#1a1a22"; // near-black figure body
+const RIM = "#6b6b7a"; // lighter rim/outline for readability on dark bg
 
-const r2 = (n) => Math.round(n * 100) / 100; // trim float noise in output
+// Tier accent (one cockpit pixel). Rocket variants don't carry tier, so we use
+// a per-variant accent instead; tiers differ in-game via element scale. We map
+// the three rocket variants to the three tier accent colors for subtle variety.
+const ACCENTS = {
+  1: "#7ee0ff", // perfect cyan
+  2: "#b6ff5a", // normal lime
+  3: "#9aa0b0", // loose grey
+};
+
+// Flame colors (kept monochrome-ish dark with a hot core so it still reads as
+// fire but stays blocky / un-smoothed).
+const FLAME_OUTER = "#1a1a22";
+const FLAME_MID = "#4a4a55";
+const FLAME_HOT = "#cfcfe0";
 
 // ---------------------------------------------------------------------------
-// ROCKETS
+// ROCKETS  — 4 frames in a row, nose UP, 20x36 per frame (sheet 80x36)
 // ---------------------------------------------------------------------------
 
 const ROCKET_FW = 20;
 const ROCKET_FH = 36;
 const ROCKET_FRAMES = 4;
 
+// Design grid: 10 wide x 18 tall, upscaled x2 -> 20x36 chunky pixels.
+const RK_DW = 10;
+const RK_DH = 18;
+const RK_SCALE = ROCKET_FW / RK_DW; // = 2
+
 /**
- * One rocket frame. Nose cone at TOP (small y), fins + exhaust flame at BOTTOM.
- * @param {number} ox  x offset of this frame's left edge
- * @param {number} flick  0..3 flame flicker phase
- * @param {object} p  palette / proportion config for the variant
+ * Draw one rocket frame on a small design canvas. Nose at top (small y),
+ * exhaust flame flickers at the bottom. `flick` (0..3) drives the flame shape.
+ * `variant` (1..3) tweaks the body width / fin style + accent color.
  */
-function rocketFrame(ox, flick, p) {
-  const cx = ox + ROCKET_FW / 2; // frame horizontal centre
-  const noseTopY = 2;
-  const bodyTopY = 9; // where the cone meets the tube
-  const bodyBotY = 27; // bottom of the tube / start of fins
-  const bw = p.bodyW; // body half-width measured from centre
-  const left = cx - bw;
-  const right = cx + bw;
+function drawRocketCell(c, flick, variant) {
+  const accent = ACCENTS[variant];
+  const cx = 4; // left column of the 2-wide body core (cols 4,5)
 
-  // Tail flame flicker: length + width cycle through the 4 frames.
-  const flickLen = [5, 8, 4, 7][flick];
-  const flickW = [3.2, 4.2, 2.6, 3.8][flick];
-  const fTopY = bodyBotY + 1.5;
-  const fBotY = fTopY + flickLen;
+  // Body silhouette varies a touch per variant for distinct shapes.
+  // Columns used by the body core: cx..cx+1 (2 wide) plus shoulders.
+  // Rows: nose 1, body 2..12, fins 12..14.
 
-  const parts = [];
+  // --- nose cone (rows 1-3) ---
+  c.rect(4, 1, 2, 1, DARK); // tip
+  c.rect(4, 2, 2, 1, DARK);
+  c.set(3, 3, DARK);
+  c.rect(4, 3, 2, 1, DARK);
+  c.set(6, 3, DARK);
 
-  // --- engine tail flame (very bottom, behind fins) ---
-  parts.push(
-    `<path d="M ${r2(cx - flickW)} ${r2(fTopY)} Q ${r2(cx)} ${r2(fBotY + 2)} ${r2(cx + flickW)} ${r2(fTopY)} Z" fill="${p.flameOuter}"/>`
-  );
-  parts.push(
-    `<path d="M ${r2(cx - flickW * 0.55)} ${r2(fTopY)} Q ${r2(cx)} ${r2(fBotY)} ${r2(cx + flickW * 0.55)} ${r2(fTopY)} Z" fill="${p.flameCore}"/>`
-  );
+  // --- body tube (rows 4-11) 4 wide (cols 3..6) ---
+  for (let y = 4; y <= 11; y++) c.rect(3, y, 4, 1, DARK);
 
-  // --- fins (left + right) at the bottom of the body ---
-  const finOut = p.finOut; // how far fins flare past the body
-  const finBot = bodyBotY + 5;
-  parts.push(
-    `<path d="M ${r2(left)} ${r2(bodyBotY - 4)} L ${r2(left - finOut)} ${r2(finBot)} L ${r2(left)} ${r2(bodyBotY)} Z" fill="${p.fin}" stroke="${p.outline}" stroke-width="0.8" stroke-linejoin="round"/>`
-  );
-  parts.push(
-    `<path d="M ${r2(right)} ${r2(bodyBotY - 4)} L ${r2(right + finOut)} ${r2(finBot)} L ${r2(right)} ${r2(bodyBotY)} Z" fill="${p.fin}" stroke="${p.outline}" stroke-width="0.8" stroke-linejoin="round"/>`
-  );
+  // variant 1: straight tube. variant 2: slimmer waist. variant 3: chunkier.
+  if (variant === 2) {
+    // carve a slimmer waist (rows 6-9 -> 2 wide centered)
+    for (let y = 6; y <= 9; y++) {
+      c.set(3, y, "#00000000");
+      c.set(6, y, "#00000000");
+    }
+  } else if (variant === 3) {
+    // bulge shoulders (rows 5-8 widen to cols 2..7)
+    for (let y = 5; y <= 8; y++) {
+      c.set(2, y, DARK);
+      c.set(7, y, DARK);
+    }
+  }
 
-  // --- body tube + nose cone as a single outlined silhouette ---
-  parts.push(
-    `<path d="M ${r2(cx)} ${r2(noseTopY)} ` +
-      `Q ${r2(right + 0.5)} ${r2(bodyTopY - 1)} ${r2(right)} ${r2(bodyTopY)} ` +
-      `L ${r2(right)} ${r2(bodyBotY)} ` +
-      `Q ${r2(cx)} ${r2(bodyBotY + 3)} ${r2(left)} ${r2(bodyBotY)} ` +
-      `L ${r2(left)} ${r2(bodyTopY)} ` +
-      `Q ${r2(left - 0.5)} ${r2(bodyTopY - 1)} ${r2(cx)} ${r2(noseTopY)} Z" ` +
-      `fill="${p.body}" stroke="${p.outline}" stroke-width="1" stroke-linejoin="round"/>`
-  );
+  // --- cockpit accent window (single chunky pixel-ish block) ---
+  c.set(4, 6, accent);
+  c.set(5, 6, accent);
 
-  // --- nose cone accent (top section in accent colour) ---
-  parts.push(
-    `<path d="M ${r2(cx)} ${r2(noseTopY)} ` +
-      `Q ${r2(right + 0.5)} ${r2(bodyTopY - 1)} ${r2(right)} ${r2(bodyTopY)} ` +
-      `L ${r2(left)} ${r2(bodyTopY)} ` +
-      `Q ${r2(left - 0.5)} ${r2(bodyTopY - 1)} ${r2(cx)} ${r2(noseTopY)} Z" ` +
-      `fill="${p.nose}"/>`
-  );
+  // --- fins at the bottom (rows 12-14) ---
+  c.rect(3, 12, 4, 1, DARK);
+  if (variant === 1) {
+    // wide swept fins
+    c.set(2, 13, DARK);
+    c.set(7, 13, DARK);
+    c.set(2, 14, DARK);
+    c.set(7, 14, DARK);
+    c.rect(3, 13, 4, 1, DARK);
+    c.rect(4, 14, 2, 1, DARK);
+  } else if (variant === 2) {
+    // tall narrow fins
+    c.set(2, 13, DARK);
+    c.set(7, 13, DARK);
+    c.rect(3, 13, 4, 1, DARK);
+    c.set(2, 14, DARK);
+    c.set(7, 14, DARK);
+  } else {
+    // stubby chunky fins
+    c.set(1, 13, DARK);
+    c.set(8, 13, DARK);
+    c.rect(2, 13, 6, 1, DARK);
+    c.rect(4, 14, 2, 1, DARK);
+  }
 
-  // --- vertical highlight stripe on the body for a glossy read ---
-  parts.push(
-    `<rect x="${r2(cx - bw * 0.45)} " y="${r2(bodyTopY + 1)}" width="${r2(bw * 0.35)}" height="${r2(bodyBotY - bodyTopY - 2)}" rx="0.8" fill="${p.highlight}" opacity="0.5"/>`
-  );
+  // --- exhaust flame flicker (rows 15-17) — derived from frame index ---
+  // Four flicker patterns: vary length + which side pokes out.
+  const flame = [
+    { len: 2, jag: 0 },
+    { len: 3, jag: 1 },
+    { len: 2, jag: -1 },
+    { len: 3, jag: 0 },
+  ][flick];
 
-  // --- porthole window ---
-  const portY = bodyTopY + (bodyBotY - bodyTopY) * 0.4;
-  parts.push(
-    `<circle cx="${r2(cx)}" cy="${r2(portY)}" r="${r2(p.portR + 0.7)}" fill="${p.outline}"/>`
-  );
-  parts.push(
-    `<circle cx="${r2(cx)}" cy="${r2(portY)}" r="${r2(p.portR)}" fill="${p.window}"/>`
-  );
-  parts.push(
-    `<circle cx="${r2(cx - p.portR * 0.3)}" cy="${r2(portY - p.portR * 0.3)}" r="${r2(p.portR * 0.35)}" fill="#ffffff" opacity="0.85"/>`
-  );
+  let fy = 15;
+  // core flame column (cols 4,5)
+  c.rect(4, fy, 2, 1, FLAME_HOT);
+  if (flame.len >= 2) {
+    c.rect(4, fy + 1, 2, 1, FLAME_MID);
+    // jagged side flicker
+    if (flame.jag < 0) c.set(3, fy + 1, FLAME_MID);
+    if (flame.jag > 0) c.set(6, fy + 1, FLAME_MID);
+  }
+  if (flame.len >= 3) {
+    c.set(4 + (flame.jag > 0 ? 1 : 0), fy + 2, FLAME_OUTER);
+    c.set(5 - (flame.jag < 0 ? 1 : 0), fy + 2, FLAME_OUTER);
+  }
 
-  return parts.join("\n      ");
+  // --- rim/outline pass: put a lighter pixel where a DARK pixel borders empty
+  addRim(c, DARK, RIM);
 }
 
-function rocketSvg(p) {
+/**
+ * Add a 1-design-pixel lighter rim around every DARK pixel that borders a
+ * transparent cell. Keeps the silhouette readable on a dark background while
+ * staying perfectly blocky.
+ */
+function addRim(c, fillHex, rimHex) {
+  const [fr, fg, fb] = hexRGB(fillHex);
+  const isFill = (x, y) => {
+    if (x < 0 || y < 0 || x >= c.w || y >= c.h) return false;
+    const i = (y * c.w + x) * 4;
+    return c.data[i] === fr && c.data[i + 1] === fg && c.data[i + 2] === fb && c.data[i + 3] === 255;
+  };
+  const isEmpty = (x, y) => {
+    if (x < 0 || y < 0 || x >= c.w || y >= c.h) return true;
+    const i = (y * c.w + x) * 4;
+    return c.data[i + 3] === 0;
+  };
+  const toPaint = [];
+  for (let y = 0; y < c.h; y++) {
+    for (let x = 0; x < c.w; x++) {
+      if (!isEmpty(x, y)) continue;
+      if (isFill(x - 1, y) || isFill(x + 1, y) || isFill(x, y - 1) || isFill(x, y + 1)) {
+        toPaint.push([x, y]);
+      }
+    }
+  }
+  for (const [x, y] of toPaint) c.set(x, y, rimHex);
+}
+
+function hexRGB(hex) {
+  const h = hex.replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+function buildRocketSheet(variant) {
   const W = ROCKET_FW * ROCKET_FRAMES;
   const H = ROCKET_FH;
-  let frames = "";
-  for (let i = 0; i < ROCKET_FRAMES; i++) {
-    frames += `\n    <g>\n      ${rocketFrame(i * ROCKET_FW, i, p)}\n    </g>`;
+  const target = new Uint8Array(W * H * 4);
+  for (let f = 0; f < ROCKET_FRAMES; f++) {
+    const cell = new PixelCanvas(RK_DW, RK_DH);
+    drawRocketCell(cell, f, variant);
+    cell.blitInto(target, W, f * ROCKET_FW, 0, RK_SCALE);
   }
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" ` +
-    `viewBox="0 0 ${W} ${H}" shape-rendering="geometricPrecision">` +
-    `${frames}\n</svg>\n`
-  );
+  return encodePNG(W, H, target);
 }
 
-// Three clearly-distinct variants.
-const ROCKET_VARIANTS = {
-  "rocket-1.svg": {
-    // white body, red nose, amber fins/flame — classic
-    body: "#f3f4f6",
-    nose: "#e3342f",
-    fin: "#f6ad2b",
-    outline: "#27184a",
-    window: "#3bc9ff",
-    flameCore: "#fff3b0",
-    flameOuter: "#ff9326",
-    highlight: "#ffffff",
-    bodyW: 5.2,
-    finOut: 3.2,
-    portR: 2.1,
-  },
-  "rocket-2.svg": {
-    // slim cyan body, lime nose + swept fins
-    body: "#27c7d6",
-    nose: "#a6f43a",
-    fin: "#7be000",
-    outline: "#0b2a3a",
-    window: "#fff7c4",
-    flameCore: "#eafff0",
-    flameOuter: "#36e0b0",
-    highlight: "#bdfffb",
-    bodyW: 4.3,
-    finOut: 4.0,
-    portR: 1.9,
-  },
-  "rocket-3.svg": {
-    // chunky magenta body, gold nose + stubby fins
-    body: "#e23ca8",
-    nose: "#ffcf3a",
-    fin: "#ffb000",
-    outline: "#2a0a33",
-    window: "#9be8ff",
-    flameCore: "#fff0fb",
-    flameOuter: "#ff5ad2",
-    highlight: "#ffd6f3",
-    bodyW: 6.0,
-    finOut: 2.6,
-    portR: 2.4,
-  },
-};
-
 // ---------------------------------------------------------------------------
-// EXPLOSION  — 6 frames, 48x48 square
+// EXPLOSION  — 6 frames in a row, square 48x48 (sheet 288x48)
 // ---------------------------------------------------------------------------
 
 const EXP_FS = 48;
 const EXP_FRAMES = 6;
+const EX_D = 12; // design grid 12x12
+const EX_SCALE = EXP_FS / EX_D; // = 4
 
-function explosionFrame(ox, frame) {
-  const cx = ox + EXP_FS / 2;
-  const cy = EXP_FS / 2;
-  const rng = makeRng(0x51c0 + frame * 977); // deterministic per frame
+// A blocky starburst that grows then fades. Deterministic per frame: each frame
+// is a hand-authored ring radius + a fixed jagged spark mask, so it animates
+// without randomness.
+function drawExplosionCell(c, frame) {
+  const cx = 5.5; // center between cols 5,6 of a 12-wide grid
+  const cy = 5.5;
 
-  // Evolution curve over 6 frames:
-  // 0 tiny bright core, 1-2 expanding fireball, 3 peak orange blast +shards,
-  // 4-5 fading smoke.
-  const radius = [4, 11, 17, 21, 20, 18][frame];
-  const coreR = [3.5, 7, 8, 5, 2.5, 0][frame];
-  const opacity = [1, 1, 1, 0.95, 0.7, 0.35][frame];
-  const sparkCount = [0, 6, 10, 12, 8, 5][frame];
-  const sparkSpread = [0, 14, 20, 26, 30, 33][frame];
+  // Per-frame look: [coreR, ringR, spikes(on/off), color]
+  // 0 spark, 1-2 grow, 3 peak, 4-5 fade
+  const radius = [1.5, 3, 4.5, 5.5, 5, 4][frame];
+  const coreR = [1.5, 2.5, 3, 2, 1, 0][frame];
+  const hot = [FLAME_HOT, FLAME_HOT, FLAME_HOT, FLAME_HOT, FLAME_MID, FLAME_OUTER][frame];
+  const ring = [FLAME_MID, DARK, DARK, DARK, FLAME_OUTER, FLAME_OUTER][frame];
 
-  const parts = [`<g opacity="${opacity}">`];
-
-  // outer fireball / smoke ring
-  if (frame >= 4) {
-    // fading smoke puffs
-    for (let i = 0; i < 5; i++) {
-      const ang = (i / 5) * Math.PI * 2 + frame;
-      const d = radius * 0.6;
-      const px = cx + Math.cos(ang) * d;
-      const py = cy + Math.sin(ang) * d;
-      const pr = radius * (0.45 + rng() * 0.2);
-      parts.push(
-        `<circle cx="${r2(px)}" cy="${r2(py)}" r="${r2(pr)}" fill="#6b5240" opacity="0.5"/>`
-      );
+  // filled blocky disc for the fireball body
+  for (let y = 0; y < EX_D; y++) {
+    for (let x = 0; x < EX_D; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d <= radius) c.set(x, y, ring);
     }
-  } else {
-    parts.push(`<circle cx="${cx}" cy="${cy}" r="${r2(radius)}" fill="#d6361a"/>`);
-    parts.push(
-      `<circle cx="${cx}" cy="${cy}" r="${r2(radius * 0.78)}" fill="#ff7a18"/>`
-    );
-    parts.push(
-      `<circle cx="${cx}" cy="${cy}" r="${r2(radius * 0.52)}" fill="#ffd23f"/>`
-    );
+  }
+  // hot core
+  for (let y = 0; y < EX_D; y++) {
+    for (let x = 0; x < EX_D; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (coreR > 0 && d <= coreR) c.set(x, y, hot);
+    }
   }
 
-  // bright white-hot core
-  if (coreR > 0) {
-    parts.push(
-      `<circle cx="${cx}" cy="${cy}" r="${r2(coreR)}" fill="#fffbe6"/>`
-    );
+  // jagged spikes radiating out (8 directions), length scales with frame.
+  const spikeLen = [0, 1, 2, 3, 2, 1][frame];
+  const dirs = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [-1, 1], [1, -1], [-1, -1],
+  ];
+  for (const [dx, dy] of dirs) {
+    for (let s = 1; s <= spikeLen; s++) {
+      const px = Math.round(cx + dx * (radius + s) * (dx && dy ? 0.7 : 1));
+      const py = Math.round(cy + dy * (radius + s) * (dx && dy ? 0.7 : 1));
+      const col = s === spikeLen ? FLAME_OUTER : frame >= 4 ? FLAME_OUTER : FLAME_MID;
+      c.set(px, py, col);
+    }
   }
-
-  // spark shards radiating outward
-  for (let i = 0; i < sparkCount; i++) {
-    const ang = rng() * Math.PI * 2;
-    const dist = sparkSpread * (0.5 + rng() * 0.5);
-    const px = cx + Math.cos(ang) * dist;
-    const py = cy + Math.sin(ang) * dist;
-    const sr = 0.8 + rng() * 1.8;
-    const col = frame >= 4 ? "#ffae5c" : i % 2 === 0 ? "#fff2a8" : "#ff7a18";
-    parts.push(`<circle cx="${r2(px)}" cy="${r2(py)}" r="${r2(sr)}" fill="${col}"/>`);
-  }
-
-  parts.push("</g>");
-  return parts.join("\n      ");
 }
 
-function explosionSvg() {
+function buildExplosionSheet() {
   const W = EXP_FS * EXP_FRAMES;
   const H = EXP_FS;
-  let frames = "";
-  for (let i = 0; i < EXP_FRAMES; i++) {
-    frames += `\n    <g>\n      ${explosionFrame(i * EXP_FS, i)}\n    </g>`;
+  const target = new Uint8Array(W * H * 4);
+  for (let f = 0; f < EXP_FRAMES; f++) {
+    const cell = new PixelCanvas(EX_D, EX_D);
+    drawExplosionCell(cell, f);
+    cell.blitInto(target, W, f * EXP_FS, 0, EX_SCALE);
   }
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" ` +
-    `viewBox="0 0 ${W} ${H}" shape-rendering="geometricPrecision">` +
-    `${frames}\n</svg>\n`
-  );
+  return encodePNG(W, H, target);
 }
 
 // ---------------------------------------------------------------------------
-// ENGINE FLAME  — 4 frames, 16x22, points DOWN
+// ENGINE FLAME  — 4 frames in a row, points DOWN, 16x22 per frame (sheet 64x22)
 // ---------------------------------------------------------------------------
 
 const FLAME_FW = 16;
 const FLAME_FH = 22;
 const FLAME_FRAMES = 4;
+const FL_DW = 8; // design 8x11
+const FL_DH = 11;
+const FL_SCALE = FLAME_FW / FL_DW; // = 2
 
-function flameFrame(ox, flick) {
-  const cx = ox + FLAME_FW / 2;
-  const topY = 1; // attaches to rocket tail at the TOP
-  // flicker the trail length + width
-  const len = [18, 21, 16, 20][flick];
-  const w = [5.4, 6.2, 4.6, 5.8][flick];
-  const tipY = topY + len;
+// Teardrop of fire pointing DOWN, built from chunky blocks. Wide flat top
+// (attaches to the rocket tail), tapering to a jagged tip at the bottom.
+function drawFlameCell(c, flick) {
+  const cx = 3; // body occupies cols 3,4 (2 wide center)
+  // flicker length + tip wiggle from frame index
+  const len = [8, 10, 7, 9][flick];
+  const wiggle = [0, 1, -1, 0][flick];
 
-  // teardrop: wide flat top at the tail, tapering to a point at the bottom.
-  const teardrop = (halfW, bottomY) =>
-    `M ${r2(cx - halfW)} ${r2(topY)} ` +
-    `C ${r2(cx - halfW)} ${r2(topY + len * 0.5)} ${r2(cx - halfW * 0.4)} ${r2(bottomY - 1)} ${r2(cx)} ${r2(bottomY)} ` +
-    `C ${r2(cx + halfW * 0.4)} ${r2(bottomY - 1)} ${r2(cx + halfW)} ${r2(topY + len * 0.5)} ${r2(cx + halfW)} ${r2(topY)} Z`;
-
-  return [
-    `<path d="${teardrop(w, tipY)}" fill="#ff3b1f"/>`,
-    `<path d="${teardrop(w * 0.72, topY + len * 0.82)}" fill="#ff8a1e"/>`,
-    `<path d="${teardrop(w * 0.46, topY + len * 0.62)}" fill="#ffcf3a"/>`,
-    `<path d="${teardrop(w * 0.22, topY + len * 0.42)}" fill="#fffbe6"/>`,
-  ].join("\n      ");
+  // Build the flame from concentric "shells" widest at the top.
+  // top rows wide, tapering down.
+  for (let y = 0; y < len; y++) {
+    const t = y / len; // 0 top -> 1 tip
+    // half-width shrinks from 2 to 0 as we go down
+    const halfW = Math.max(0, Math.round((1 - t) * 2.4));
+    const center = cx + (y > len * 0.6 ? wiggle : 0);
+    // outer shell
+    for (let dx = -halfW; dx <= halfW; dx++) {
+      let col = FLAME_OUTER;
+      if (Math.abs(dx) <= halfW - 1) col = FLAME_MID;
+      if (dx === 0 && y < len * 0.55) col = FLAME_HOT;
+      c.set(center + dx, y, col);
+    }
+  }
 }
 
-function flameSvg() {
+function buildFlameSheet() {
   const W = FLAME_FW * FLAME_FRAMES;
   const H = FLAME_FH;
-  let frames = "";
-  for (let i = 0; i < FLAME_FRAMES; i++) {
-    frames += `\n    <g>\n      ${flameFrame(i * FLAME_FW, i)}\n    </g>`;
+  const target = new Uint8Array(W * H * 4);
+  for (let f = 0; f < FLAME_FRAMES; f++) {
+    const cell = new PixelCanvas(FL_DW, FL_DH);
+    drawFlameCell(cell, f);
+    cell.blitInto(target, W, f * FLAME_FW, 0, FL_SCALE);
   }
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" ` +
-    `viewBox="0 0 ${W} ${H}" shape-rendering="geometricPrecision">` +
-    `${frames}\n</svg>\n`
-  );
+  return encodePNG(W, H, target);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,21 +308,20 @@ function flameSvg() {
 // ---------------------------------------------------------------------------
 
 export function generate(assetsDir) {
-  fs.mkdirSync(assetsDir, { recursive: true });
   const written = [];
 
-  for (const [name, palette] of Object.entries(ROCKET_VARIANTS)) {
-    const file = path.join(assetsDir, name);
-    fs.writeFileSync(file, rocketSvg(palette));
+  for (const variant of [1, 2, 3]) {
+    const file = path.join(assetsDir, `rocket-${variant}.png`);
+    writePNG(file, buildRocketSheet(variant));
     written.push(file);
   }
 
-  const expFile = path.join(assetsDir, "explosion.svg");
-  fs.writeFileSync(expFile, explosionSvg());
+  const expFile = path.join(assetsDir, "explosion.png");
+  writePNG(expFile, buildExplosionSheet());
   written.push(expFile);
 
-  const flameFile = path.join(assetsDir, "rocket-flame.svg");
-  fs.writeFileSync(flameFile, flameSvg());
+  const flameFile = path.join(assetsDir, "rocket-flame.png");
+  writePNG(flameFile, buildFlameSheet());
   written.push(flameFile);
 
   return written;
@@ -336,7 +332,7 @@ const isMain =
   process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(here, "..", ".."); // scripts/sprites -> repo root
+  const repoRoot = path.resolve(here, "..", "..");
   const assetsDir = path.join(repoRoot, "public", "assets");
   const files = generate(assetsDir);
   console.log(`Wrote ${files.length} sprite files to ${assetsDir}:`);

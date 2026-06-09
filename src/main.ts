@@ -7,6 +7,7 @@ import { EddieArtDebugState } from "./states/EddieArtDebugState";
 import { EddieSoundDebugState } from "./states/EddieSoundDebugState";
 import { EddieBgMenuState } from "./states/EddieBgMenuState";
 import { EddieDebugState } from "./states/EddieDebugState";
+import { BattleState, createBattleConfig } from "./states/BattleState";
 
 const root = document.getElementById("game");
 if (!root) throw new Error("missing #game");
@@ -33,6 +34,11 @@ if (params.has("chars")) {
   // Record/calibrate: feed a known file (or the mic) through the real detection
   // chain and download the input audio + detected-note JSON for diagnosis.
   game.setState(new EddieDebugState(hud));
+} else if (params.has("battle")) {
+  // Battle mode: endless 4-bar jam over the ocean, always recording.
+  game.setState(
+    new BattleState(hud, createBattleConfig(), () => game.setState(new BootState(hud))),
+  );
 } else if (params.has("eddie")) {
   // Jump straight to the Infinite Eddie settings screen.
   game.setState(new EddieSettingsState(hud));
