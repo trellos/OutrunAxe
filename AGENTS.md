@@ -370,7 +370,11 @@ touch PitchEngine.
    (sharks killed / dudes eaten) shows under the main readout and on the results
    screen. The shared grid/feedback changes (`scoredMeasures`/`introRow` in
    `EddieGrid`, `gridMeasures`/`crowdBattle` in `eddieArtFactory`) are additive —
-   Score Run is unchanged by default.
+   Score Run is unchanged by default. **No on-screen instructional/help text in
+   Battle** — it's a video game, not an app; players don't read UI copy. Convey
+   things through art and feel (e.g. the count-in is a screen pulse), not a HUD
+   paragraph. The only Battle HUD text is the score (sharks killed / dudes eaten,
+   under the main readout, with sprite icons) and the results screen.
 
 ## Glossary
 
