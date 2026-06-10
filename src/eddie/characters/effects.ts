@@ -235,6 +235,66 @@ export class Bonk implements Effect {
   }
 }
 
+/** A water splash: plays the 6-frame `splash` sheet over its lifetime (a man
+ *  hitting the water, or — gold-tinted — the finale diver surfacing). Falls back
+ *  to a CSS water-plume burst until/if the sheet fails to load. Same lifecycle
+ *  contract as Blood/Explosion. */
+export class Splash implements Effect {
+  private el: HTMLDivElement;
+  private life = 0;
+  private readonly maxLife = 0.5;
+  private readonly frames = 6;
+  private readonly displaySize: number;
+  private sheet: HTMLImageElement | SVGImageElement | null = null;
+
+  constructor(container: HTMLElement, x: number, y: number, scale = 1, gold = false) {
+    this.displaySize = 64 * scale;
+    this.el = document.createElement("div");
+    this.el.className = "eddie-splash";
+    this.el.style.cssText =
+      `position:absolute;left:${x - this.displaySize / 2}px;top:${y - this.displaySize / 2}px;` +
+      `width:${this.displaySize}px;height:${this.displaySize}px;` +
+      `pointer-events:none;background-repeat:no-repeat;z-index:8;`;
+    // CSS fallback plume (shows immediately, replaced once the sheet loads).
+    this.el.style.background = gold
+      ? "radial-gradient(circle,#fff 0%,#ffe98a 40%,#ffb24d 60%,rgba(255,178,77,0) 78%)"
+      : "radial-gradient(circle,#fff 0%,#bfe9ff 40%,#5ab6ff 60%,rgba(90,182,255,0) 78%)";
+    container.appendChild(this.el);
+
+    loadSpriteSheet(gold ? "splash-gold" : "splash")
+      .then((img) => {
+        this.sheet = img;
+        this.el.style.background = "none";
+        this.el.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
+        this.el.style.backgroundSize = `${this.displaySize * this.frames}px ${this.displaySize}px`;
+      })
+      .catch(() => {
+        /* keep the CSS plume */
+      });
+  }
+
+  update(dt: number): boolean {
+    this.life += dt;
+    const k = this.life / this.maxLife;
+    if (k >= 1) {
+      this.dispose();
+      return true;
+    }
+    if (this.sheet) {
+      const frame = Math.min(this.frames - 1, Math.floor(k * this.frames));
+      this.el.style.backgroundPosition = `-${frame * this.displaySize}px 0`;
+    } else {
+      this.el.style.transform = `scale(${(0.5 + k).toFixed(2)})`;
+      this.el.style.opacity = String(1 - k);
+    }
+    return false;
+  }
+
+  dispose(): void {
+    this.el.remove();
+  }
+}
+
 /** A big boom: plays the 6-frame explosion sheet over its lifetime, scaling up
  *  as it goes. Falls back to a CSS flash until/if the sheet fails to load. */
 export class Explosion implements Effect {

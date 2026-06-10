@@ -21,6 +21,31 @@ import { particlesByIndex } from "./particles/registry";
 import type { EddieBackgroundVariant } from "./backgrounds/types";
 import type { EddieParticlesVariant } from "./particles/types";
 import { CharacterManager } from "../characters/CharacterManager";
+import { CliffDiveCrowd } from "../characters/cliff/CliffDiveCrowd";
+
+/** Quarter-diamond info routed from the grid to whichever crowd is mounted. */
+interface QuarterDiamondInfo {
+  measure: number;
+  beat: number;
+  subdiv: number;
+  notes: Array<{ strong: boolean; quality: number }>;
+}
+
+/** The mode-agnostic crowd surface the rig drives. Both CharacterManager (Score
+ *  Run / Battle) and CliffDiveCrowd implement the shared members; Cliff-Dive-only
+ *  hooks are optional so the rig can call them blindly. */
+interface RigCrowd {
+  onQuarterDiamonds(info: QuarterDiamondInfo): void;
+  setActiveMeasure(measure: number): void;
+  update(dt: number): void;
+  dispose(): void;
+  /** Battle: spawn a shark this beat. */
+  battleBeat?(): void;
+  /** Cliff Dive: schedule a dolphin wave for this measure. */
+  measureWave?(measure: number): void;
+  /** Cliff Dive: a beat tick (drives the finale swan-dives). */
+  beat?(): void;
+}
 
 export interface EddieArtRig {
   /** Build DOM/scene objects. `hudParent` is the HUD div; `scene` is the
@@ -47,16 +72,26 @@ export interface EddieArtRig {
     gridIntroRow?: boolean;
     /** Battle mode for the crowd: sharks spawn and the dudes fight in the water. */
     crowdBattle?: boolean;
+    /** Crowd selector. "cliffdive" mounts CliffDiveCrowd instead of the default
+     *  CharacterManager; omitted/"battle" keeps the existing behavior. */
+    crowdMode?: "battle" | "cliffdive";
     /** Battle: the people line as a fraction of viewport height (≈0.8). */
     crowdGroundFraction?: number;
     /** Battle scorekeeping. */
     onSharkKilled?: () => void;
     onDudeEaten?: () => void;
+    /** Cliff Dive scorekeeping. */
+    onDolphinKnockdown?: () => void;
+    onDudeDive?: () => void;
   }): void;
   update(dt: number, audioTime: number): void;
   setActiveMeasure(scoredMeasure: number): void;
   /** Battle: advance one beat (spawns a shark). No-op outside battle. */
   battleBeat(): void;
+  /** Cliff Dive: schedule a dolphin wave for this measure. No-op otherwise. */
+  cliffDiveMeasureWave(measure: number): void;
+  /** Cliff Dive: a beat tick (drives the finale swan-dives). No-op otherwise. */
+  cliffDiveBeat(): void;
   /** Screen-space origin for score particles: the centre of the just-played note
    *  bars in the scored quarter (measure 0..15, beat 0..3), so particles fly out
    *  of the notes that earned the points. Null if it can't be resolved (the play
@@ -72,7 +107,7 @@ class EddieArtRigImpl implements EddieArtRig {
   private fire = new EddieFire();
   private background: EddieBackgroundVariant | null = null;
   private particles: EddieParticlesVariant | null = null;
-  private characters: CharacterManager | null = null;
+  private characters: RigCrowd | null = null;
   /** Scored measures shown (16 Score Run; 4 Battle). Used to fold absolute
    *  measures into the rolling cell window in resolveCell/resolveNoteOrigin. */
   private gridMeasures = 16;
@@ -94,9 +129,12 @@ class EddieArtRigImpl implements EddieArtRig {
     gridMeasures?: number;
     gridIntroRow?: boolean;
     crowdBattle?: boolean;
+    crowdMode?: "battle" | "cliffdive";
     crowdGroundFraction?: number;
     onSharkKilled?: () => void;
     onDudeEaten?: () => void;
+    onDolphinKnockdown?: () => void;
+    onDudeDive?: () => void;
   }): void {
     this.gridMeasures = Math.max(4, ctx.gridMeasures ?? 16);
     this.gridIntroRow = ctx.gridIntroRow ?? true;
@@ -135,17 +173,31 @@ class EddieArtRigImpl implements EddieArtRig {
       juice: ctx.juice,
       resolveCell: (measure) => this.resolveCell(measure),
     });
-    this.characters = new CharacterManager({
-      juice: ctx.juice,
-      hudParent: root,
-      resolveCell: (measure) => this.resolveCell(measure),
-      beatDuration: 60 / ctx.config.bpm,
-      battle: ctx.crowdBattle,
-      groundFraction: ctx.crowdGroundFraction,
-      onSharkKilled: ctx.onSharkKilled,
-      onDudeEaten: ctx.onDudeEaten,
-    });
-    this.characters.mount();
+    if (ctx.crowdMode === "cliffdive") {
+      const crowd = new CliffDiveCrowd({
+        juice: ctx.juice,
+        hudParent: root,
+        resolveCell: (measure) => this.resolveCell(measure),
+        beatDuration: 60 / ctx.config.bpm,
+        onDolphinKnockdown: ctx.onDolphinKnockdown,
+        onDudeDive: ctx.onDudeDive,
+      });
+      crowd.mount();
+      this.characters = crowd;
+    } else {
+      const crowd = new CharacterManager({
+        juice: ctx.juice,
+        hudParent: root,
+        resolveCell: (measure) => this.resolveCell(measure),
+        beatDuration: 60 / ctx.config.bpm,
+        battle: ctx.crowdBattle,
+        groundFraction: ctx.crowdGroundFraction,
+        onSharkKilled: ctx.onSharkKilled,
+        onDudeEaten: ctx.onDudeEaten,
+      });
+      crowd.mount();
+      this.characters = crowd;
+    }
     this.particles = particlesByIndex(ctx.fxIndex ?? 0).create();
     this.particles.mount({
       hudParent: root,
@@ -226,7 +278,15 @@ class EddieArtRigImpl implements EddieArtRig {
   }
 
   battleBeat(): void {
-    this.characters?.battleBeat();
+    this.characters?.battleBeat?.();
+  }
+
+  cliffDiveMeasureWave(measure: number): void {
+    this.characters?.measureWave?.(measure);
+  }
+
+  cliffDiveBeat(): void {
+    this.characters?.beat?.();
   }
 
   dispose(): void {
