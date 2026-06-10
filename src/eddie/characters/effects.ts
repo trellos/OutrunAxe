@@ -124,6 +124,117 @@ export class Spark implements Effect {
   }
 }
 
+/** A blood splash: plays the 6-frame `blood` sheet over its lifetime (a shark
+ *  eating a person, or a shark dying). Falls back to a red CSS burst until/if the
+ *  sheet fails to load. Mirrors Explosion but with the gory palette + sheet. */
+export class Blood implements Effect {
+  private el: HTMLDivElement;
+  private life = 0;
+  private readonly maxLife = 0.5;
+  private readonly frames = 6;
+  private readonly displaySize: number;
+  private sheet: HTMLImageElement | SVGImageElement | null = null;
+
+  constructor(container: HTMLElement, x: number, y: number, scale = 1) {
+    this.displaySize = 84 * scale;
+    this.el = document.createElement("div");
+    this.el.className = "eddie-blood";
+    this.el.style.cssText =
+      `position:absolute;left:${x - this.displaySize / 2}px;top:${y - this.displaySize / 2}px;` +
+      `width:${this.displaySize}px;height:${this.displaySize}px;` +
+      `pointer-events:none;background-repeat:no-repeat;z-index:7;`;
+    // CSS fallback burst (shows immediately, replaced once the sheet loads).
+    this.el.style.background =
+      "radial-gradient(circle,#ff5a6e 0%,#c81e3a 45%,#7a0f22 65%,rgba(122,15,34,0) 78%)";
+    container.appendChild(this.el);
+
+    loadSpriteSheet("blood")
+      .then((img) => {
+        this.sheet = img;
+        this.el.style.background = "none";
+        this.el.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
+        this.el.style.backgroundSize = `${this.displaySize * this.frames}px ${this.displaySize}px`;
+      })
+      .catch(() => {
+        /* keep the CSS burst */
+      });
+  }
+
+  update(dt: number): boolean {
+    this.life += dt;
+    const k = this.life / this.maxLife;
+    if (k >= 1) {
+      this.dispose();
+      return true;
+    }
+    if (this.sheet) {
+      const frame = Math.min(this.frames - 1, Math.floor(k * this.frames));
+      this.el.style.backgroundPosition = `-${frame * this.displaySize}px 0`;
+    } else {
+      this.el.style.transform = `scale(${(0.5 + k).toFixed(2)})`;
+      this.el.style.opacity = String(1 - k);
+    }
+    return false;
+  }
+
+  dispose(): void {
+    this.el.remove();
+  }
+}
+
+/** A little impact "bonk" when a boomerang strikes: plays the 4-frame `bonk`
+ *  sheet (a comic starburst). Falls back to a white flash. */
+export class Bonk implements Effect {
+  private el: HTMLDivElement;
+  private life = 0;
+  private readonly maxLife = 0.3;
+  private readonly frames = 4;
+  private readonly displaySize = 40;
+  private sheet: HTMLImageElement | SVGImageElement | null = null;
+
+  constructor(container: HTMLElement, x: number, y: number) {
+    this.el = document.createElement("div");
+    this.el.className = "eddie-bonk";
+    this.el.style.cssText =
+      `position:absolute;left:${x - this.displaySize / 2}px;top:${y - this.displaySize / 2}px;` +
+      `width:${this.displaySize}px;height:${this.displaySize}px;` +
+      `pointer-events:none;background-repeat:no-repeat;z-index:8;`;
+    this.el.style.background =
+      "radial-gradient(circle,#fff 0%,#ffe14d 45%,rgba(255,225,77,0) 70%)";
+    container.appendChild(this.el);
+    loadSpriteSheet("bonk")
+      .then((img) => {
+        this.sheet = img;
+        this.el.style.background = "none";
+        this.el.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
+        this.el.style.backgroundSize = `${this.displaySize * this.frames}px ${this.displaySize}px`;
+      })
+      .catch(() => {
+        /* keep the flash */
+      });
+  }
+
+  update(dt: number): boolean {
+    this.life += dt;
+    const k = this.life / this.maxLife;
+    if (k >= 1) {
+      this.dispose();
+      return true;
+    }
+    if (this.sheet) {
+      const frame = Math.min(this.frames - 1, Math.floor(k * this.frames));
+      this.el.style.backgroundPosition = `-${frame * this.displaySize}px 0`;
+    } else {
+      this.el.style.opacity = String(1 - k);
+    }
+    return false;
+  }
+
+  dispose(): void {
+    this.el.remove();
+  }
+}
+
 /** A big boom: plays the 6-frame explosion sheet over its lifetime, scaling up
  *  as it goes. Falls back to a CSS flash until/if the sheet fails to load. */
 export class Explosion implements Effect {

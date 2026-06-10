@@ -13,6 +13,10 @@ export interface GunConfig {
   spawnY: number;
   groundY: number;
   perchDuration: number;
+  /** Battle mode: this is a WINDSURF BOARD floating on the water (a dude that
+   *  bumps it mounts it and sails). Same perch→fall→float lifecycle; only the
+   *  sprite + fallback differ. */
+  battle?: boolean;
 }
 
 export class Gun {
@@ -28,6 +32,7 @@ export class Gun {
   private jumpStartY: number;
   private clock = 0;
   private pickedUp = false;
+  private battle: boolean;
 
   el: HTMLDivElement;
 
@@ -39,6 +44,7 @@ export class Gun {
     this.y = config.spawnY;
     this.groundY = config.groundY;
     this.perchTimer = config.perchDuration;
+    this.battle = config.battle ?? false;
 
     const { w, h } = this.size();
     this.el = document.createElement("div");
@@ -46,13 +52,17 @@ export class Gun {
     this.el.style.cssText =
       `position:absolute;width:${w}px;height:${h}px;pointer-events:none;` +
       `transform-origin:50% 100%;background-repeat:no-repeat;background-size:${w}px ${h}px;`;
-    // Color-box fallback (a metal sliver) until the sprite loads.
-    this.el.style.background = "linear-gradient(90deg,#7d8696,#aab3c2 70%,#ff4d4d 70%)";
-    this.el.style.borderRadius = "2px";
+    // Color-box fallback until the sprite loads: a metal sliver (gun) or a
+    // bright board (windsurf).
+    this.el.style.background = this.battle
+      ? "linear-gradient(90deg,#ffd24d,#ff7a4d)"
+      : "linear-gradient(90deg,#7d8696,#aab3c2 70%,#ff4d4d 70%)";
+    this.el.style.borderRadius = "3px";
 
-    loadSpriteSheet("gun-floor")
+    loadSpriteSheet(this.battle ? "windsurf-board" : "gun-floor")
       .then((img) => {
         this.el.style.background = "none";
+        this.el.style.borderRadius = "0"; // drop the fallback sliver's rounding
         this.el.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
         this.el.style.backgroundSize = `${w}px ${h}px`;
       })
@@ -66,12 +76,13 @@ export class Gun {
   /** Floor footprint by accuracy (aspect ~2:1, matching gun-floor.svg). */
   private size(): { w: number; h: number } {
     switch (this.quality) {
+      // Windsurf boards run 20% larger than the old gun footprint.
       case "perfect":
-        return { w: 96, h: 48 };
+        return { w: 58, h: 29 };
       case "normal":
-        return { w: 72, h: 36 };
+        return { w: 43, h: 22 };
       default:
-        return { w: 48, h: 24 };
+        return { w: 29, h: 14 };
     }
   }
 

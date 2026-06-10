@@ -12,14 +12,16 @@ import { NOTE_NAMES } from "../../audio/midi";
 import type { PitchClass } from "../../music/eddie/eddieTypes";
 
 // --- Note-bar palette (gold/green/red) ----------------------------------------
-export const COLOR_ROOT = "#FFD700"; // bright gold — key root (most intense)
+export const COLOR_ROOT = "#FFD700"; // bright gold — CHORD root (most intense)
 export const COLOR_STRONG = "#DAA520"; // darker gold — 3rd/5th of the chord
 export const COLOR_WEAK = "#6FD06F"; // green — other in-key notes
 export const COLOR_BOGUS = "#ff5a6e"; // red/pink — out-of-key notes
 
 // --- Chord-tone row tints (always-on harmony cue) --------------------------
-export const COLOR_CHORD_TINT_DARK = "#1a472a"; // dark teal/green — bass (root) row
-export const COLOR_CHORD_TINT_MEDIUM = "#2d6a3d"; // medium teal/green — 3rd/5th rows
+// Vivid emerald so the chord-tone lanes read clearly against the dark cells; the
+// root lane is the brightest of the three (see the alphas in EddieGrid).
+export const COLOR_CHORD_TINT_DARK = "#34e088"; // vivid emerald — chord ROOT row
+export const COLOR_CHORD_TINT_MEDIUM = "#1f9e62"; // deep emerald — 3rd/5th rows
 
 /** Note-bar colour from pitch + key + chord context. `chordTones` are the pitch
  *  classes that count as the chord's 3rd/5th for the active measure (the root is
@@ -32,7 +34,11 @@ export function noteColor(
 ): string {
   if (!inKey) return COLOR_BOGUS;
   const pc = NOTE_NAMES[((midi % 12) + 12) % 12];
-  if (pc === keyRoot) return COLOR_ROOT;
+  // The CHORD root (first chord tone for the active measure) is the most intense
+  // highlight — not the key-signature tonic. Only fall back to the key root when
+  // the chord isn't known.
+  const chordRoot = chordTones && chordTones.length > 0 ? chordTones[0] : keyRoot;
+  if (pc === chordRoot) return COLOR_ROOT;
   if (chordTones && chordTones.includes(pc as PitchClass)) return COLOR_STRONG;
   return COLOR_WEAK;
 }

@@ -8,6 +8,18 @@ combos multiplies your damage. Survive four measures per level.
 **GTA III × Jet Set Radio × Time Crisis** — gritty textured night city,
 cel-shaded, on rails.
 
+## Modes
+
+The title screen offers three:
+
+- **OUTRUN** — the on-rails rhythm-combat game described below (the original).
+- **SCORE RUN** — "Infinite Eddie": a mic/keyboard jam scored over 16 bars; the
+  notes you play plot onto a timeline grid and spawn a living crowd below it.
+  See [`docs/GDD.md`](docs/GDD.md).
+- **BATTLE** — Score Run's sibling: a 16-bar shark fight on the neon ocean. Your
+  played notes spawn swimmers, windsurf boards, and boomerangs; sharks swim in
+  from the horizon and eat anyone undefended. Boards and boomerangs kill sharks.
+
 ## Play
 
 ```bash

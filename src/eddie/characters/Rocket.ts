@@ -19,6 +19,11 @@ export interface RocketConfig {
   perchDuration: number;
   onEmit: (x: number, y: number) => void;       // spew a trail spark
   onExplode: (x: number, y: number, scale: number) => void;
+  /** Battle mode: this is a BOOMERANG. A bumped boomerang flies at the nearest
+   *  shark (the target) with a motion trail, and onExplode is the hit (the
+   *  manager kills the shark + plays blood/bonk there). It spins (frames) instead
+   *  of rotating to its heading, and has no engine flame. */
+  battle?: boolean;
 }
 
 const FRAMES = 4;        // rocket sheet is 4 flicker frames wide
@@ -54,6 +59,7 @@ export class Rocket {
   private sheet: HTMLImageElement | SVGImageElement | null = null;
   private flameSheet: HTMLImageElement | SVGImageElement | null = null;
   private flameEl: HTMLDivElement;
+  private battle: boolean;
 
   el: HTMLDivElement;
 
@@ -68,6 +74,7 @@ export class Rocket {
     this.perchTimer = config.perchDuration;
     this.onEmit = config.onEmit;
     this.onExplode = config.onExplode;
+    this.battle = config.battle ?? false;
 
     const { w, h } = this.size();
     this.el = document.createElement("div");
@@ -75,11 +82,13 @@ export class Rocket {
     this.el.style.cssText =
       `position:absolute;width:${w}px;height:${h}px;pointer-events:none;` +
       `transform-origin:50% 100%;background-repeat:no-repeat;`;
-    // Fallback sliver until the sheet loads (a bright nose over a body).
-    this.el.style.background = "linear-gradient(180deg,#ff4d4d 0 22%,#e8edf4 22%)";
-    this.el.style.borderRadius = "40% 40% 20% 20%";
+    // Fallback until the sheet loads: a rocket sliver, or a curved boomerang.
+    this.el.style.background = this.battle
+      ? "linear-gradient(135deg,#e8c89a 0 45%,#8a5a2b 45%)"
+      : "linear-gradient(180deg,#ff4d4d 0 22%,#e8edf4 22%)";
+    this.el.style.borderRadius = this.battle ? "50% 10% 50% 10%" : "40% 40% 20% 20%";
 
-    loadSpriteSheet(`rocket-${this.variant}`)
+    loadSpriteSheet(this.battle ? "boomerang" : `rocket-${this.variant}`)
       .then((img) => {
         this.sheet = img;
         this.el.style.background = "none";
@@ -99,21 +108,30 @@ export class Rocket {
     this.flameEl.style.background =
       "radial-gradient(ellipse at top,#fff,#ffe14d 35%,#ff8a1e 60%,rgba(255,59,31,0) 85%)";
     this.el.appendChild(this.flameEl);
-    loadSpriteSheet("rocket-flame")
-      .then((img) => {
-        this.flameSheet = img;
-        this.flameEl.style.background = "none";
-        this.flameEl.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
-      })
-      .catch(() => {
-        /* keep the gradient fallback flame */
-      });
+    if (!this.battle) {
+      loadSpriteSheet("rocket-flame")
+        .then((img) => {
+          this.flameSheet = img;
+          this.flameEl.style.background = "none";
+          this.flameEl.style.backgroundImage = `url(${(img as HTMLImageElement).src})`;
+        })
+        .catch(() => {
+          /* keep the gradient fallback flame */
+        });
+    }
 
     this.updateDOM();
   }
 
-  /** Size by accuracy (aspect ~20:36, matching the rocket sheets). */
+  /** Size by accuracy. Rockets are tall (~20:36); boomerangs are small squares. */
   private size(): { w: number; h: number } {
+    if (this.battle) {
+      switch (this.quality) {
+        case "perfect": return { w: 60, h: 60 };
+        case "normal": return { w: 48, h: 48 };
+        default: return { w: 36, h: 36 };
+      }
+    }
     switch (this.quality) {
       case "perfect":
         return { w: 54, h: 96 };
@@ -135,6 +153,17 @@ export class Rocket {
 
   get isDone(): boolean {
     return this.phase === "done";
+  }
+
+  /** Battle: is the boomerang in flight (so it can strike a shark)? */
+  get flying(): boolean {
+    return this.phase === "flying";
+  }
+  get cx(): number { return this.x; }
+  get cy(): number { return this.y; }
+  /** Battle: end the flight after it strikes a shark. */
+  endFlight(): void {
+    if (this.phase === "flying") this.phase = "done";
   }
 
   /** A dude bumped this rocket — launch it toward `target`. */
@@ -228,15 +257,23 @@ export class Rocket {
       this.flameEl.style.backgroundSize = `${(fw * FRAMES).toFixed(1)}px ${fh.toFixed(1)}px`;
       this.flameEl.style.backgroundPosition = `-${(this.frameNum * fw).toFixed(1)}px 0`;
     }
-    this.flameEl.style.display = this.phase === "flying" ? "block" : "none";
+    this.flameEl.style.display = !this.battle && this.phase === "flying" ? "block" : "none";
 
     if (this.phase === "flying") {
-      // Position by CENTER; rotate to face the heading; engine glow.
+      // Position by CENTER. A boomerang spins (its sheet frames) and keeps a cool
+      // motion-trail glow; a rocket rotates to face its heading with engine glow.
       this.el.style.transformOrigin = "50% 50%";
       this.el.style.left = `${this.x - w / 2}px`;
       this.el.style.top = `${this.y - h / 2}px`;
-      this.el.style.transform = `rotate(${this.angleDeg.toFixed(1)}deg)`;
-      this.el.style.filter = "drop-shadow(0 0 6px #ff8a1e) drop-shadow(0 0 12px #ff4d1e)";
+      if (this.battle) {
+        // A boomerang flies flat — no spin. A soft warm shadow for depth, not a
+        // neon glow (keeps it low-contrast with the rest of the scene).
+        this.el.style.transform = "";
+        this.el.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,0.55))";
+      } else {
+        this.el.style.transform = `rotate(${this.angleDeg.toFixed(1)}deg)`;
+        this.el.style.filter = "drop-shadow(0 0 6px #ff8a1e) drop-shadow(0 0 12px #ff4d1e)";
+      }
       return;
     }
 

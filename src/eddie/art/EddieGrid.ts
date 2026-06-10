@@ -34,19 +34,34 @@ import {
   timingQuality,
 } from "./eddieFeedback";
 
-const ROWS = 5;
+const DEFAULT_SCORED_MEASURES = 16; // Score Run: 16 scored measures (4 rows × 4)
 const COLS = 4;
 const PITCH_LANES = 13; // 0..12: key root to octave+1
 
-// Chord tone row background tints
-const CHORD_ROW_ALPHA = 0.25;
-const CHORD_3RD_5TH_ALPHA = 0.12;
+// Chord tone row background tints. Higher contrast than before, and the chord
+// ROOT lane is clearly the strongest so it reads as the highlighted one.
+const CHORD_ROW_ALPHA = 0.55;
+const CHORD_3RD_5TH_ALPHA = 0.3;
 
 export class EddieGrid {
   private root: HTMLDivElement | null = null;
-  private cells: HTMLDivElement[] = []; // 20 cells, row-major (row*COLS + col)
+  private cells: HTMLDivElement[] = []; // cells, row-major (row*COLS + col)
   private noteLayers: HTMLDivElement[] = []; // per-cell note-plot layer
   private activeScored = -1;
+  /** Scored measures shown (Score Run 16; Battle 4). Absolute measures fold into
+   *  this many cells via `% scoredMeasures` so Battle's endless take rolls
+   *  through a fixed 4-cell window. */
+  private scoredMeasures = DEFAULT_SCORED_MEASURES;
+  /** Total grid rows = (intro row?) + ceil(scoredMeasures / COLS). */
+  private rows = DEFAULT_SCORED_MEASURES / COLS + 1;
+  /** Whether the top warm-up/count-in row is drawn. Score Run: true. Battle:
+   *  false — no count-in timeline above the bars (the screen pulses instead). */
+  private introRow = true;
+  /** Which loop (= floor(absMeasure / scoredMeasures)) the active measure is in.
+   *  When it advances — i.e. the last measure of the row just finished — EVERY
+   *  scored cell's notes + diamonds are wiped at once (the rolling window). -1
+   *  until the first scored measure. Stays 0 for Score Run (no looping). */
+  private currentLoop = -1;
   private offBeat?: () => void;
   private offNote?: () => void;
   private offNoteEnd?: () => void;
@@ -81,6 +96,12 @@ export class EddieGrid {
     hudParent: HTMLElement;
     config: EddieConfig;
     juice: EventBus<EddieJuiceEvents>;
+    /** How many scored measures the grid shows. Default 16 (Score Run). Battle
+     *  passes 4 for a single rolling row. Must be a multiple of COLS (4). */
+    scoredMeasures?: number;
+    /** Draw the top warm-up/count-in row? Default true (Score Run). Battle
+     *  passes false — no count-in timeline above the bars. */
+    introRow?: boolean;
     onQuarterDiamonds?: (info: {
       measure: number;
       beat: number;
@@ -89,8 +110,16 @@ export class EddieGrid {
     }) => void;
   }): void {
     this.onQuarterDiamonds = ctx.onQuarterDiamonds;
+    this.scoredMeasures = Math.max(COLS, ctx.scoredMeasures ?? DEFAULT_SCORED_MEASURES);
+    this.introRow = ctx.introRow ?? true;
+    const scoredRows = Math.ceil(this.scoredMeasures / COLS);
+    this.rows = scoredRows + (this.introRow ? 1 : 0);
     const root = document.createElement("div");
     root.className = "eddie-grid";
+    // A single scored row (Battle's 4 measures) anchors compact at the top of the
+    // screen, leaving the lower half for the ocean + crowd. Score Run keeps the
+    // centered full-height grid.
+    if (scoredRows <= 1) root.classList.add("eddie-grid-compact");
 
     // Initialize key and pitch-class → lane mapping
     this.keyRoot = ctx.config.keyRoot;
@@ -111,28 +140,28 @@ export class EddieGrid {
           if (!chordToneLanes.includes(lane)) chordToneLanes.push(lane);
           if (!chordTonePcs.includes(pc)) chordTonePcs.push(pc);
         }
-        // Store for measures 0..15 and also loop back to 16..19 (intro unused).
-        for (let m = n.measure; m < 20; m += 4) {
+        // Store for every scored measure sharing this pattern measure (m % 4).
+        for (let m = n.measure; m < this.scoredMeasures; m += 4) {
           this.chordToneLanesByMeasure.set(m, chordToneLanes);
           this.chordTonePcsByMeasure.set(m, chordTonePcs);
         }
       }
     }
 
-    for (let row = 0; row < ROWS; row++) {
+    for (let row = 0; row < this.rows; row++) {
       for (let col = 0; col < COLS; col++) {
         const cell = document.createElement("div");
         cell.className = "eddie-cell";
         // The cell body hosts the note plot, so it must be a positioning context.
         cell.style.position = "relative";
-        const isIntro = row === 0;
+        const isIntro = this.introRow && row === 0;
         if (isIntro) cell.classList.add("eddie-cell-intro");
 
         // Subdivision level for this cell's gridlines: quarters everywhere, plus
         // eighths in the 8th-tagged measure and sixteenths in the 16th-tagged one.
         let subdivision: 4 | 8 | 16 = 4;
         if (!isIntro) {
-          const scored = (row - 1) * COLS + col;
+          const scored = (row - (this.introRow ? 1 : 0)) * COLS + col;
 
           // Bass label above measures that start a chord span.
           const rootPc = chordRootByPatternMeasure.get(scored % 4);
@@ -168,7 +197,7 @@ export class EddieGrid {
 
         // Add chord-tone row background tints (if not intro)
         if (!isIntro) {
-          const scored = (row - 1) * COLS + col;
+          const scored = (row - (this.introRow ? 1 : 0)) * COLS + col;
           this.addChordRowTints(notes, scored);
         }
 
@@ -335,7 +364,8 @@ export class EddieGrid {
 
   /** Determine note bar color based on pitch class chord role (shared rule). */
   private getNoteColor(n: EddieJuiceEvents["eddieNote"]): string {
-    return noteColor(n.midi, this.keyRoot, this.chordTonePcsByMeasure.get(n.measure) ?? null, n.inKey);
+    const chord = this.chordTonePcsByMeasure.get(n.measure % this.scoredMeasures) ?? null;
+    return noteColor(n.midi, this.keyRoot, chord, n.inKey);
   }
 
   /** Spawn 3 white shimmer particles at a note's birth position, fading over time. */
@@ -366,7 +396,7 @@ export class EddieGrid {
    *  tightly the notes landed on the grid. Works off the DOM so it catches bars
    *  whose eddieNoteEnd already fired (and were removed from noteBars). */
   private greenQuarter(measure: number, beat: number): void {
-    const idx = this.indexFor(measure);
+    const idx = this.indexFor(measure); // same loop as the notes just plotted
     const layer = idx >= 0 ? this.noteLayers[idx] : null;
     if (!layer) return;
     const want = String(beat);
@@ -406,7 +436,7 @@ export class EddieGrid {
 
     // Per-diamond character data: each note's content (chord tone => strong) and
     // its own timing tightness. One note per diamond (left→right ≈ play order).
-    const chordPcs = this.chordTonePcsByMeasure.get(measure) ?? [];
+    const chordPcs = this.chordTonePcsByMeasure.get(measure % this.scoredMeasures) ?? [];
     const notes = bars.slice(0, subdiv).map((el) => {
       const pc = (el.dataset.pc ?? "") as PitchClass;
       const bf = parseFloat(el.dataset.bf ?? "0");
@@ -466,10 +496,17 @@ export class EddieGrid {
     });
   }
 
-  /** scoredMeasure: 0..15 = a scored cell (rows 1-4); negative = intro row 0,
-   *  where -1..-4 picks intro column 0..3. */
+  /** scoredMeasure: absolute play measure (folded into the rolling window);
+   *  negative = intro row (Score Run only). When the active measure crosses into
+   *  a NEW loop (i.e. the last measure of the row just finished), EVERY scored
+   *  cell is wiped at once so all timelines clear together. */
   setActiveMeasure(scoredMeasure: number): void {
     this.activeScored = scoredMeasure;
+    if (scoredMeasure >= 0) {
+      const loop = Math.floor(scoredMeasure / this.scoredMeasures);
+      if (this.currentLoop >= 0 && loop > this.currentLoop) this.clearAllScored();
+      this.currentLoop = loop;
+    }
     const activeIdx = this.indexFor(scoredMeasure);
     for (let i = 0; i < this.cells.length; i++) {
       this.cells[i].classList.toggle("eddie-cell-active", i === activeIdx);
@@ -477,14 +514,27 @@ export class EddieGrid {
   }
 
   private indexFor(scoredMeasure: number): number {
+    const introOffset = this.introRow ? 1 : 0;
     if (scoredMeasure < 0) {
-      const col = (-scoredMeasure - 1) % COLS; // -1 -> col 0
-      return col; // row 0
+      if (!this.introRow) return -1; // no count-in row to plot into
+      return (-scoredMeasure - 1) % COLS; // intro row 0, col by count-in beat
     }
-    if (scoredMeasure > 15) return -1;
-    const row = Math.floor(scoredMeasure / COLS) + 1;
-    const col = scoredMeasure % COLS;
+    // Fold an absolute measure into the rolling scored window (identity for
+    // Score Run, where measures never exceed scoredMeasures).
+    const s = scoredMeasure % this.scoredMeasures;
+    const row = Math.floor(s / COLS) + introOffset;
+    const col = s % COLS;
     return row * COLS + col;
+  }
+
+  /** Wipe the played-note bars + quarter diamonds from every cell at once (the
+   *  whole row clears when the last measure finishes), leaving gridlines and
+   *  chord-tone tints intact. No-op-equivalent for Score Run (never loops). */
+  private clearAllScored(): void {
+    for (const layer of this.noteLayers) {
+      layer.querySelectorAll(".eddie-note, .eddie-quarter-diamond").forEach((el) => el.remove());
+    }
+    this.noteBars.clear();
   }
 
   update(dt: number): void {
