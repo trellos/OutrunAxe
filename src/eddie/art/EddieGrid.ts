@@ -75,6 +75,10 @@ export class EddieGrid {
 
   // Configuration
   private keyRoot: string = "C";
+  /** Cliff Dive mode: juicier notes (fill the lane + jiggle on spawn) and more
+   *  transparent diamonds. Score Run / Battle keep the original look. */
+  private cliff = false;
+  private halfBeatSec = 0.25; // duration of the note-spawn jiggle (= half a beat)
   private pitchClassToLane = new Map<string, number>();
   // Per-measure chord tones, two views of the same chord: lane numbers (for the
   // background-darkening geometry) and pitch classes (for note colouring).
@@ -102,6 +106,10 @@ export class EddieGrid {
     /** Draw the top warm-up/count-in row? Default true (Score Run). Battle
      *  passes false — no count-in timeline above the bars. */
     introRow?: boolean;
+    /** Cliff Dive: a single row of 4 measures CENTERED in the screen at ~66%
+     *  width (the timelines are what you climb, so they own the middle), rather
+     *  than Battle's top-pinned compact strip. */
+    centeredWide?: boolean;
     onQuarterDiamonds?: (info: {
       measure: number;
       beat: number;
@@ -112,14 +120,18 @@ export class EddieGrid {
     this.onQuarterDiamonds = ctx.onQuarterDiamonds;
     this.scoredMeasures = Math.max(COLS, ctx.scoredMeasures ?? DEFAULT_SCORED_MEASURES);
     this.introRow = ctx.introRow ?? true;
+    this.cliff = ctx.centeredWide ?? false;
+    this.halfBeatSec = 30 / Math.max(1, ctx.config.bpm); // half a beat in seconds
     const scoredRows = Math.ceil(this.scoredMeasures / COLS);
     this.rows = scoredRows + (this.introRow ? 1 : 0);
     const root = document.createElement("div");
     root.className = "eddie-grid";
     // A single scored row (Battle's 4 measures) anchors compact at the top of the
     // screen, leaving the lower half for the ocean + crowd. Score Run keeps the
-    // centered full-height grid.
-    if (scoredRows <= 1) root.classList.add("eddie-grid-compact");
+    // centered full-height grid. Cliff Dive centers the single row big in the
+    // middle (you climb the timelines, so they're the focal point).
+    if (ctx.centeredWide) root.classList.add("eddie-grid-cliff");
+    else if (scoredRows <= 1) root.classList.add("eddie-grid-compact");
 
     // Initialize key and pitch-class → lane mapping
     this.keyRoot = ctx.config.keyRoot;
@@ -325,13 +337,20 @@ export class EddieGrid {
     }
 
     // A note is a horizontal duration BAR (onset → detected end via endNote).
+    // Cliff Dive: thick bars that FILL the lane + a scale jiggle on spawn.
     const bar = document.createElement("div");
     bar.className = "eddie-note" + (n.inKey ? "" : " eddie-note-off");
+    const sizeCss = this.cliff
+      ? "height:7%;margin-top:-3.5%;" // fill the whole pitch lane
+      : "height:5px;margin-top:-2.5px;";
+    const jiggleCss = this.cliff
+      ? `transform-origin:center;animation:eddie-note-pop ${this.halfBeatSec.toFixed(3)}s ease-out;`
+      : "";
     bar.style.cssText =
       `position:absolute;left:${(x * 100).toFixed(2)}%;top:${(y * 84 + 8).toFixed(1)}%;` +
-      "height:5px;margin-top:-2.5px;min-width:4px;width:4px;border-radius:3px;z-index:3;" +
+      sizeCss + "min-width:4px;width:4px;border-radius:3px;z-index:3;" +
       `background:${color};box-shadow:0 0 7px ${color},0 0 2px #fff;` +
-      "opacity:0;transition:opacity .12s ease,width .08s linear;";
+      `opacity:0;transition:opacity .12s ease,width .08s linear;${jiggleCss}`;
     // Tag the quarter (0..3) this note lands in, so a later score event can turn
     // the scoring quarter's bars green. Also store the in-measure position so the
     // scoring overlay can grade this note's timing against the subdivision grid.
@@ -491,8 +510,10 @@ export class EddieGrid {
     // Insert at the front so it renders behind the note bars (z-index also
     // enforces this), but above the chord-tone tints (z-index 0).
     layer.insertBefore(diamond, layer.firstChild);
+    // Cliff Dive: diamonds are half as opaque (let the ocean read through).
+    const targetOpacity = this.cliff ? "0.5" : "1";
     requestAnimationFrame(() => {
-      diamond.style.opacity = "1";
+      diamond.style.opacity = targetOpacity;
     });
   }
 

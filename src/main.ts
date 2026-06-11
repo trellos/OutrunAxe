@@ -8,6 +8,7 @@ import { EddieSoundDebugState } from "./states/EddieSoundDebugState";
 import { EddieBgMenuState } from "./states/EddieBgMenuState";
 import { EddieDebugState } from "./states/EddieDebugState";
 import { BattleState, createBattleConfig } from "./states/BattleState";
+import { CliffDiveState, createCliffDiveConfig } from "./states/CliffDiveState";
 
 const root = document.getElementById("game");
 if (!root) throw new Error("missing #game");
@@ -38,6 +39,11 @@ if (params.has("chars")) {
   // Battle mode: endless 4-bar jam over the ocean, always recording.
   game.setState(
     new BattleState(hud, createBattleConfig(), () => game.setState(new BootState(hud))),
+  );
+} else if (params.has("cliffdive")) {
+  // Cliff Dive mode: fixed 16-measure climb-and-dive over the ocean.
+  game.setState(
+    new CliffDiveState(hud, createCliffDiveConfig(), () => game.setState(new BootState(hud))),
   );
 } else if (params.has("eddie")) {
   // Jump straight to the Infinite Eddie settings screen.

@@ -109,13 +109,19 @@ Character is the CC0 `RobotExpressive` GLB via `GLTFLoader`.
 
 ## Current status
 
-- Playable end to end: menu flow, loadout, 3 visually distinct levels,
-  ENCORE win verified on L1, ComboScorer firing on screen, NEW BEST
-  persistence working, cel-shaded character holding a guitar on all levels.
-- Working tree clean. Branch `EpicQuest`, 2 commits ahead, unpushed.
+- Four modes off the title: **OUTRUN** (on-rails combat), **SCORE RUN**
+  (Infinite Eddie jam), **BATTLE** (ocean shark fight), **CLIFF DIVE** (climbers
+  + breaching dolphins + swan-dive finale).
+- **Active work is Cliff Dive** on branch **`CliffDiveMode`**: commit `564b784`
+  (orchestrator build) + a large **uncommitted** visual-iteration pass in the
+  working tree. `tsc` clean, 145 tests pass, build clean. See
+  [`HANDOFF-cliff-dive.md`](HANDOFF-cliff-dive.md). **Commit before destructive ops.**
 
 ### Known open work (not yet requested as tasks)
 
+- **Cliff Dive:** commit the uncommitted pass; an in-person visual pass on the
+  background (sea bands + bg dolphins still chunky vs the sprites); save the new
+  `.art-ref/reference.jpg`. (Full list in `HANDOFF-cliff-dive.md`.)
 - ComboScorer unit tests.
 - Audible verification of the `BackingTrack` mix.
 - L2/L3 difficulty tuning for unaided human play.
@@ -256,5 +262,32 @@ asked, what was done, resulting commit(s) if any.
   **Tuning (post-core, all shipped in `7d7ab02`):** sharks spawn **per BEAT** (`CharacterManager.battleBeat()` called from `BattleState.onBeat`, not per-measure) and **turn toward the people ~1/3 up** from the line toward the horizon (`Shark.ts`), then ease down into the crowd; score HUD moved **top-right under the main readout** with sprite icons (a dude for "eaten", a shark for "killed"); windsurf boards **+20%** (`Gun.size`); boomerang **does not spin** (fixed orientation, soft shadow not a neon glow) and is **muted tan** not bright orange; the bottom-left instructional text was **removed** (see the new AGENTS "no on-screen text in Battle" rule).
   **Verification:** `tsc --noEmit` clean; verified live by driving the rAF loop in the preview (hidden-tab pause + flaky software-WebGL screenshots are a known env limit) — shark spawn cadence/turn point, board/boomerang kills, eat path, 80% line, score all confirmed. **Code-review cleanup (same session):** removed the now-orphaned `ConductorOptions.loop` (Battle became finite, no caller left), the unused `Character.moveTo`, and a dangling doc comment in `BattleState`.
   **Known follow-ups:** per-beat shark spawn is uncapped (≈50+ on screen — perf risk, consider a soft cap / sweep-speed tuning); `Gun`/`Rocket` class+pool names have drifted from their Battle meaning (board/boomerang); count-in note-plot in `BattleState.placeOnGrid` is vestigial (grid has no intro row); stale `.svg` sprite fallbacks remain in `public/assets`.
+
+- **2026-06-10** — **Cliff Dive mode** — full build + a long visual-iteration
+  pass (branch `CliffDiveMode`; orchestrator build = commit `564b784`,
+  **everything since is UNCOMMITTED**). The third Eddie-family mode after Score
+  Run and Battle: climbers scale the measure-box edges, breaching dolphins spit
+  them off, lobsters block, orbs heal, survivors swan-dive off the cliff. Built
+  by reusing the whole `Conductor → PitchTracker → KeyResolver → EddieScorer →
+  juice/Art` chain (clone of `BattleState`) with a brand-new crowd under
+  `src/eddie/characters/cliff/` (`CliffDiveCrowd` + `Climber`/`Dolphin`/
+  `Lobster`/`Orb`). Shared settings screen reused via a `createPlay` factory on
+  `EddieSettingsState`; additive art-rig seam (`crowdMode:"cliffdive"`,
+  `centeredWide` centered grid, `cliffDiveMeasureWave`/`Beat`/`FinaleResolved`) so
+  Score Run / Battle are untouched. **Full detail + every gameplay rule, tuning
+  knob, and open item is in [`HANDOFF-cliff-dive.md`](HANDOFF-cliff-dive.md).**
+  Highlights from the iteration pass: art went thin-stick → **muscular strongman**
+  (9-row sheet) matching `.art-ref/reference.jpg`; dolphins went screen-crossing
+  arc → **breach** out of the sea; a real **finale bug fixed** (dives were tied to
+  conductor beats that stop at `done`, so men never dived — now driven by the
+  crowd's own beat timer, results wait for `finaleResolved`); head-first swan
+  dives; splash on water-entry; orbs/dudes/dolphins all bumped to 1.8× render
+  scale; note bars fill-the-lane + jiggle and diamonds at 50% opacity (both
+  cliff-scoped); background `SEA_SS=3` finer pass. `tsc` clean, **145 tests**
+  (incl. 2 required scenarios + a finale regression), `vite build` clean.
+  **Caveat:** the preview screenshot tool wedged on WebGL all session, so the
+  visual work was verified via QC renders + tests, not live screenshots — eyeball
+  `localhost:5173/?cliffdive` before shipping. Background sea bands + bg dolphins
+  are still chunky vs the sprites (needs an in-person pass).
 
 <!-- Append new actions here -->

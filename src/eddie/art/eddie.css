@@ -52,6 +52,27 @@
   height: min(30vh, 240px);
 }
 
+/* Cliff Dive: the 4 measure timelines are what you climb, so they own the
+   CENTER of the screen — centered vertically, ~66% wide, tall, and more
+   transparent so the ocean reads behind them. */
+.eddie-grid.eddie-grid-cliff {
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(66vw, 900px);
+  height: min(52vh, 460px);
+}
+.eddie-grid-cliff .eddie-cell {
+  background: linear-gradient(135deg, rgba(26, 15, 46, 0.4), rgba(10, 6, 18, 0.5));
+}
+
+/* Cliff Dive note-spawn jiggle: a quick scale bounce as each note lands. */
+@keyframes eddie-note-pop {
+  0% { transform: scale(0.5); }
+  45% { transform: scale(1.35); }
+  72% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+
 .eddie-cell {
   position: relative;
   border: 3px solid rgba(74, 42, 122, 0.85);

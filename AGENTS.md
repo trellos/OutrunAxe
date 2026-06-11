@@ -375,6 +375,24 @@ touch PitchEngine.
    things through art and feel (e.g. the count-in is a screen pulse), not a HUD
    paragraph. The only Battle HUD text is the score (sharks killed / dudes eaten,
    under the main readout, with sprite icons) and the results screen.
+9. **Cliff Dive mode** (`src/states/CliffDiveState.ts`, BootState **CLIFF DIVE**
+   button / `?cliffdive`) is the third Eddie-family mode — a clone of the
+   Battle chain with a **new crowd** under `src/eddie/characters/cliff/`
+   (`CliffDiveCrowd` + `Climber`/`Dolphin`/`Lobster`/`Orb`; does NOT reuse
+   `CharacterManager`). Climbers scale the **edges** of the centered 4-measure
+   grid (`EddieGrid` `centeredWide`), breaching dolphins spit them off, lobsters
+   block, orbs heal, and survivors swan-dive at the finale. **Spawn map** (off
+   the same `onQuarterDiamonds` diamonds): quarter → 2 men (L/R edges), eighth →
+   1 man (nearer edge), triplet → 3 orbs, sixteenth → 4 lobsters. The shared
+   settings screen is reused via an optional `createPlay` factory on
+   `EddieSettingsState` (no duplicate screen); the art-rig seam
+   (`crowdMode:"cliffdive"`, `cliffDiveMeasureWave`/`Beat`/`FinaleResolved`,
+   `centeredWide`, cliff-scoped note/diamond juice) is additive — Score Run /
+   Battle unchanged. **Finale gotcha:** dives are driven by the crowd's own beat
+   timer in `update`, NOT conductor beats (which stop at `done`); results wait on
+   `cliffDiveFinaleResolved()`. Sprites: `scripts/sprites/cliff.mjs`
+   (`node scripts/sprites/cliff.mjs`). **Full spec, tuning knobs, and open items
+   live in `HANDOFF-cliff-dive.md`.**
 
 ## Glossary
 

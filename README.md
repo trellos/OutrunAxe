@@ -10,7 +10,7 @@ cel-shaded, on rails.
 
 ## Modes
 
-The title screen offers three:
+The title screen offers four:
 
 - **OUTRUN** — the on-rails rhythm-combat game described below (the original).
 - **SCORE RUN** — "Infinite Eddie": a mic/keyboard jam scored over 16 bars; the
@@ -19,6 +19,11 @@ The title screen offers three:
 - **BATTLE** — Score Run's sibling: a 16-bar shark fight on the neon ocean. Your
   played notes spawn swimmers, windsurf boards, and boomerangs; sharks swim in
   from the horizon and eat anyone undefended. Boards and boomerangs kill sharks.
+- **CLIFF DIVE** — a 16-bar ocean cliff climb. Your notes spawn muscular climbers
+  who scale the timeline-box edges; dolphins breach to spit them off, lobsters
+  block the dolphins, and triplets drop healing orbs. Survivors swan-dive off the
+  cliff at the end (`Dolphins:` knocked off vs `Dudes:` who dived). See
+  [`HANDOFF-cliff-dive.md`](HANDOFF-cliff-dive.md).
 
 ## Play
 

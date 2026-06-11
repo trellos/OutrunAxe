@@ -5,6 +5,7 @@ import { LoadoutState } from "./LoadoutState";
 import { LevelSelectState } from "./LevelSelectState";
 import { EddieSettingsState } from "./EddieSettingsState";
 import { BattleState, createBattleConfig } from "./BattleState";
+import { CliffDiveState } from "./CliffDiveState";
 import { level1 } from "../levels/level1";
 import { level2 } from "../levels/level2";
 import { level3 } from "../levels/level3";
@@ -85,6 +86,7 @@ export class BootState implements GameState {
         <div class="boot-modes">
           <button class="boot-play boot-play-eddie" data-mode="eddie">SCORE RUN</button>
           <button class="boot-play boot-play-battle" data-mode="battle">BATTLE</button>
+          <button class="boot-play boot-play-cliffdive" data-mode="cliffdive">CLIFF DIVE</button>
           <button class="boot-play boot-play-outrun" data-mode="outrun">OUTRUN</button>
         </div>
       </div>
@@ -97,6 +99,9 @@ export class BootState implements GameState {
     this.overlay
       .querySelector(".boot-play-battle")
       ?.addEventListener("click", () => this.startBattle());
+    this.overlay
+      .querySelector(".boot-play-cliffdive")
+      ?.addEventListener("click", () => this.startCliffDive());
     this.overlay
       .querySelector(".boot-play-outrun")
       ?.addEventListener("click", () => this.startLevel());
@@ -141,6 +146,16 @@ export class BootState implements GameState {
       new BattleState(this.hudParent, createBattleConfig(), () =>
         this.game.setState(new BootState(this.hudParent)),
       ),
+    );
+  }
+
+  /** Cliff Dive reuses the SHARED Eddie settings screen, routed to a CliffDiveState
+   *  via the play-target factory (no duplicated settings UI). */
+  private startCliffDive() {
+    this.game.setState(
+      new EddieSettingsState(this.hudParent, {
+        createPlay: (parent, cfg, onExit) => new CliffDiveState(parent, cfg, onExit),
+      }),
     );
   }
 }

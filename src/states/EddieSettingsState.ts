@@ -296,8 +296,33 @@ export class EddieSettingsState implements GameState {
   private recBtn: HTMLButtonElement | null = null;
   private recHint: HTMLElement | null = null;
 
-  constructor(hudParent: HTMLElement) {
+  /** Optional play-target factory so the SAME settings/calibration screen can
+   *  launch different modes (Score Run by default, Cliff Dive when BootState
+   *  passes one). Returns the GameState to switch to on PLAY. */
+  private createPlay: (
+    hudParent: HTMLElement,
+    config: EddieConfig,
+    onExit: () => void,
+  ) => GameState;
+
+  constructor(
+    hudParent: HTMLElement,
+    options?: {
+      createPlay?: (
+        hudParent: HTMLElement,
+        config: EddieConfig,
+        onExit: () => void,
+      ) => GameState;
+    },
+  ) {
     this.hudParent = hudParent;
+    this.createPlay =
+      options?.createPlay ??
+      ((parent, config, onExit) =>
+        new InfiniteEddieState(parent, config, onExit, {
+          capture: new URLSearchParams(location.search).has("rec"),
+          onReplay: () => this.startPlay(),
+        }));
     // Restore the player's last tempo across reloads (clamped + snapped to step).
     const saved = readBpm();
     if (saved !== null) {
@@ -1201,14 +1226,11 @@ export class EddieSettingsState implements GameState {
 
   private startPlay() {
     const config = this.currentConfig();
-    // ?rec records the play session (mic + detection + scores) for diagnosis,
-    // same downloadable bundle as the debug menu.
-    const capture = new URLSearchParams(location.search).has("rec");
+    // The play-target factory builds the mode's GameState (Score Run by default;
+    // Cliff Dive when BootState passed a factory). The default factory wires the
+    // ?rec capture + replay; alternate modes provide their own constructor.
     this.game.setState(
-      new InfiniteEddieState(this.hudParent, config, () => this.goLevelSelect(), {
-        capture,
-        onReplay: () => this.startPlay(),
-      }),
+      this.createPlay(this.hudParent, config, () => this.goLevelSelect()),
     );
   }
 
