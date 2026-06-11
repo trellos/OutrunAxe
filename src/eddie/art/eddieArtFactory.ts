@@ -45,6 +45,9 @@ interface RigCrowd {
   measureWave?(measure: number): void;
   /** Cliff Dive: a beat tick (drives the finale swan-dives). */
   beat?(): void;
+  /** Cliff Dive: true once the finale has run and every man is off the cliff
+   *  (none climbing, none idling at the top — all dived or in the water). */
+  readonly finaleResolved?: boolean;
 }
 
 export interface EddieArtRig {
@@ -92,6 +95,9 @@ export interface EddieArtRig {
   cliffDiveMeasureWave(measure: number): void;
   /** Cliff Dive: a beat tick (drives the finale swan-dives). No-op otherwise. */
   cliffDiveBeat(): void;
+  /** Cliff Dive: true once every man is off the cliff (finale done). True for
+   *  non-cliff modes so callers can poll blindly. */
+  cliffDiveFinaleResolved(): boolean;
   /** Screen-space origin for score particles: the centre of the just-played note
    *  bars in the scored quarter (measure 0..15, beat 0..3), so particles fly out
    *  of the notes that earned the points. Null if it can't be resolved (the play
@@ -166,6 +172,8 @@ class EddieArtRigImpl implements EddieArtRig {
       juice: ctx.juice,
       scoredMeasures: this.gridMeasures,
       introRow: this.gridIntroRow,
+      // Cliff Dive: center the 4-measure timeline big in the middle of the screen.
+      centeredWide: ctx.crowdMode === "cliffdive",
       onQuarterDiamonds: (info) => this.characters?.onQuarterDiamonds(info),
     });
     this.fire.mount({
@@ -287,6 +295,10 @@ class EddieArtRigImpl implements EddieArtRig {
 
   cliffDiveBeat(): void {
     this.characters?.beat?.();
+  }
+
+  cliffDiveFinaleResolved(): boolean {
+    return this.characters?.finaleResolved ?? true;
   }
 
   dispose(): void {

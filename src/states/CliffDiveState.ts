@@ -72,7 +72,8 @@ const INTRO_MEASURES = COUNT_IN_BEATS / 4;
 const PLAY_MEASURES = 16;
 const MAX_BPM = 200;
 const GRID_MEASURES = 4;
-const DONE_LINGER_SEC = 3.5; // give the swan-dive finale room to resolve
+const DONE_LINGER_SEC = 2; // grace after the LAST man dives, to watch the splash
+const MAX_FINALE_SEC = 26; // safety cap: show results even if the finale stalls
 
 const PROVISIONAL_MIDI = 67;
 
@@ -138,6 +139,8 @@ export class CliffDiveState implements GameState {
   private scoreHud: HTMLDivElement | null = null;
   private endBtn: HTMLElement | null = null;
   private finishedAt = 0;
+  private finaleActive = false;
+  private finaleHardStop = 0;
 
   constructor(hudParent: HTMLElement, config: EddieConfig, onExit: () => void) {
     this.hudParent = hudParent;
@@ -222,10 +225,12 @@ export class CliffDiveState implements GameState {
       }
     });
 
-    // The 16-measure run ended — flush + finale, linger, then results.
+    // The 16-measure run ended — start the swan-dive finale. Results wait until
+    // every man is off the cliff (polled in update), not a fixed timer.
     this.offPhase = this.conductor.onPhaseChange((p) => {
-      if (p === "done" && this.finishedAt === 0) {
-        this.finishedAt = this.conductor.audioTime + DONE_LINGER_SEC;
+      if (p === "done" && !this.finaleActive && this.finishedAt === 0) {
+        this.finaleActive = true;
+        this.finaleHardStop = this.conductor.audioTime + MAX_FINALE_SEC;
         this.juice.emit("eddieFinale", { audioTime: this.conductor.audioTime });
       }
     });
@@ -382,6 +387,16 @@ export class CliffDiveState implements GameState {
     if (this.exited) return;
     this.juice.emit("eddieIntensity", { value: this.perf, audioTime });
     this.art?.update(dt, audioTime);
+
+    // During the finale, hold the results screen until every man has dived off
+    // (the crowd drives the dives on the beat), or the safety cap is reached.
+    if (this.finaleActive && this.finishedAt === 0) {
+      const resolved = this.art?.cliffDiveFinaleResolved() ?? true;
+      if (resolved || audioTime >= this.finaleHardStop) {
+        this.finishedAt = audioTime + DONE_LINGER_SEC;
+        this.finaleActive = false;
+      }
+    }
 
     if (this.finishedAt > 0 && audioTime >= this.finishedAt) {
       this.finishedAt = 0;

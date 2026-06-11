@@ -23,6 +23,14 @@ rail, no HP.** It is a HUD-and-audio experience layered over a simple animated
 80s background. That keeps it fully parallelizable from the existing 3D combat
 code.
 
+> **This doc covers SCORE RUN (the original Infinite Eddie) only.** Two sibling
+> modes were later built on the same `Conductor → scorer → juice/Art` chain and
+> spawn map: **BATTLE** (ocean shark fight) and **CLIFF DIVE** (climbers +
+> breaching dolphins + swan-dive finale). Their rules live in `AGENTS.md`
+> ("Infinite Eddie mode — hard rules") and, for Cliff Dive, `HANDOFF-cliff-dive.md`.
+> The contracts below (scoring, juice events, art/sound interfaces) are shared and
+> still authoritative for all three.
+
 ### The two screens
 
 1. **Settings screen** (`EddieSettingsState`): tempo picker (default 120, 4/4

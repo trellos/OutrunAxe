@@ -37,8 +37,14 @@ import type { EventBus } from "../../../engine/EventBus";
 import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 import type { EddieBackgroundDef, EddieBackgroundVariant } from "./types";
 
-const SEA_W = 200; // sea/sky canvas px (low-res, NearestFilter => chunky)
+const SEA_W = 200; // sea/sky LOGICAL px (all drawing is in this space)
 const SEA_H = 140;
+// Render the canvas at SEA_SS x this logical resolution (still NearestFilter, so
+// still pixel-art) so the upscale to screen is FINER — closer to the crisp
+// climber sprites. paint() scales the context by SEA_SS, and the thin elements
+// (sky bands, neon swell lines) are drawn at sub-logical-pixel height so they
+// read as fine lines instead of chunky 6px blocks.
+const SEA_SS = 3;
 
 // Morph at which rain begins. Dolphins are CALM-ONLY: their activity ramps to
 // zero by here and is fully cut off above it (storm => mermaids only).
@@ -144,8 +150,8 @@ class Bg02 implements EddieBackgroundVariant {
     ctx.scene.fog = null;
 
     this.canvas = document.createElement("canvas");
-    this.canvas.width = SEA_W;
-    this.canvas.height = SEA_H;
+    this.canvas.width = SEA_W * SEA_SS;
+    this.canvas.height = SEA_H * SEA_SS;
     this.c2d = this.canvas.getContext("2d")!;
     this.c2d.imageSmoothingEnabled = false;
 
@@ -401,12 +407,18 @@ class Bg02 implements EddieBackgroundVariant {
     const ctx = this.c2d;
     const m = this.morph;
     const horizon = Math.floor(SEA_H * 0.42);
+    // Draw in LOGICAL 200x140 space; the canvas is SEA_SS x bigger, so the
+    // upscale to screen is finer. `fine` is one device pixel in logical units —
+    // the thinnest a "line" can be.
+    ctx.setTransform(SEA_SS, 0, 0, SEA_SS, 0, 0);
+    const fine = 1 / SEA_SS;
 
-    // --- Sky gradient (top->horizon, calm->storm), banded for the pixely look.
-    for (let y = 0; y < horizon; y++) {
+    // --- Sky gradient (top->horizon, calm->storm), drawn in fine sub-rows for a
+    // smooth ramp instead of chunky bands.
+    for (let y = 0; y < horizon; y += fine) {
       const f = y / horizon;
       ctx.fillStyle = this.bandColor(CALM.skyTop, STORM.skyTop, CALM.skyHorizon, STORM.skyHorizon, m, f);
-      ctx.fillRect(0, y, SEA_W, 1);
+      ctx.fillRect(0, y, SEA_W, fine);
     }
     const skyHor = this.mix(CALM.skyHorizon, STORM.skyHorizon, m);
 
@@ -445,18 +457,20 @@ class Bg02 implements EddieBackgroundVariant {
       ctx.fillStyle = this.bandColor(CALM.seaFar, STORM.seaFar, CALM.seaNear, STORM.seaNear, m, depth);
       ctx.fillRect(0, y, SEA_W, 1);
 
-      // Neon crest every few rows so the sea reads as horizontal swells.
+      // Neon crest every few rows so the sea reads as horizontal swells. Drawn
+      // as a FINE line (1 device px tall) so the swell reads as a crisp line
+      // rather than a chunky block, matching the climbers' line weight.
       if (row % 3 === 0) {
         const phase = this.t * (1.2 + depth * 2) + row * 0.5;
         ctx.fillStyle = neon;
-        for (let x = 0; x < SEA_W; x += 1) {
+        for (let x = 0; x < SEA_W; x += fine) {
           const w =
             Math.sin(x * 0.06 * chop + phase) * amp * (0.4 + depth) +
             Math.sin(x * 0.17 * chop + phase * 1.7) * amp * 0.4 * depth;
-          const cy = Math.round(y + w * 0.15);
+          const cy = Math.round((y + w * 0.15) * SEA_SS) / SEA_SS;
           if (cy >= horizon && cy < SEA_H) {
             ctx.globalAlpha = 0.5 + depth * 0.5;
-            ctx.fillRect(x, cy, 1, 1);
+            ctx.fillRect(x, cy, fine, fine);
           }
         }
         ctx.globalAlpha = 1;

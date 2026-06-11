@@ -35,14 +35,15 @@ const OUTLINE = "#10131c"; // near-black crisp outline (matches catalog)
 const SKIN = "#f0c9a0"; // climber head
 const SKIN_D = "#c79870"; // skin shadow side
 
-// Three distinct climber tier shades. Each tier: body, dark (shadow side),
-// and a lighter "lit" highlight for top/left readability.
+// Three DISTINCT light tier shades. The men are thin WHITE-ish pixel STICK
+// FIGURES (match .art-ref/reference.jpg) — a single light colour per tier so
+// they read on the dark ocean. Shade encodes HP.
 const TIER = {
-  strong: { body: "#3df0a0", dark: "#1c9c63", lit: "#8effc9" }, // green
-  medium: { body: "#3da0f0", dark: "#1c6bb0", lit: "#9fd0ff" }, // blue
-  weak: { body: "#b06bf0", dark: "#7a3fb0", lit: "#d8b3ff" }, // purple
+  strong: "#ffffff", // bright white = STRONG (3hp)
+  medium: "#7fd8ff", // cyan       = MEDIUM (2hp)
+  weak: "#c79bff", // violet     = WEAK   (1hp)
 };
-const GOLD = { body: "#ffd84d", dark: "#c79a16", lit: "#fff0a8" };
+const GOLD_C = "#ffd84d"; // gleaming gold finale diver
 
 const DOLPHIN = { body: "#1f93c4", dark: "#10597a", belly: "#cfeefc", lit: "#5cc3ec" };
 const MERMAID = { body: "#ff66cc", dark: "#b3247f", belly: "#ffd9f0", lit: "#ffa6e0", hair: "#ffd24d", tail: "#41e0c8", tailD: "#1f9c8c" };
@@ -64,139 +65,127 @@ function waterline(cv, w, y, c) {
 }
 
 // ---------------------------------------------------------------------------
-// CLIMBER  design 22x30, 6 pose rows.
-//   A chunky climbing man with a near-black outline, a skin head, a coloured
-//   torso (tier shade with a lit highlight + dark shadow), and 2px limbs. Body
-//   silhouette stays consistent; limb angles animate per frame + per pose.
-//   pose 0 hang / 1 shimmy / 2 climb / 3 top-idle / 4 falling / 5 water.
+// CLIMBER  design 22x30, 9 pose rows.
+//   A MUSCULAR strongman in the style of .art-ref/reference.jpg: a small head,
+//   BROAD 9-wide shoulders, big 2px arms with bicep bulges, a strong V-taper to a
+//   narrow 3-wide waist, wide stance. Single tier colour (white/cyan/violet).
+//   pose 0 hang / 1 shimmy / 2 climb / 3 top-idle(relaxed) / 4 falling / 5 water
+//   / 6 flex(occasional) / 7 walk(stroll) / 8 pat(buddy butt-pat).
 // ---------------------------------------------------------------------------
-function drawClimber(cv, frame, pose, pal) {
+function drawClimber(cv, frame, pose, C) {
   const cx = 11; // centre column
 
-  // ---- a small outlined limb helper (2px-ish with a black edge) ----
-  const arm = (x, y, w, h) => {
-    blk(cv, x, y, w, h, pal.dark);
-    blk(cv, x, y, 1, h, OUTLINE); // crisp outer edge
+  // 1px Bresenham limb.
+  const line = (x0, y0, x1, y1) => {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+    for (;;) {
+      cv.set(x0, y0, C);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x0 += sx; }
+      if (e2 < dx) { err += dx; y0 += sy; }
+    }
   };
-  const leg = (x, y, w, h) => {
-    blk(cv, x, y, w, h, pal.dark);
-    cv.set(x, y + h - 1, OUTLINE); // foot tip
+  // 2px BEEFY limb (a muscle arm/leg).
+  const arm = (x0, y0, x1, y1) => { line(x0, y0, x1, y1); line(x0 + 1, y0, x1 + 1, y1); };
+  const head = () => blk(cv, cx - 1, 2, 3, 2, C); // small head
+  // Strong V-taper: BROAD 9-wide shoulders/delts down to a narrow 3-wide waist.
+  const shoulders = (y) => blk(cv, cx - 4, y, 9, 2, C);
+  const torso = () => {
+    head();
+    shoulders(5); // broad delts
+    blk(cv, cx - 2, 7, 5, 2, C); // chest
+    blk(cv, cx - 1, 9, 3, 3, C); // narrow waist (y9-11)
   };
-
-  // ---- head (skin, outlined) — drawn for every pose except deep water ----
-  function head(hx, hy) {
-    blk(cv, hx, hy, 4, 4, SKIN);
-    blk(cv, hx + 3, hy, 1, 4, SKIN_D); // shaded side
-    // outline ring
-    cv.set(hx, hy, OUTLINE);
-    cv.set(hx + 3, hy, OUTLINE);
-    cv.set(hx, hy + 3, OUTLINE);
-    cv.set(hx + 3, hy + 3, OUTLINE);
-    // hair cap
-    blk(cv, hx, hy - 1, 4, 1, OUTLINE);
-  }
-
-  // ---- torso (tier-coloured, lit + shadow + outline) ----
-  function torso(ty, h) {
-    blk(cv, cx - 3, ty, 6, h, pal.body);
-    blk(cv, cx - 3, ty, 1, h, pal.lit); // lit left edge
-    blk(cv, cx + 2, ty, 1, h, pal.dark); // shadow right edge
-    // outline the torso block
-    blk(cv, cx - 4, ty, 1, h, OUTLINE);
-    blk(cv, cx + 3, ty, 1, h, OUTLINE);
-    cv.set(cx - 3, ty + h - 1, OUTLINE);
-    cv.set(cx + 2, ty + h - 1, OUTLINE);
-    // a belt accent
-    blk(cv, cx - 3, ty + h - 2, 6, 1, pal.dark);
-  }
-
-  const wig = [0, 1, 2, 1][frame]; // limb travel across the 4 frames
+  // Strong wide-stance legs from the hips.
+  const stance = (spread) => {
+    arm(cx - 1, 11, cx - 1 - spread, 24); // left leg
+    arm(cx + 1, 11, cx + 1 + spread, 24); // right leg
+  };
 
   if (pose === 0) {
-    // HANG: dead-hang by both hands overhead, legs dangling. Subtle sway.
+    // HANG: both big arms straight up to grips, body hangs, legs together.
     const sway = [-1, 0, 1, 0][frame];
-    head(cx - 2 + sway, 6);
-    torso(10, 10); // torso top at y=10
-    // overhead arms straight up to handholds
-    arm(cx - 4 + sway, 1, 2, 8);
-    arm(cx + 2 + sway, 1, 2, 8);
-    // dangling legs (slightly parted, swaying)
-    leg(cx - 2 + sway, 20, 2, 8);
-    leg(cx + 1 + sway, 20, 2, 7);
-    // hand-hold knobs
-    cv.set(cx - 4 + sway, 0, OUTLINE);
-    cv.set(cx + 3 + sway, 0, OUTLINE);
+    torso();
+    arm(cx - 4, 5, cx - 3, 1); cv.set(cx - 3, 0, C); // left arm up + grip
+    arm(cx + 3, 5, cx + 2, 1); cv.set(cx + 3, 0, C); // right arm up + grip
+    arm(cx - 1, 11, cx - 1 + sway, 24); arm(cx + 1, 11, cx + 1 + sway, 24);
   } else if (pose === 1) {
-    // SHIMMY: arms out sideways, mid side-step toward a cliff edge.
-    head(cx - 2, 5);
+    // SHIMMY: still HANGING overhead; legs swing as he traverses sideways.
+    const swing = [1, 2, 1, 2][frame];
+    torso();
+    arm(cx - 4, 5, cx - 3, 1); cv.set(cx - 3, 0, C);
+    arm(cx + 3, 5, cx + 2, 1); cv.set(cx + 3, 0, C);
+    arm(cx - 1, 11, cx - 1 + swing, 23); arm(cx + 1, 11, cx + 1 + swing, 23);
   } else if (pose === 2) {
-    // CLIMB: alternating reach-up handholds / footholds hauling up.
-    head(cx - 2, 5);
-  } else if (pose === 3) {
-    // TOP-IDLE: safe on top — alternating flex / jumping-jacks / sky-gaze.
-    head(cx - 2, 4);
-  } else if (pose === 4) {
-    // FALLING: limbs splayed, tumbling.
-    head(cx - 2, 8);
-  } else {
-    // WATER: only head + arms above a wavy waterline, swimming. SAFE.
-    head(cx - 2, 6);
-  }
-
-  // The poses 1..5 share the same torso anchor; draw it + their limbs here so
-  // the silhouette reads consistently. (Pose 0 handled fully above.)
-  if (pose === 1) {
-    torso(8, 9);
-    // arms reaching sideways toward the edge (lead arm extends by frame)
-    arm(cx - 6 - (frame % 2), 9, 3, 2);
-    arm(cx + 3, 9, 3 + (frame % 2), 2);
-    // side-stepping legs
-    leg(cx - 2, 18, 2, 7 + (frame % 2));
-    leg(cx + 1, 18, 2, 7 - (frame % 2));
-  } else if (pose === 2) {
-    torso(8, 9);
-    // alternating climbing limbs: one arm high, one mid; legs stagger
-    const up = frame % 2;
-    arm(cx - 5, 2 + up * 2, 2, 6); // left arm reaching up
-    arm(cx + 3, 4 - up * 2, 2, 6); // right arm (opposite)
-    leg(cx - 2, 18, 2, 6 + up); // left foothold
-    leg(cx + 1, 18, 2, 7 - up); // right foothold
-    // a knee bend cue
-    cv.set(cx - 2, 17 + up, OUTLINE);
-  } else if (pose === 3) {
-    torso(7, 9);
-    if (frame === 0 || frame === 2) {
-      // flexing biceps: arms up + bent to the head
-      arm(cx - 6, 3, 2, 3);
-      blk(cv, cx - 6, 6, 3, 2, pal.dark);
-      arm(cx + 4, 3, 2, 3);
-      blk(cv, cx + 3, 6, 3, 2, pal.dark);
+    // CLIMB: hand-over-hand. Frames 0-1 LEFT power stroke, 2-3 RIGHT.
+    const leftUp = frame < 2;
+    torso();
+    if (leftUp) {
+      arm(cx - 4, 5, cx - 4, 1); cv.set(cx - 4, 0, C); // left arm reaches high + grip
+      arm(cx + 3, 6, cx + 2, 10); // right arm pulling at the hip
+      arm(cx + 1, 11, cx + 3, 15); arm(cx + 3, 15, cx + 2, 19); // right knee up
+      arm(cx - 1, 11, cx - 2, 24); // left leg pushing down
     } else {
-      // jumping-jacks: arms flung up-out, legs apart
-      arm(cx - 7, 2, 2, 5);
-      arm(cx + 5, 2, 2, 5);
+      arm(cx + 3, 5, cx + 3, 1); cv.set(cx + 4, 0, C);
+      arm(cx - 4, 6, cx - 3, 10);
+      arm(cx - 1, 11, cx - 3, 15); arm(cx - 3, 15, cx - 2, 19);
+      arm(cx + 1, 11, cx + 2, 24);
     }
-    const spread = (frame % 2) + 1;
-    leg(cx - 2 - spread, 16, 2, 9);
-    leg(cx + 1 + spread, 16, 2, 9);
+  } else if (pose === 3) {
+    // TOP-IDLE (relaxed): mostly just standing easy — arms down, a gentle weight
+    // shift, an occasional look up at the sun / hands on hips. NO flexing here;
+    // the flex is a separate, OCCASIONAL action (row 6).
+    torso();
+    if (frame === 1) {
+      arm(cx - 4, 6, cx - 4, 12); // left arm down
+      arm(cx + 3, 6, cx + 4, 4); cv.set(cx + 5, 3, C); // right hand to brow, gazing up
+      stance(1);
+    } else if (frame === 3) {
+      arm(cx - 4, 6, cx - 2, 9); arm(cx + 3, 6, cx + 1, 9); // hands on hips
+      stance(1);
+    } else {
+      arm(cx - 4, 6, cx - 4, 12); arm(cx + 3, 6, cx + 3, 12); // easy stand, arms down
+      stance(frame === 0 ? 1 : 2);
+    }
   } else if (pose === 4) {
-    torso(11, 8);
-    // splayed limbs, rotated tumble feel
-    arm(cx - 7, 9 + wig, 3, 2);
-    arm(cx + 4, 9 - wig, 3, 2);
-    leg(cx - 5, 19, 3, 2 + wig);
-    leg(cx + 2, 19, 3, 2 - wig);
-    // a couple of motion specks
-    cv.set(cx - 8, 6, pal.lit);
-    cv.set(cx + 8, 14, pal.lit);
+    // FALLING: splayed muscular limbs, tumbling.
+    const wig = [0, 1, 2, 1][frame];
+    head(); shoulders(6); blk(cv, cx - 1, 8, 3, 3, C);
+    arm(cx - 4, 7, cx - 7, 4 + wig); arm(cx + 3, 7, cx + 6, 4 - wig);
+    arm(cx - 1, 11, cx - 4, 21 + wig); arm(cx + 1, 11, cx + 4, 21 - wig);
   } else if (pose === 5) {
-    // swimmer: head + shoulders above water, arms sculling, body submerged.
-    torso(10, 4); // only upper torso shows above the line
-    arm(cx - 6, 11 + wig, 3, 2); // sculling arms
-    arm(cx + 3, 11 - wig, 3, 2);
-    // wavy waterline cutting across the chest
-    waterline(cv, 22, 14, WATER.dark);
-    waterline(cv, 22, 15, WATER.mid);
+    // WATER: muscular swimmer, head + big arms above the waterline. SAFE.
+    const wig = [0, 1, 0, -1][frame];
+    head(); blk(cv, cx - 4, 11, 9, 2, C); // shoulders at the surface
+    arm(cx - 4, 11, cx - 6, 13 + wig); arm(cx + 3, 11, cx + 6, 13 - wig);
+    waterline(cv, 22, 15, WATER.dark);
+    waterline(cv, 22, 16, WATER.mid);
+  } else if (pose === 6) {
+    // FLEX (occasional): proud double-biceps with a little pump.
+    const pump = [0, 1, 0, 1][frame];
+    torso();
+    arm(cx - 4, 5, cx - 7, 4); arm(cx - 7, 4, cx - 5, 1 - pump); cv.set(cx - 7, 3, C);
+    arm(cx + 3, 5, cx + 6, 4); arm(cx + 6, 4, cx + 4, 1 - pump); cv.set(cx + 7, 3, C);
+    stance(2);
+  } else if (pose === 7) {
+    // WALK (stroll along the top): alternating stride, arms swinging.
+    const fwd = frame % 2 === 0 ? -2 : 2;
+    torso();
+    arm(cx - 4, 6, cx - 5, 12);
+    arm(cx + 3, 6, cx + 4, 12);
+    arm(cx - 1, 11, cx - 1 + fwd, 24); // one leg forward
+    arm(cx + 1, 11, cx + 1 - fwd, 24); // the other back
+  } else {
+    // PAT (occasional, when two strollers pass): a buddy butt-pat — one arm
+    // reaches out to the side at hip height.
+    torso();
+    arm(cx + 3, 8, cx + 7, 10); cv.set(cx + 8, 10, C); // reaching pat hand
+    arm(cx - 4, 6, cx - 4, 12); // other arm down
+    stance(1);
   }
 }
 
@@ -207,154 +196,126 @@ function drawClimber(cv, frame, pose, pal) {
 //   Gold body + sparkle accents so it reads as "gleaming, trailing gold".
 // ---------------------------------------------------------------------------
 function drawGold(cv, frame, pose) {
-  const pal = GOLD;
+  const C = GOLD_C;
   const cx = 11;
-  const arm = (x, y, w, h) => {
-    blk(cv, x, y, w, h, pal.dark);
-    blk(cv, x, y, 1, h, OUTLINE);
+  const line = (x0, y0, x1, y1) => {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+    for (;;) {
+      cv.set(x0, y0, C);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x0 += sx; }
+      if (e2 < dx) { err += dx; y0 += sy; }
+    }
   };
-  const head = (hx, hy) => {
-    blk(cv, hx, hy, 4, 4, SKIN);
-    blk(cv, hx + 3, hy, 1, 4, SKIN_D);
-    cv.set(hx, hy, OUTLINE);
-    cv.set(hx + 3, hy, OUTLINE);
-    blk(cv, hx, hy - 1, 4, 1, pal.dark); // gold hair cap
+  const arm = (x0, y0, x1, y1) => { line(x0, y0, x1, y1); line(x0 + 1, y0, x1 + 1, y1); };
+  const head = () => blk(cv, cx - 1, 2, 3, 2, C);
+  const torso = () => {
+    head();
+    blk(cv, cx - 3, 5, 7, 2, C); // broad shoulders
+    blk(cv, cx - 2, 7, 5, 2, C); // chest
+    blk(cv, cx - 1, 9, 3, 3, C); // waist
   };
-  const torso = (ty, h) => {
-    blk(cv, cx - 3, ty, 6, h, pal.body);
-    blk(cv, cx - 3, ty, 1, h, pal.lit);
-    blk(cv, cx + 2, ty, 1, h, pal.dark);
-    blk(cv, cx - 4, ty, 1, h, OUTLINE);
-    blk(cv, cx + 3, ty, 1, h, OUTLINE);
-  };
-  // sparkle specks (deterministic) so it gleams
-  const sparkle = (x, y) => {
-    cv.set(x, y, pal.lit);
-    cv.set(x, y - 1, pal.body);
-    cv.set(x, y + 1, pal.body);
-    cv.set(x - 1, y, pal.body);
-    cv.set(x + 1, y, pal.body);
-  };
+  const sparkle = (x, y) => cv.set(x, y, "#fff0a8"); // gleam speck
 
   if (pose === 0) {
-    // LINE-DANCE: a side-to-side bop. Shift the whole figure + kick a leg out.
+    // LINE-DANCE: a side-to-side bop at the top, big arms swinging, legs dancing.
     const bop = [-1, 1, -1, 1][frame];
-    head(cx - 2 + bop, 4);
-    torso(8, 9);
-    // arms swinging with the bop
-    arm(cx - 6 + bop, 8, 3, 2);
-    arm(cx + 3 + bop, 8, 3, 2);
-    // dancing legs: one plants, one kicks out toward the bop direction
-    leg2(cv, cx - 2, 17, 2, 8, pal);
-    leg2(cv, cx + 1 + bop * 2, 17, 2, 7, pal);
-    sparkle(cx + 7, 3);
-    sparkle(cx - 7, 11);
+    torso();
+    arm(cx - 3, 6, cx - 5 + bop, 10); arm(cx + 2, 6, cx + 4 + bop, 10); // swinging arms
+    arm(cx - 1, 11, cx - 2, 24); arm(cx + 1, 11, cx + 2 + bop * 2, 24); // dancing legs
+    sparkle(cx + 6, 4); sparkle(cx - 6, 12);
   } else if (pose === 1) {
-    // SWAN-DIVE: an arcing dive. frame 0-1 arms spread (swan), 2-3 streamlined.
-    const spread = frame < 2;
-    head(cx, 2);
-    // a diagonal, streamlined torso
-    blk(cv, cx - 2, 6, 5, 8, pal.body);
-    blk(cv, cx - 2, 6, 1, 8, pal.lit);
-    blk(cv, cx + 2, 6, 1, 8, pal.dark);
-    blk(cv, cx - 3, 6, 1, 8, OUTLINE);
-    blk(cv, cx + 3, 6, 1, 8, OUTLINE);
-    if (spread) {
-      // arms wide like wings
-      arm(cx - 7, 6, 4, 2);
-      arm(cx + 4, 6, 4, 2);
-    } else {
-      // arms streamlined overhead
-      arm(cx - 1, 0, 2, 4);
-      arm(cx + 1, 0, 2, 4);
-    }
-    // legs together, pointed
-    blk(cv, cx - 1, 14, 2, 8, pal.dark);
-    blk(cv, cx + 1, 14, 2, 8, pal.dark);
-    cv.set(cx, 22, OUTLINE);
-    // a gold motion trail
-    sparkle(cx + 6, 16);
-    sparkle(cx - 5, 4);
+    // SWAN-DIVE: a proud swan held throughout — head up, chest arched forward,
+    // big arms OUTSTRETCHED wide like wings, legs together and pointed. (The
+    // diver rotates from upright to head-down as he falls; this is the arch.)
+    const flu = [0, -1, 0, 1][frame]; // gentle wing flutter
+    blk(cv, cx - 1, 1, 3, 2, C); // head, held up
+    blk(cv, cx - 3, 4, 7, 2, C); // broad shoulders
+    blk(cv, cx - 2, 6, 5, 2, C); // proud, arched chest
+    blk(cv, cx - 1, 8, 3, 3, C); // waist
+    arm(cx - 3, 4, cx - 8, 3 + flu); // left wing outstretched wide
+    arm(cx + 2, 4, cx + 7, 3 - flu); // right wing outstretched wide
+    arm(cx - 1, 11, cx - 1, 23); arm(cx + 1, 11, cx + 1, 23); // legs together, pointed
+    sparkle(cx + 7, 2); sparkle(cx - 7, 13);
   } else {
-    // SURFACE-SWIM: head + arms above a wavy waterline, gleaming, trailing gold.
-    head(cx - 2, 6);
-    torso(10, 4);
-    arm(cx - 6, 11 + (frame % 2), 3, 2);
-    arm(cx + 3, 11 - (frame % 2), 3, 2);
-    waterline(cv, 22, 14, WATERG.dark);
-    waterline(cv, 22, 15, WATERG.mid);
-    // gold gleam trail behind the swimmer
-    sparkle(cx + 7, 9);
-    cv.set(cx + 9, 12, pal.lit);
-    cv.set(cx - 8, 11, pal.lit);
+    // SURFACE-SWIM: gleaming gold muscular swimmer above a wavy waterline.
+    const wig = [0, 1, 0, -1][frame];
+    head();
+    blk(cv, cx - 3, 11, 7, 2, C); // shoulders at the surface
+    arm(cx - 3, 11, cx - 5, 13 + wig); arm(cx + 2, 11, cx + 5, 13 - wig);
+    waterline(cv, 22, 15, WATERG.dark);
+    waterline(cv, 22, 16, WATERG.mid);
+    sparkle(cx + 7, 10); sparkle(cx + 9, 12);
   }
-}
-// a small leg helper for the gold dancer
-function leg2(cv, x, y, w, h, pal) {
-  blk(cv, x, y, w, h, pal.dark);
-  cv.set(x, y + h - 1, OUTLINE);
 }
 
 // ---------------------------------------------------------------------------
 // DOLPHIN  design 40x24, 3 frames: 0 jump-arc / 1 spit / 2 dive-cancel.
-//   Side profile facing LEFT (engine flips for rightward travel). Torpedo body,
-//   dark back, mid flank, pale belly, dorsal + forked tail, eye. shark.mjs feel.
+//   Side profile facing LEFT (engine flips for rightward travel). Reads clearly
+//   as a DOLPHIN, not a fish: a pointed BEAK (rostrum), a rounded melon
+//   forehead, a smooth curved back with a swept-back HOOKED dorsal fin, a sleek
+//   tapering body, a pectoral fin, and forked tail flukes.
 // ---------------------------------------------------------------------------
-function drawDolphin(cv, fr, pal) {
+function drawDolphin(cv, fr) {
   const cy = 12;
-  // body half-height profile: pointed snout (left), fat mid, slim tail base.
-  const half = (x) => {
-    let h;
-    if (x <= 16) h = 2 + (x - 4) * 0.42; // grow from snout
-    else h = 7 - (x - 16) * 0.26; // taper to tail
-    return Math.max(2, Math.min(7, Math.round(h)));
+  const BODY = "#cdeefe", OUT = "#3f8fc0", BELLY = "#ffffff", EYE = "#16374a";
+  // Back (top) and belly (bottom) edges along the body, x = 2 (beak) .. 32 (tail
+  // base). Beak is thin; the melon swells the forehead; the back arches then
+  // tapers to the tail.
+  // Sleek: a thin protruding beak, a melon forehead, then a slim tapering body.
+  const top = (x) => {
+    if (x <= 5) return cy - 1;                        // thin beak
+    if (x <= 10) return cy - 1 - (x - 5);             // melon rises 11 -> 6
+    if (x <= 22) return cy - 5;                       // slim back
+    return cy - 5 + Math.round((x - 22) * 0.7);       // taper to tail
   };
-  for (let x = 4; x <= 32; x++) {
-    const h = half(x);
-    blk(cv, x, cy - h, 1, h, pal.dark); // back (dark)
-    blk(cv, x, cy, 1, h, pal.body); // flank (mid)
-    cv.set(x, cy - h, OUTLINE); // crisp top
-    cv.set(x, cy + h - 1, pal.belly); // pale underside
+  const bot = (x) => {
+    if (x <= 5) return cy;                            // thin beak
+    if (x <= 10) return cy + Math.round((x - 5) * 0.6);// chin/jaw
+    if (x <= 22) return cy + 3;                       // slim belly
+    return cy + 3 - Math.round((x - 22) * 0.6);       // taper to tail
+  };
+  for (let x = 2; x <= 32; x++) {
+    const t = top(x), b = bot(x);
+    for (let y = t; y <= b; y++) cv.set(x, y, BODY);
+    cv.set(x, t, OUT);     // back outline
+    cv.set(x, b, BELLY);   // pale belly
   }
-  // a light "lit" band along the upper flank
-  for (let x = 10; x <= 26; x++) cv.set(x, cy - 1, pal.lit);
-  // snout (left), slightly upturned for the leap
-  cv.set(3, cy, pal.dark);
-  cv.set(2, cy - 1, pal.dark);
-  cv.set(1, cy - 1, OUTLINE);
-  // smile line
-  cv.set(4, cy + 1, pal.belly);
-  cv.set(5, cy + 1, pal.belly);
-  // dorsal fin (clear triangle on the back)
-  blk(cv, 18, cy - 9, 5, 1, pal.dark);
-  blk(cv, 19, cy - 10, 3, 1, pal.dark);
-  cv.set(20, cy - 11, OUTLINE);
-  // pectoral fin angling down-forward
-  blk(cv, 12, cy + 4, 1, 2, pal.dark);
-  blk(cv, 11, cy + 5, 2, 1, pal.dark);
-  // forked tail (right): upper + lower lobe
-  blk(cv, 32, cy - 1, 2, 2, pal.dark); // peduncle
-  blk(cv, 34, cy - 5, 3, 4, pal.dark); // upper lobe
-  cv.set(36, cy - 6, OUTLINE);
-  blk(cv, 34, cy + 1, 3, 4, pal.dark); // lower lobe
-  cv.set(36, cy + 4, OUTLINE);
-  // eye
-  cv.set(7, cy - 1, OUTLINE);
+  // beak tip + mouth line
+  cv.set(1, cy, OUT);
+  cv.set(3, cy + 1, OUT); cv.set(4, cy + 1, OUT); // mouth crease
+  // tall swept-back HOOKED dorsal fin on the mid back (the dolphin giveaway)
+  cv.set(14, cy - 6, OUT); cv.set(15, cy - 8, OUT); cv.set(16, cy - 10, OUT);
+  cv.set(17, cy - 10, OUT); cv.set(18, cy - 9, OUT); cv.set(19, cy - 7, OUT);
+  cv.set(15, cy - 6, BODY); cv.set(16, cy - 8, BODY); cv.set(16, cy - 7, BODY);
+  cv.set(17, cy - 9, BODY); cv.set(17, cy - 8, BODY); cv.set(18, cy - 8, BODY);
+  // pectoral fin angling down-back
+  cv.set(13, cy + 3, OUT); cv.set(12, cy + 5, OUT); cv.set(14, cy + 5, OUT);
+  cv.set(13, cy + 4, BODY);
+  // forked tail flukes (right)
+  cv.set(33, cy - 1, BODY); cv.set(33, cy, BODY); cv.set(33, cy + 1, BODY);
+  cv.set(34, cy - 3, OUT); cv.set(35, cy - 4, OUT); cv.set(36, cy - 5, OUT);
+  cv.set(34, cy - 2, BODY); cv.set(35, cy - 3, BODY);
+  cv.set(34, cy + 3, OUT); cv.set(35, cy + 4, OUT); cv.set(36, cy + 5, OUT);
+  cv.set(34, cy + 2, BODY); cv.set(35, cy + 3, BODY);
+  // eye on the melon
+  cv.set(6, cy - 1, EYE);
 
   if (fr === 1) {
-    // SPIT: a water jet shooting from the snout (shown the instant it spits).
-    cv.set(2, cy, WATER.mid);
-    cv.set(1, cy - 1, WATER.hot);
-    cv.set(0, cy, WATER.mid);
-    cv.set(0, cy - 2, WATER.hot);
-    cv.set(2, cy - 2, WATER.mid);
+    // SPIT: a water jet shooting from the beak (shown the instant it spits).
+    cv.set(1, cy - 1, "#ffffff");
+    cv.set(0, cy - 1, "#bfe9ff");
+    cv.set(0, cy - 3, "#ffffff");
+    cv.set(1, cy - 3, "#bfe9ff");
   } else if (fr === 2) {
-    // DIVE-CANCEL: nose-down plunge — add a downward splash hint under the snout.
-    cv.set(2, cy + 2, WATER.mid);
-    cv.set(1, cy + 3, WATER.dark);
-    cv.set(3, cy + 3, WATER.mid);
-    // tuck the tail up to read as "plunging"
-    cv.set(36, cy - 6, pal.dark);
+    // DIVE-CANCEL: nose-down plunge — a downward splash hint under the beak.
+    cv.set(1, cy + 2, "#bfe9ff");
+    cv.set(0, cy + 3, "#9fd0ff");
+    cv.set(2, cy + 3, "#bfe9ff");
   }
 }
 
@@ -363,9 +324,11 @@ function drawDolphin(cv, fr, pal) {
 //   Same footprint/frames; glam 80s-neon mermaid facing LEFT: human top with
 //   flowing hair, a fish tail at the right. spit = water from a hand.
 // ---------------------------------------------------------------------------
-function drawMermaid(cv, fr, pal) {
+function drawMermaid(cv, fr) {
   const cy = 12;
-  // ---- fish tail (right half) — torpedo that ends in a fluke ----
+  const SKIN = "#ffd9b0", BODY = "#ff9ed6", OUT = "#b3247f", TAIL = "#ff7ec8",
+    FIN = "#ffd9f0", HAIR = "#ffd24d", EYE = "#5a1340";
+  // ---- fish tail (right half) — clean spindle ending in a fluke ----
   const half = (x) => {
     let h;
     if (x <= 20) h = 3 + (x - 14) * 0.5;
@@ -374,55 +337,49 @@ function drawMermaid(cv, fr, pal) {
   };
   for (let x = 14; x <= 30; x++) {
     const h = half(x);
-    blk(cv, x, cy - h, 1, h, pal.tail);
-    blk(cv, x, cy, 1, h, pal.tailD);
-    cv.set(x, cy - h, OUTLINE);
-    cv.set(x, cy + h - 1, OUTLINE);
+    for (let y = cy - h; y <= cy + h - 1; y++) cv.set(x, y, TAIL);
+    cv.set(x, cy - h, OUT);
+    cv.set(x, cy + h - 1, OUT);
   }
-  // scales sparkle along the tail
-  for (let x = 16; x <= 28; x += 3) cv.set(x, cy, pal.belly);
+  // scales along the tail
+  for (let x = 16; x <= 28; x += 3) cv.set(x, cy, FIN);
   // tail fluke (right)
-  blk(cv, 30, cy - 5, 4, 4, pal.tail);
-  blk(cv, 30, cy + 1, 4, 4, pal.tail);
-  cv.set(33, cy - 6, OUTLINE);
-  cv.set(33, cy + 4, OUTLINE);
+  blk(cv, 30, cy - 5, 4, 4, TAIL);
+  blk(cv, 30, cy + 1, 4, 4, TAIL);
+  cv.set(33, cy - 6, OUT);
+  cv.set(33, cy + 4, OUT);
 
   // ---- human upper body (left), facing LEFT ----
-  // torso (pink)
-  blk(cv, 9, cy - 4, 6, 7, pal.body);
-  blk(cv, 9, cy - 4, 1, 7, pal.lit);
-  blk(cv, 8, cy - 4, 1, 7, OUTLINE);
-  cv.set(14, cy + 2, pal.dark);
-  // a shell / highlight on the chest
-  cv.set(11, cy - 1, pal.belly);
-  cv.set(12, cy, pal.belly);
+  blk(cv, 9, cy - 4, 6, 7, BODY);
+  blk(cv, 8, cy - 4, 1, 7, OUT);
+  cv.set(11, cy - 1, FIN); // chest highlight
+  cv.set(12, cy, FIN);
   // head
   blk(cv, 7, cy - 9, 4, 4, SKIN);
-  cv.set(7, cy - 9, OUTLINE);
-  cv.set(10, cy - 9, OUTLINE);
+  cv.set(7, cy - 9, OUT);
+  cv.set(10, cy - 9, OUT);
   // flowing golden hair streaming back (to the right)
-  blk(cv, 9, cy - 10, 5, 1, pal.hair);
-  blk(cv, 11, cy - 9, 4, 2, pal.hair);
-  blk(cv, 13, cy - 7, 3, 2, pal.hair);
-  cv.set(16, cy - 6, pal.hair);
-  // face eye
-  cv.set(8, cy - 7, OUTLINE);
+  blk(cv, 9, cy - 10, 5, 1, HAIR);
+  blk(cv, 11, cy - 9, 4, 2, HAIR);
+  blk(cv, 13, cy - 7, 3, 2, HAIR);
+  cv.set(16, cy - 6, HAIR);
+  cv.set(8, cy - 7, EYE); // eye
   // arm reaching forward-left
-  blk(cv, 4, cy - 3, 4, 2, pal.body);
-  cv.set(3, cy - 3, OUTLINE);
+  blk(cv, 4, cy - 3, 4, 2, BODY);
+  cv.set(3, cy - 3, OUT);
 
   if (fr === 1) {
     // SPIT: flick water from the forward hand
-    cv.set(2, cy - 3, WATER.hot);
-    cv.set(1, cy - 4, WATER.mid);
-    cv.set(2, cy - 5, WATER.hot);
-    cv.set(0, cy - 3, WATER.mid);
+    cv.set(2, cy - 3, "#ffffff");
+    cv.set(1, cy - 4, "#ffd9f0");
+    cv.set(2, cy - 5, "#ffffff");
+    cv.set(0, cy - 3, "#ffd9f0");
   } else if (fr === 2) {
     // DIVE-CANCEL: dive back under — drop the head/arm, splash below
-    cv.set(2, cy + 1, WATER.mid);
-    cv.set(1, cy + 2, WATER.dark);
-    cv.set(3, cy + 2, WATER.mid);
-    cv.set(33, cy - 7, pal.tail); // fluke flicks up
+    cv.set(2, cy + 1, "#ffd9f0");
+    cv.set(1, cy + 2, "#ff7ec8");
+    cv.set(3, cy + 2, "#ffd9f0");
+    cv.set(33, cy - 7, TAIL); // fluke flicks up
   }
 }
 
@@ -430,40 +387,45 @@ function drawMermaid(cv, fr, pal) {
 // LOBSTER  design 18x14, 2 frames (skitter cycle).
 //   Top-ish view, bright red-orange, two big claws, segmented tail, little legs.
 // ---------------------------------------------------------------------------
-function drawLobster(cv, fr, pal) {
+function drawLobster(cv, fr) {
   const cy = 7;
+  const BODY = "#ff7a4d", OUT = "#a8331a", LIT = "#ffc4a0", EYE = "#2a0f08";
   // carapace / body
-  blk(cv, 6, cy - 2, 6, 5, pal.body);
-  blk(cv, 6, cy - 2, 6, 1, pal.lit); // lit top
-  blk(cv, 6, cy + 2, 6, 1, pal.dark); // shadow bottom
-  blk(cv, 5, cy - 2, 1, 5, OUTLINE);
-  blk(cv, 12, cy - 2, 1, 5, OUTLINE);
+  blk(cv, 6, cy - 2, 6, 5, BODY);
+  blk(cv, 6, cy - 2, 6, 1, LIT); // lit top
+  blk(cv, 5, cy - 2, 1, 5, OUT);
+  blk(cv, 12, cy - 2, 1, 5, OUT);
+  cv.set(6, cy + 2, OUT);
+  cv.set(11, cy + 2, OUT);
   // segmented tail (right), curling
-  blk(cv, 12, cy - 1, 3, 3, pal.body);
-  cv.set(12, cy, pal.dark);
-  cv.set(14, cy - 1, pal.dark);
-  blk(cv, 15, cy - 1, 1, 3, pal.lit); // tail fan
-  cv.set(15, cy - 2, pal.body);
-  cv.set(15, cy + 2, pal.body);
+  blk(cv, 12, cy - 1, 3, 3, BODY);
+  cv.set(14, cy, LIT); // tail fan
+  cv.set(15, cy - 1, OUT);
+  cv.set(15, cy + 1, OUT);
+  cv.set(14, cy - 2, OUT);
+  cv.set(14, cy + 2, OUT);
   // claws (left), open/close by frame
   const c = fr === 0 ? 0 : 1;
-  blk(cv, 1 + c, cy - 3, 4, 2, pal.body);
-  blk(cv, 0 + c, cy - 4, 2, 2, pal.dark); // upper claw pincer
-  blk(cv, 0 + c, cy + 1, 2, 2, pal.dark); // lower claw pincer
-  cv.set(0 + c, cy - 4, OUTLINE);
-  cv.set(0 + c, cy + 2, OUTLINE);
+  blk(cv, 1 + c, cy - 3, 4, 2, BODY);
+  cv.set(0 + c, cy - 4, OUT); // upper claw pincer
+  cv.set(1 + c, cy - 4, BODY);
+  blk(cv, 1 + c, cy + 2, 4, 2, BODY);
+  cv.set(0 + c, cy + 3, OUT); // lower claw pincer
+  cv.set(1 + c, cy + 3, BODY);
+  cv.set(4, cy - 1, BODY);
+  cv.set(4, cy + 1, BODY);
   // little legs alternating with the skitter frame
   for (let i = 0; i < 3; i++) {
     const off = (i + fr) % 2;
-    cv.set(7 + i * 2, cy + 3 + off, pal.dark);
-    cv.set(7 + i * 2, cy - 3 - off, pal.dark);
+    cv.set(7 + i * 2, cy + 3 + off, OUT);
+    cv.set(7 + i * 2, cy - 3 - off, OUT);
   }
   // antennae
-  cv.set(4, cy - 4, pal.dark);
-  cv.set(3, cy - 5, pal.dark);
+  cv.set(4, cy - 4, OUT);
+  cv.set(3, cy - 5, OUT);
   // two dark dot eyes
-  cv.set(6, cy - 3, OUTLINE);
-  cv.set(8, cy - 3, OUTLINE);
+  cv.set(7, cy - 3, EYE);
+  cv.set(9, cy - 3, EYE);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,7 +527,7 @@ export function generate(assetsDir) {
     written.push(
       writePNG(
         path.join(assetsDir, `climber-${tier}.png`),
-        buildSheetGrid(4, 6, 22, 30, 1, (cv, c, r) => drawClimber(cv, c, r, TIER[tier])),
+        buildSheetGrid(4, 9, 22, 30, 1, (cv, c, r) => drawClimber(cv, c, r, TIER[tier])),
       ),
     );
   }
@@ -578,14 +540,14 @@ export function generate(assetsDir) {
   );
   // dolphin + mermaid: 3 frames x 1 row, 40x24.
   written.push(
-    writePNG(path.join(assetsDir, "dolphin.png"), buildSheetGrid(3, 1, 40, 24, 1, (cv, c) => drawDolphin(cv, c, DOLPHIN))),
+    writePNG(path.join(assetsDir, "dolphin.png"), buildSheetGrid(3, 1, 40, 24, 1, (cv, c) => drawDolphin(cv, c))),
   );
   written.push(
-    writePNG(path.join(assetsDir, "mermaid.png"), buildSheetGrid(3, 1, 40, 24, 1, (cv, c) => drawMermaid(cv, c, MERMAID))),
+    writePNG(path.join(assetsDir, "mermaid.png"), buildSheetGrid(3, 1, 40, 24, 1, (cv, c) => drawMermaid(cv, c))),
   );
   // lobster: 2 frames, 18x14.
   written.push(
-    writePNG(path.join(assetsDir, "lobster.png"), buildSheetGrid(2, 1, 18, 14, 1, (cv, c) => drawLobster(cv, c, LOBSTER))),
+    writePNG(path.join(assetsDir, "lobster.png"), buildSheetGrid(2, 1, 18, 14, 1, (cv, c) => drawLobster(cv, c))),
   );
   // orb: 3 frames, 14x14.
   written.push(

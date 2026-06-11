@@ -24,6 +24,9 @@ const ORB_SPEED = 420;
 const ORB_SLOW_SPEED = 180;
 /** Arrival distance (px). */
 const ARRIVE_DIST = 10;
+/** On-screen size + sprite cell size (rendered bigger so the orbs are obvious). */
+const CELL = 14;
+const SIZE = 26;
 
 export class Orb {
   readonly id: number;
@@ -117,8 +120,9 @@ export class Orb {
     const el = document.createElement("div");
     el.className = "cliff-orb";
     el.style.cssText =
-      "position:absolute;width:14px;height:14px;pointer-events:none;z-index:9;" +
-      "border-radius:50%;";
+      `position:absolute;width:${SIZE}px;height:${SIZE}px;pointer-events:none;z-index:9;` +
+      "border-radius:50%;image-rendering:pixelated;background-repeat:no-repeat;" +
+      "filter:drop-shadow(0 0 5px #52ffa8);";
     this.el = el;
     loadSpriteSheet("orb").then((img) => (this.sheet = img)).catch(() => {});
   }
@@ -126,15 +130,17 @@ export class Orb {
   private render(): void {
     const el = this.el;
     if (!el) return;
-    el.style.left = `${this.x - 7}px`;
-    el.style.top = `${this.y - 7}px`;
+    el.style.left = `${this.x - SIZE / 2}px`;
+    el.style.top = `${this.y - SIZE / 2}px`;
     if (this.sheet) {
+      const img = this.sheet as HTMLImageElement;
+      const s = SIZE / CELL;
       const frame = Math.floor(this.clock * 10) % 3;
       el.style.background = "none";
-      el.style.backgroundImage = `url(${(this.sheet as HTMLImageElement).src})`;
-      el.style.backgroundSize = "auto";
+      el.style.backgroundImage = `url(${img.src})`;
+      el.style.backgroundSize = `${img.naturalWidth * s}px ${img.naturalHeight * s}px`;
       el.style.backgroundRepeat = "no-repeat";
-      el.style.backgroundPosition = `-${frame * 14}px 0`;
+      el.style.backgroundPosition = `-${frame * SIZE}px 0`;
     } else {
       el.style.background =
         "radial-gradient(circle,#eafff0 0%,#52ffa8 45%,rgba(82,255,168,0) 75%)";

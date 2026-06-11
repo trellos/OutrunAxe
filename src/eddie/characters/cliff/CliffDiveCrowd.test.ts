@@ -54,12 +54,13 @@ describe("CliffDiveCrowd spawn map", () => {
     expect(edges).toEqual(["left", "right"]);
   });
 
-  it("subdiv 2 spawns 1 mid man", () => {
+  it("subdiv 2 spawns 1 man on the nearer box edge", () => {
     const c = makeCrowd();
     c.onQuarterDiamonds(quarter(0, 1, 2));
     c.setActiveMeasure(1);
     expect(c.totalMen).toBe(1);
-    expect(c.climberStates[0].edge).toBe("mid");
+    // Climbs a box EDGE (nearer side), not the note bar inside the box.
+    expect(["left", "right"]).toContain(c.climberStates[0].edge);
   });
 
   it("subdiv 3 spawns 3 orbs", () => {

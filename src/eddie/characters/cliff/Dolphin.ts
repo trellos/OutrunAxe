@@ -1,18 +1,27 @@
-// Dolphin — a Cliff Dive attacker.
+// Dolphin — a Cliff Dive attacker that BREACHES out of the ocean.
 //
-// Arcs across the screen once per wave (progress 0..1 via update(dt)), aimed at
-// ONE measure box's vertical edge. As it passes UNDER its target edge it spits
-// at one climber on that edge (the crowd chooses the victim and applies the hit;
-// a climber is never targeted twice in one wave). Colliding with a live lobster
-// CANCELS the dolphin: it dives back down and never spits.
+// It launches from the waterline beside a measure box's vertical edge, leaps in
+// a tight parabolic arc up to the foot of that edge (tilting nose-up on the way
+// up, nose-down on the way down, like a real breaching dolphin), spits at one
+// climber on that edge at the apex, then falls back into the sea. It does NOT
+// traverse the whole screen. A climber is never targeted twice in one wave.
+// Colliding with a live lobster CANCELS the dolphin: it dives back without
+// spitting.
 //
-// When the player is doing well (high intensity) the dolphin RENDERS as a
-// MERMAID (sprite swap only — identical gameplay) via setMermaid(true).
+// When the player is doing well (high intensity) it RENDERS as a MERMAID
+// (sprite swap only — identical gameplay) via setMermaid(true).
 //
 // HEADLESS: pure sim fields advanced by update(dt); DOM (this.el) is lazy and
 // browser-only so the crowd runs in node tests.
 
 import { loadSpriteSheet } from "../SpriteLoader";
+
+/** On-screen render scale (matches the climbers' 1.8x so line weights agree). */
+const SCALE = 1.8;
+const CW = 40; // sprite cell width (design px)
+const CH = 24; // sprite cell height
+/** Max nose tilt (degrees) along the leap arc. */
+const TILT_DEG = 55;
 
 export interface DolphinConfig {
   id: number;
@@ -20,14 +29,15 @@ export interface DolphinConfig {
   targetMeasure: number;
   /** "left" | "right" — which vertical edge of the box this dolphin menaces. */
   targetEdge: "left" | "right";
-  /** X of the target edge (where the spit lands). */
+  /** X of the target edge (where the spit lands; the arc peaks here). */
   edgeX: number;
-  /** Arc geometry: the jump spans startX -> endX, peaking at peakY. */
+  /** Leap geometry: a SHORT arc startX -> endX (centred on edgeX), peaking at
+   *  peakY (the foot of the cliff edge). */
   startX: number;
   endX: number;
-  baseY: number; // water line the arc launches from / lands at
+  baseY: number; // waterline the leap launches from / lands at
   peakY: number; // apex height (smaller y = higher)
-  /** Seconds to traverse the whole arc. */
+  /** Seconds for the whole leap. */
   duration: number;
 }
 
@@ -37,7 +47,7 @@ export class Dolphin {
   readonly targetEdge: "left" | "right";
   readonly edgeX: number;
 
-  progress = 0; // 0..1 across the arc
+  progress = 0; // 0..1 across the leap
   hasSpat = false;
   cancelled = false;
   alive = true;
@@ -51,7 +61,8 @@ export class Dolphin {
   private baseY: number;
   private peakY: number;
   private duration: number;
-  /** Arc progress (0..1) at which the dolphin is directly over its edge. */
+  private dir: number; // +1 leaping right, -1 leaping left
+  /** Arc progress (0..1) at which the dolphin is over its edge (apex). */
   private spitAt: number;
   private diveProgress = 0; // when cancelled, dives this far past current point
 
@@ -69,9 +80,10 @@ export class Dolphin {
     this.baseY = cfg.baseY;
     this.peakY = cfg.peakY;
     this.duration = Math.max(0.1, cfg.duration);
+    this.dir = cfg.endX >= cfg.startX ? 1 : -1;
     this.x = cfg.startX;
     this.y = cfg.baseY;
-    // The arc reaches edgeX at this fraction of its horizontal span.
+    // The arc reaches edgeX at this fraction of its span (the apex, ~0.5).
     const span = this.endX - this.startX;
     this.spitAt =
       Math.abs(span) < 1
@@ -90,8 +102,7 @@ export class Dolphin {
     this.cancelled = true;
   }
 
-  /** True the moment the dolphin crosses its edge and is ready to spit. The crowd
-   *  polls this each frame; once it applies the hit it calls markSpat(). */
+  /** True the moment the dolphin reaches its edge (apex) and is ready to spit. */
   get readyToSpit(): boolean {
     return (
       this.alive && !this.cancelled && !this.hasSpat && this.progress >= this.spitAt
@@ -119,7 +130,7 @@ export class Dolphin {
     }
     const p = this.progress;
     this.x = this.startX + (this.endX - this.startX) * p;
-    // Parabolic arc: 0 at ends, 1 at the middle.
+    // Parabolic leap: 0 at the waterline ends, 1 at the apex over the edge.
     const arc = 4 * p * (1 - p);
     this.y = this.baseY + (this.peakY - this.baseY) * arc;
     this.render();
@@ -133,8 +144,9 @@ export class Dolphin {
     const el = document.createElement("div");
     el.className = "cliff-dolphin";
     el.style.cssText =
-      "position:absolute;width:40px;height:24px;pointer-events:none;" +
-      "image-rendering:pixelated;background-repeat:no-repeat;z-index:9;";
+      `position:absolute;width:${CW * SCALE}px;height:${CH * SCALE}px;` +
+      "pointer-events:none;image-rendering:pixelated;background-repeat:no-repeat;" +
+      "z-index:9;transform-origin:50% 50%;";
     this.el = el;
     loadSpriteSheet("dolphin").then((img) => (this.dolphinSheet = img)).catch(() => {});
     loadSpriteSheet("mermaid").then((img) => (this.mermaidSheet = img)).catch(() => {});
@@ -143,23 +155,26 @@ export class Dolphin {
   private render(): void {
     const el = this.el;
     if (!el) return;
-    el.style.left = `${this.x - 20}px`;
-    el.style.top = `${this.y - 12}px`;
-    // Face travel direction.
-    const flip = this.endX < this.startX ? "scaleX(-1)" : "";
+    el.style.left = `${this.x - (CW * SCALE) / 2}px`;
+    el.style.top = `${this.y - (CH * SCALE) / 2}px`;
+    // Tilt the nose along the leap arc (up on the way up, down on the way down),
+    // facing the leap direction. Cancelled = nose-down plunge.
+    const tilt = this.cancelled ? 70 : (this.progress - 0.5) * TILT_DEG;
+    const transform = (this.dir > 0 ? "scaleX(-1) " : "") + `rotate(${tilt}deg)`;
     const sheet = this.isMermaid ? this.mermaidSheet : this.dolphinSheet;
     if (sheet) {
+      const img = sheet as HTMLImageElement;
       const frame = this.cancelled ? 2 : this.hasSpat ? 1 : 0;
       el.style.backgroundColor = "transparent";
-      el.style.backgroundImage = `url(${(sheet as HTMLImageElement).src})`;
-      el.style.backgroundSize = "auto";
-      el.style.backgroundPosition = `-${frame * 40}px 0`;
-      el.style.transform = flip;
+      el.style.backgroundImage = `url(${img.src})`;
+      el.style.backgroundSize = `${img.naturalWidth * SCALE}px ${img.naturalHeight * SCALE}px`;
+      el.style.backgroundPosition = `-${frame * CW * SCALE}px 0`;
+      el.style.transform = transform;
     } else {
       el.style.backgroundColor = this.isMermaid ? "#ff66cc" : "#1f93c4";
       el.style.borderRadius = "12px 12px 12px 4px";
       el.style.boxShadow = `0 0 6px ${this.isMermaid ? "#ff66cc" : "#1f93c4"}`;
-      el.style.transform = flip;
+      el.style.transform = transform;
       el.style.opacity = this.cancelled ? "0.6" : "1";
     }
   }

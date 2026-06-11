@@ -85,8 +85,11 @@ export class CliffDiveCrowd {
   private _dolphinKnockdowns = 0;
   private _dudeDives = 0;
 
+  private patCheck = 0; // throttles the occasional buddy butt-pat check
+
   // Finale state.
   private finale = false;
+  private finaleClock = 0; // accumulates dt; dives one man per beat
   private finaleQueue: Climber[] = []; // men at top, lined up to dive
 
   /** Climbers already spat at during the CURRENT dolphin wave (reset each wave),
@@ -192,14 +195,17 @@ export class CliffDiveCrowd {
     const subdiv = q.subdiv;
 
     if (subdiv === 1) {
-      // 2 MEN: split to the LEFT and RIGHT edges of the box.
+      // 2 MEN: both dead-hang on the NOTE lane, then shimmy out to the box's
+      // LEFT and RIGHT edges (the visible "hang then split to the sides").
       const tier = this.tierForQuality(q.notes[0]?.quality ?? 0);
-      this.spawnClimber(q.measure, box, "left", tier, box.left, barY);
-      this.spawnClimber(q.measure, box, "right", tier, box.right, barY);
+      this.spawnClimber(q.measure, box, "left", tier, midX, barY);
+      this.spawnClimber(q.measure, box, "right", tier, midX, barY);
     } else if (subdiv === 2) {
-      // 1 MAN at the middle of the note bar.
+      // 1 MAN: dead-hangs on the note lane, then shimmies to the NEARER box edge
+      // and climbs the side (men climb the box EDGES, never the note bars inside).
       const tier = this.tierForQuality(q.notes[0]?.quality ?? 0);
-      this.spawnClimber(q.measure, box, "mid", tier, midX, barY);
+      const edge: "left" | "right" = midX <= (box.left + box.right) / 2 ? "left" : "right";
+      this.spawnClimber(q.measure, box, edge, tier, midX, barY);
     } else if (subdiv === 3) {
       // 3 healing ORBS, one per diamond.
       for (let i = 0; i < 3; i++) {
@@ -265,30 +271,27 @@ export class CliffDiveCrowd {
   measureWave(measure: number): void {
     if (this.finale) return;
     this.waveHits.clear(); // a fresh wave: every man is targetable again
-    const W = this.getViewW();
     const base = this.waterY();
-    const peak = this.getViewH() * 0.18;
-    const dur = 4 * this.beatDuration; // one measure to cross
-    // One dolphin per box in the rolling 4-measure window so the whole cliff is
-    // threatened each wave (up to DOLPHINS_PER_WAVE).
+    const dur = 2.6 * this.beatDuration; // a snappy breach, not a screen crossing
+    const span = 130; // horizontal width of the leap arc, centred on the edge
+    // One dolphin BREACHES beside each box edge in the rolling 4-measure window,
+    // leaping up to the foot of that edge to spit (up to DOLPHINS_PER_WAVE).
     const windowStart = Math.max(0, measure - (measure % 4));
     for (let i = 0; i < DOLPHINS_PER_WAVE; i++) {
       const targetMeasure = windowStart + i;
       const box = this.box(targetMeasure) ?? this.fallbackBox(targetMeasure);
       const edge: "left" | "right" = this.rng() < 0.5 ? "left" : "right";
       const edgeX = edge === "left" ? box.left : box.right;
-      const fromLeft = this.rng() < 0.5;
-      const startX = fromLeft ? -40 : W + 40;
-      const endX = fromLeft ? W + 40 : -40;
+      const dir = this.rng() < 0.5 ? 1 : -1; // leap rightward or leftward
       const d = new Dolphin({
         id: this.nextId++,
         targetMeasure,
         targetEdge: edge,
         edgeX,
-        startX,
-        endX,
+        startX: edgeX - (dir * span) / 2,
+        endX: edgeX + (dir * span) / 2,
         baseY: base,
-        peakY: peak,
+        peakY: box.bottom, // rise up to the foot of the climb
         duration: dur,
       });
       d.setMermaid(this.intensity >= 0.6);
@@ -336,9 +339,7 @@ export class CliffDiveCrowd {
       magnitude: 1.2,
       audioTime: 0,
     });
-    if (this.container) {
-      this.effects.push(new Splash(this.container, c.x, this.waterY(), 1, true));
-    }
+    // The splash fires when he actually HITS the water (see update), not here.
   }
 
   // --- per-frame update + interactions --------------------------------------
@@ -348,7 +349,44 @@ export class CliffDiveCrowd {
    *  call update(dt, beat) uniformly across the crowd and its entities. */
   update(dt: number, _beatDuration?: number): void {
     void _beatDuration;
+    // Finale: the bass plays on and ONE man dives per beat. Driven from here (the
+    // render loop), NOT the conductor — which has stopped firing beats by the time
+    // the finale starts — so every man at the top eventually swan-dives off.
+    if (this.finale) {
+      this.finaleClock += dt;
+      if (this.finaleClock >= this.beatDuration) {
+        this.finaleClock -= this.beatDuration;
+        this.beat();
+      }
+    }
+    // Snapshot who is already swimming, so we can splash men who hit the water
+    // THIS frame (a slip-off OR a finale dive) — when they actually land.
+    const wasInWater = new Set<number>();
+    for (const c of this.climbers) if (c.inWater) wasInWater.add(c.id);
+
     for (const c of this.climbers) c.update(dt, this.beatDuration);
+
+    for (const c of this.climbers) {
+      if (c.inWater && !wasInWater.has(c.id)) this.spawnSplash(c.x, c.isGold);
+    }
+
+    // Occasional buddy butt-pat between two top men who stroll close (cosmetic,
+    // uses Math.random so it never perturbs the seeded gameplay rng).
+    this.patCheck -= dt;
+    if (this.patCheck <= 0) {
+      this.patCheck = 0.4;
+      const tops = this.climbers.filter((c) => c.atTop && !c.isPatting);
+      pairs: for (let i = 0; i < tops.length; i++) {
+        for (let j = i + 1; j < tops.length; j++) {
+          if (Math.abs(tops[i].x - tops[j].x) <= 24 && Math.random() < 0.35) {
+            tops[i].pat();
+            tops[j].pat();
+            break pairs;
+          }
+        }
+      }
+    }
+
     for (const d of this.dolphins) d.update(dt);
     for (const l of this.lobsters) l.update(dt);
     for (const o of this.orbs) o.update(dt);
@@ -425,7 +463,7 @@ export class CliffDiveCrowd {
     if (wasClimbing && (victim.phase === "falling" || victim.inWater)) {
       this._dolphinKnockdowns++;
       this.onDolphinKnockdown?.();
-      this.spawnSplash(victim.x);
+      // Splash fires when he hits the water (see update), not here at the hit.
     }
   }
 
@@ -444,8 +482,8 @@ export class CliffDiveCrowd {
     return c.edge === edge;
   }
 
-  private spawnSplash(x: number): void {
-    if (this.container) this.effects.push(new Splash(this.container, x, this.waterY(), 1, false));
+  private spawnSplash(x: number, gold = false): void {
+    if (this.container) this.effects.push(new Splash(this.container, x, this.waterY(), 1, gold));
   }
 
   /** Orb heal policy. Prefer distinct needy men; the 3rd orb slow-seeks a still-
@@ -537,6 +575,11 @@ export class CliffDiveCrowd {
   }
   get dudeDives(): number {
     return this._dudeDives;
+  }
+  /** True once the finale has cleared the cliff: it has started AND no man is
+   *  still climbing or idling at the top (everyone dived or is in the water). */
+  get finaleResolved(): boolean {
+    return this.finale && this.menClimbing === 0 && this.menAtTop === 0;
   }
   /** The most recent active measure handed to setActiveMeasure (tests/debug). */
   get activeMeasure(): number {

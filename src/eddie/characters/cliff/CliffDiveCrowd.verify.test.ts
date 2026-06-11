@@ -13,6 +13,8 @@
 
 import { describe, it, expect } from "vitest";
 import { CliffDiveCrowd } from "./CliffDiveCrowd";
+import { EventBus } from "../../../engine/EventBus";
+import type { EddieJuiceEvents } from "../../../music/eddie/eddieTypes";
 
 // --- harness ---------------------------------------------------------------
 
@@ -75,7 +77,7 @@ function step(c: CliffDiveCrowd, frames: number, dt = 0.02) {
 // --- spawn map -------------------------------------------------------------
 
 describe("spawn map", () => {
-  it("quarter=2 men L/R, eighth=1 mid man, triplet=3 orbs, sixteenth=4 lobsters", () => {
+  it("quarter=2 men L/R, eighth=1 edge man, triplet=3 orbs, sixteenth=4 lobsters", () => {
     const c = crowd(1);
     c.onQuarterDiamonds(quarterEvent(0, 0, 1));
     c.setActiveMeasure(1);
@@ -86,7 +88,8 @@ describe("spawn map", () => {
     c2.onQuarterDiamonds(quarterEvent(0, 0, 2));
     c2.setActiveMeasure(1);
     expect(c2.totalMen).toBe(1);
-    expect(c2.climberStates[0].edge).toBe("mid");
+    // The eighth man climbs a box EDGE (nearer side), never the note bar inside.
+    expect(["left", "right"]).toContain(c2.climberStates[0].edge);
 
     const c3 = crowd(1);
     c3.onQuarterDiamonds(quarterEvent(0, 0, 3));
@@ -263,6 +266,30 @@ describe("mermaid swap (high intensity)", () => {
     // lowering intensity then a new wave should still be fine
     c.setIntensity(0.1);
     step(c, 60);
+  });
+});
+
+describe("finale clears the cliff", () => {
+  it("every man at the top dives off when the finale runs — driven by update(dt), NOT external beat()", () => {
+    const juice = new EventBus<EddieJuiceEvents>();
+    const c = crowd(4, { juice });
+    c.mount();
+    // 4 quarters -> 8 strong men; no dolphins, so they all climb to the top.
+    for (let b = 0; b < 4; b++) c.onQuarterDiamonds(quarterEvent(0, b, 1, 0.95));
+    c.setActiveMeasure(1);
+    step(c, 300); // ~6s: everyone reaches the top
+    expect(c.menAtTop).toBeGreaterThan(0);
+    expect(c.finaleResolved).toBe(false);
+
+    // Trigger the finale via the REAL event, then ONLY advance time — no beat()
+    // calls (the regression was that dives never fired without conductor beats).
+    juice.emit("eddieFinale", { audioTime: 0 });
+    step(c, 1500); // ~30s of dt
+
+    expect(c.menClimbing).toBe(0);
+    expect(c.menAtTop).toBe(0);
+    expect(c.dudeDives).toBeGreaterThan(0);
+    expect(c.finaleResolved).toBe(true);
   });
 });
 
